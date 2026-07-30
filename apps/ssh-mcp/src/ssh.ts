@@ -108,13 +108,13 @@ function probeScript(host: HostConfig): string {
 meta() { printf 'HELIX_META\\t%s\\t%s\\n' "$1" "$2"; }
 tool() { if command -v "$1" >/dev/null 2>&1; then value=$("$1" --version 2>&1 | head -n 1); printf 'HELIX_TOOL\\t%s\\t%s\\n' "$1" "$value"; else printf 'HELIX_TOOL\\t%s\\t\\n' "$1"; fi; }
 os_name=""; os_version=""; os_pretty=""
-if [ -r /etc/os-release ]; then . /etc/os-release; os_name="${NAME:-}"; os_version="${VERSION_ID:-}"; os_pretty="${PRETTY_NAME:-}"; fi
+if [ -r /etc/os-release ]; then . /etc/os-release; os_name="\${NAME:-}"; os_version="\${VERSION_ID:-}"; os_pretty="\${PRETTY_NAME:-}"; fi
 meta os.name "$os_name"
 meta os.version "$os_version"
 meta os.prettyName "$os_pretty"
 meta os.kernel "$(uname -sr 2>/dev/null)"
 meta arch "$(uname -m 2>/dev/null)"
-meta shell "${SHELL:-}"
+meta shell "\${SHELL:-}"
 meta cwd "$(pwd 2>/dev/null)"
 for name in git docker gcc g++ cmake make ninja python3 node rustc cargo; do tool "$name"; done
 if command -v docker >/dev/null 2>&1; then
