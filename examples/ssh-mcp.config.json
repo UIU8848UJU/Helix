@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "settings": {
+    "allowHostMutation": false,
+    "defaultTimeoutSeconds": 60,
+    "maxOutputBytes": 1048576,
+    "maxConcurrentCommands": 4,
+    "strictHostKeyChecking": true,
+    "auditEnabled": true,
+    "auditCommandMode": "plain"
+  },
+  "hosts": {
+    "build-dev": {
+      "hostname": "10.0.0.20",
+      "port": 22,
+      "username": "developer",
+      "identityFile": "~/.ssh/id_ed25519",
+      "proxyJump": null,
+      "tags": [
+        "development",
+        "docker"
+      ],
+      "allowedRemotePaths": [
+        "/workspace",
+        "/tmp/helix",
+        "/opt/ros"
+      ],
+      "sudo": {
+        "enabled": true,
+        "allow": [
+          "^systemctl status [a-zA-Z0-9_.@-]+$",
+          "^systemctl restart test-[a-zA-Z0-9_.@-]+$",
+          "^docker (ps|info)$"
+        ]
+      }
+    }
+  }
+}
