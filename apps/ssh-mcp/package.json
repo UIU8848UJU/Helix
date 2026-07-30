@@ -1,0 +1,30 @@
+{
+  "name": "@helix/ssh-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Secure SSH, sudo, file transfer, Docker and environment tools for MCP clients.",
+  "type": "module",
+  "bin": {
+    "helix-ssh-mcp": "build/index.js"
+  },
+  "files": [
+    "build"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.5",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}
