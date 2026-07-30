@@ -32,7 +32,7 @@ scripts/                      安装脚本
 ```bash
 git clone https://github.com/UIU8848UJU/Helix.git
 cd Helix
-./scripts/install.sh
+bash scripts/install.sh
 ```
 
 ### Windows PowerShell
