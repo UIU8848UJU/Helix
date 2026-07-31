@@ -1,8 +1,14 @@
 export type AuditCommandMode = "plain" | "hash";
+export type AuthConfig =
+  | { type: "openssh" }
+  | { type: "windows-credential"; credentialRef: string };
+export type SudoMode = "disabled" | "reviewed-nopasswd" | "reviewed-password";
 
 export interface SudoPolicy {
-  enabled: boolean;
+  mode: SudoMode;
+  credentialRef?: string;
   allow: string[];
+  approvalTtlSeconds: number;
 }
 
 export interface HostConfig {
@@ -13,6 +19,7 @@ export interface HostConfig {
   proxyJump?: string | null;
   tags?: string[];
   allowedRemotePaths: string[];
+  auth: AuthConfig;
   sudo: SudoPolicy;
 }
 
@@ -24,6 +31,7 @@ export interface GlobalSettings {
   strictHostKeyChecking: boolean;
   auditEnabled: boolean;
   auditCommandMode: AuditCommandMode;
+  credentialBrokerPath?: string | null;
 }
 
 export interface HelixConfig {
@@ -90,4 +98,29 @@ export interface EnvironmentProbe {
     status: string;
   }>;
   candidateSourceScripts: string[];
+}
+
+export interface BrokerResponse {
+  ok: boolean;
+  exists?: boolean;
+  exitCode?: number;
+  stdout?: string;
+  stderr?: string;
+  timedOut?: boolean;
+  truncated?: boolean;
+  durationMs?: number;
+  error?: string;
+}
+
+export interface PendingApproval {
+  version: 1;
+  requestId: string;
+  hostAlias: string;
+  hostname: string;
+  username?: string;
+  command: string;
+  commandHash: string;
+  reason: string;
+  createdAt: string;
+  expiresAtUnixMs: number;
 }
