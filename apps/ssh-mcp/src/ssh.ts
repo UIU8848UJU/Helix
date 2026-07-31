@@ -1,6 +1,7 @@
 import { expandHome } from "./paths.js";
 import { runProcess, type Semaphore } from "./process.js";
 import { shellQuote } from "./policy.js";
+import { newRequestId, writeAudit } from "./audit.js";
 import type { EnvironmentProbe, ExecutionResult, GlobalSettings, HostConfig } from "./types.js";
 
 function sshTarget(host: HostConfig): string {
@@ -64,10 +65,39 @@ export async function runScp(input: {
   const remote = `${sshTarget(input.host)}:${shellQuote(input.remotePath)}`;
   if (input.direction === "upload") args.push(input.localPath, remote);
   else args.push(remote, input.localPath);
-  return await input.limiter.use(async () => await runProcess("scp", args, {
-    timeoutMs: timeoutSeconds * 1000,
-    maxOutputBytes: input.settings.maxOutputBytes,
-  }));
+  const requestId = newRequestId();
+  const startedAt = Date.now();
+  try {
+    const result = await input.limiter.use(async () => await runProcess("scp", args, {
+      timeoutMs: timeoutSeconds * 1000,
+      maxOutputBytes: input.settings.maxOutputBytes,
+    }));
+    await writeAudit(input.settings, {
+      timestamp: new Date().toISOString(),
+      requestId,
+      tool: input.direction === "upload" ? "ssh_upload" : "ssh_download",
+      host: input.host.hostname,
+      operation: `${input.localPath} ${input.direction === "upload" ? "->" : "<-"} ${input.remotePath}`,
+      durationMs: result.durationMs || Date.now() - startedAt,
+      exitCode: result.exitCode,
+      timedOut: result.timedOut,
+      truncated: result.truncated,
+      success: result.ok,
+    });
+    return result;
+  } catch (error) {
+    await writeAudit(input.settings, {
+      timestamp: new Date().toISOString(),
+      requestId,
+      tool: input.direction === "upload" ? "ssh_upload" : "ssh_download",
+      host: input.host.hostname,
+      operation: `${input.localPath} ${input.direction === "upload" ? "->" : "<-"} ${input.remotePath}`,
+      durationMs: Date.now() - startedAt,
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
 }
 
 export function buildEnvironmentProbeScript(host: HostConfig): string {
