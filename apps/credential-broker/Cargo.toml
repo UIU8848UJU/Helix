@@ -23,7 +23,5 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [profile.release]
-codegen-units = 1
-lto = true
 panic = "abort"
 strip = true
