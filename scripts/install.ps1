@@ -35,7 +35,7 @@ try {
     & npm run build
     if ($LASTEXITCODE -ne 0) { throw "npm run build 失败" }
 
-    & cargo test --manifest-path "apps/credential-broker/Cargo.toml"
+    & cargo test --release --manifest-path "apps/credential-broker/Cargo.toml"
     if ($LASTEXITCODE -ne 0) { throw "Rust Broker 单元测试失败" }
 
     & cargo build --release --manifest-path "apps/credential-broker/Cargo.toml"
@@ -66,7 +66,9 @@ if ($Config.settings.PSObject.Properties.Name -contains "credentialBrokerPath") 
 } else {
     $Config.settings | Add-Member -NotePropertyName credentialBrokerPath -NotePropertyValue $Broker
 }
-$Config | ConvertTo-Json -Depth 20 | Set-Content -Path $ConfigFile -Encoding UTF8
+$Json = $Config | ConvertTo-Json -Depth 20
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($ConfigFile, $Json + [Environment]::NewLine, $Utf8NoBom)
 
 $Entry = Join-Path $RootDir "apps\ssh-mcp\build\index.js"
 Write-Host ""
