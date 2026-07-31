@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { getApprovalDirectory, getCredentialBrokerPath } from "./paths.js";
+import { newRequestId, writeAudit } from "./audit.js";
 import type { GlobalSettings, HostConfig, PendingApproval } from "./types.js";
 
 export function hashCommand(command: string): string {
@@ -42,6 +43,15 @@ export async function createApprovalRequest(input: {
   if (process.platform !== "win32") await fs.chmod(file, 0o600);
   const broker = getCredentialBrokerPath(input.settings);
   const approvalCommand = `"${broker}" approve --request-file "${file}"`;
+  await writeAudit(input.settings, {
+    timestamp: new Date().toISOString(),
+    requestId: newRequestId(),
+    tool: "sudo_request",
+    host: input.hostAlias,
+    command: input.command,
+    operation: `pending approval ${request.requestId}; reason=${input.reason}`,
+    success: true,
+  });
   return { request, requestFile: file, approvalCommand };
 }
 
