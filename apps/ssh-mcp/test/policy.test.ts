@@ -14,9 +14,11 @@ const host: HostConfig = {
   username: "tester",
   tags: [],
   allowedRemotePaths: ["/workspace", "/opt/ros"],
+  auth: { type: "openssh" },
   sudo: {
-    enabled: true,
+    mode: "reviewed-nopasswd",
     allow: ["^systemctl status [a-zA-Z0-9_.@-]+$"],
+    approvalTtlSeconds: 300,
   },
 };
 
@@ -24,17 +26,12 @@ describe("shell and path policy", () => {
   it("quotes single quotes safely", () => {
     expect(shellQuote("a'b")).toBe("'a'\"'\"'b'");
   });
-
   it("accepts configured remote paths", () => {
     expect(assertRemotePathAllowed(host, "/workspace/project")).toBe("/workspace/project");
   });
-
   it("rejects path escape", () => {
-    expect(() => assertRemotePathAllowed(host, "/workspace/../etc/passwd")).toThrow(
-      "outside the configured allowlist",
-    );
+    expect(() => assertRemotePathAllowed(host, "/workspace/../etc/passwd")).toThrow("outside the configured allowlist");
   });
-
   it("builds cwd, env and source workflow in order", () => {
     const script = buildRemoteScript(host, "cmake --build build", {
       cwd: "/workspace/project",
@@ -52,16 +49,13 @@ describe("sudo policy", () => {
   it("allows a complete regex match", () => {
     expect(() => assertSudoAllowed(host, "systemctl status demo.service")).not.toThrow();
   });
-
-  it("rejects commands outside the allowlist", () => {
-    expect(() => assertSudoAllowed(host, "systemctl restart demo.service")).toThrow(
-      "does not match",
-    );
+  it("rejects commands outside allowlist", () => {
+    expect(() => assertSudoAllowed(host, "systemctl restart demo.service")).toThrow("does not match");
   });
 });
 
 describe("Docker command builder", () => {
-  it("supports container cwd, env and source", () => {
+  it("supports bash, cwd, env and source", () => {
     const command = buildDockerExecCommand({
       host,
       container: "build-env",
@@ -70,9 +64,10 @@ describe("Docker command builder", () => {
       env: { CC: "gcc" },
       sourceScripts: ["/opt/ros/humble/setup.bash"],
       user: "developer",
+      shell: "bash",
     });
     expect(command).toContain("docker exec");
-    expect(command).toContain("build-env");
+    expect(command).toContain("bash -lc");
     expect(command).toContain("ninja -C build");
   });
 });
