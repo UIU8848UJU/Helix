@@ -6,9 +6,19 @@ import type { HelixConfig, HostConfig } from "./types.js";
 
 const aliasPattern = /^[a-zA-Z0-9._-]+$/;
 
+const authSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("openssh") }),
+  z.object({
+    type: z.literal("windows-credential"),
+    credentialRef: z.string().min(1),
+  }),
+]);
+
 const sudoPolicySchema = z.object({
-  enabled: z.boolean().default(false),
+  mode: z.enum(["disabled", "reviewed-nopasswd", "reviewed-password"]).default("disabled"),
+  credentialRef: z.string().min(1).optional(),
   allow: z.array(z.string()).default([]),
+  approvalTtlSeconds: z.number().int().min(30).max(3600).default(300),
 });
 
 const hostSchema = z.object({
@@ -19,7 +29,8 @@ const hostSchema = z.object({
   proxyJump: z.string().min(1).nullable().optional(),
   tags: z.array(z.string().min(1)).default([]),
   allowedRemotePaths: z.array(z.string().min(1)).min(1).default(["/tmp/helix"]),
-  sudo: sudoPolicySchema.default({ enabled: false, allow: [] }),
+  auth: authSchema.default({ type: "openssh" }),
+  sudo: sudoPolicySchema.default({ mode: "disabled", allow: [], approvalTtlSeconds: 300 }),
 });
 
 const settingsSchema = z.object({
@@ -30,6 +41,7 @@ const settingsSchema = z.object({
   strictHostKeyChecking: z.boolean().default(true),
   auditEnabled: z.boolean().default(true),
   auditCommandMode: z.enum(["plain", "hash"]).default("plain"),
+  credentialBrokerPath: z.string().min(1).nullable().optional(),
 });
 
 const configSchema = z.object({
@@ -38,21 +50,23 @@ const configSchema = z.object({
   hosts: z.record(hostSchema).default({}),
 });
 
-export const defaultConfig: HelixConfig = configSchema.parse({
-  version: 1,
-  settings: {},
-  hosts: {},
-});
+export const defaultConfig: HelixConfig = configSchema.parse({ version: 1, settings: {}, hosts: {} });
 
 function validateSudoPatterns(hostAlias: string, host: HostConfig): void {
   for (const pattern of host.sudo.allow) {
     if (!pattern.startsWith("^") || !pattern.endsWith("$")) {
       throw new Error(`Host ${hostAlias}: sudo allow pattern must start with ^ and end with $: ${pattern}`);
     }
-    try {
-      void new RegExp(pattern);
-    } catch (error) {
+    try { void new RegExp(pattern); } catch (error) {
       throw new Error(`Host ${hostAlias}: invalid sudo regular expression ${pattern}: ${String(error)}`);
+    }
+  }
+  if (host.sudo.mode === "reviewed-password") {
+    if (host.auth.type !== "windows-credential") {
+      throw new Error(`Host ${hostAlias}: reviewed-password sudo requires windows-credential SSH auth`);
+    }
+    if (!host.sudo.credentialRef) {
+      throw new Error(`Host ${hostAlias}: reviewed-password sudo requires sudo.credentialRef`);
     }
   }
 }
@@ -60,9 +74,7 @@ function validateSudoPatterns(hostAlias: string, host: HostConfig): void {
 export function validateConfig(input: unknown): HelixConfig {
   const parsed = configSchema.parse(input) as HelixConfig;
   for (const [alias, host] of Object.entries(parsed.hosts)) {
-    if (!aliasPattern.test(alias)) {
-      throw new Error(`Invalid host alias: ${alias}`);
-    }
+    if (!aliasPattern.test(alias)) throw new Error(`Invalid host alias: ${alias}`);
     validateSudoPatterns(alias, host);
   }
   return parsed;
@@ -85,17 +97,13 @@ export class ConfigStore {
   readonly filePath: string;
   private writeChain: Promise<void> = Promise.resolve();
 
-  constructor(filePath = getConfigPath()) {
-    this.filePath = filePath;
-  }
+  constructor(filePath = getConfigPath()) { this.filePath = filePath; }
 
   async read(): Promise<HelixConfig> {
     try {
-      const content = await fs.readFile(this.filePath, "utf8");
-      return validateConfig(JSON.parse(content));
+      return validateConfig(JSON.parse(await fs.readFile(this.filePath, "utf8")));
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         await this.write(defaultConfig);
         return structuredClone(defaultConfig);
       }
@@ -106,28 +114,19 @@ export class ConfigStore {
   async write(config: HelixConfig): Promise<void> {
     const validated = validateConfig(config);
     this.writeChain = this.writeChain.then(async () => {
-      const directory = path.dirname(this.filePath);
-      await fs.mkdir(directory, { recursive: true });
+      await fs.mkdir(path.dirname(this.filePath), { recursive: true });
       const temporary = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
-      await fs.writeFile(temporary, `${JSON.stringify(validated, null, 2)}\n`, {
-        encoding: "utf8",
-        mode: 0o600,
-      });
+      await fs.writeFile(temporary, `${JSON.stringify(validated, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
       await fs.rename(temporary, this.filePath);
-      if (process.platform !== "win32") {
-        await fs.chmod(this.filePath, 0o600);
-      }
+      if (process.platform !== "win32") await fs.chmod(this.filePath, 0o600);
     });
     return this.writeChain;
   }
 
   async getHost(alias: string): Promise<HostConfig> {
     validateHostAlias(alias);
-    const config = await this.read();
-    const host = config.hosts[alias];
-    if (!host) {
-      throw new Error(`Unknown host alias: ${alias}`);
-    }
+    const host = (await this.read()).hosts[alias];
+    if (!host) throw new Error(`Unknown host alias: ${alias}`);
     return host;
   }
 
@@ -153,9 +152,7 @@ export function redactHost(host: HostConfig): Record<string, unknown> {
     proxyJump: host.proxyJump ?? null,
     tags: host.tags ?? [],
     allowedRemotePaths: host.allowedRemotePaths,
-    sudo: {
-      enabled: host.sudo.enabled,
-      allow: host.sudo.allow,
-    },
+    auth: host.auth,
+    sudo: host.sudo,
   };
 }
