@@ -2,6 +2,7 @@ node_modules/
 build/
 dist/
 coverage/
+target/
 *.log
 .env
 .env.*
