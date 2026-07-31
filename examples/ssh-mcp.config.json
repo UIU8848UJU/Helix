@@ -7,31 +7,48 @@
     "maxConcurrentCommands": 4,
     "strictHostKeyChecking": true,
     "auditEnabled": true,
-    "auditCommandMode": "plain"
+    "auditCommandMode": "plain",
+    "credentialBrokerPath": "C:\\Tools\\Helix\\helix-credential-broker.exe"
   },
   "hosts": {
-    "build-dev": {
+    "build-key": {
       "hostname": "10.0.0.20",
       "port": 22,
       "username": "developer",
       "identityFile": "~/.ssh/id_ed25519",
       "proxyJump": null,
-      "tags": [
-        "development",
-        "docker"
-      ],
-      "allowedRemotePaths": [
-        "/workspace",
-        "/tmp/helix",
-        "/opt/ros"
-      ],
+      "tags": ["development", "docker"],
+      "allowedRemotePaths": ["/workspace", "/tmp/helix", "/opt/ros"],
+      "auth": {
+        "type": "openssh"
+      },
       "sudo": {
-        "enabled": true,
+        "mode": "reviewed-nopasswd",
         "allow": [
           "^systemctl status [a-zA-Z0-9_.@-]+$",
-          "^systemctl restart test-[a-zA-Z0-9_.@-]+$",
-          "^docker (ps|info)$"
-        ]
+          "^systemctl restart test-[a-zA-Z0-9_.@-]+$"
+        ],
+        "approvalTtlSeconds": 300
+      }
+    },
+    "build-password": {
+      "hostname": "10.0.0.30",
+      "port": 22,
+      "username": "developer",
+      "tags": ["legacy", "docker"],
+      "allowedRemotePaths": ["/workspace", "/tmp/helix", "/opt/ros"],
+      "auth": {
+        "type": "windows-credential",
+        "credentialRef": "Helix/ssh/build-password/login"
+      },
+      "sudo": {
+        "mode": "reviewed-password",
+        "credentialRef": "Helix/ssh/build-password/sudo",
+        "allow": [
+          "^systemctl status [a-zA-Z0-9_.@-]+$",
+          "^systemctl restart test-[a-zA-Z0-9_.@-]+$"
+        ],
+        "approvalTtlSeconds": 300
       }
     }
   }
