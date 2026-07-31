@@ -1,12 +1,7 @@
 import { expandHome } from "./paths.js";
 import { runProcess, type Semaphore } from "./process.js";
 import { shellQuote } from "./policy.js";
-import type {
-  EnvironmentProbe,
-  ExecutionResult,
-  GlobalSettings,
-  HostConfig,
-} from "./types.js";
+import type { EnvironmentProbe, ExecutionResult, GlobalSettings, HostConfig } from "./types.js";
 
 function sshTarget(host: HostConfig): string {
   return host.username ? `${host.username}@${host.hostname}` : host.hostname;
@@ -20,16 +15,9 @@ function commonSshOptions(host: HostConfig, settings: GlobalSettings): string[] 
     "-o", "ServerAliveCountMax=2",
     "-o", `StrictHostKeyChecking=${settings.strictHostKeyChecking ? "yes" : "accept-new"}`,
   ];
-
-  if (host.port && host.port !== 22) {
-    args.push("-p", String(host.port));
-  }
-  if (host.identityFile) {
-    args.push("-i", expandHome(host.identityFile));
-  }
-  if (host.proxyJump) {
-    args.push("-J", host.proxyJump);
-  }
+  if (host.port && host.port !== 22) args.push("-p", String(host.port));
+  if (host.identityFile) args.push("-i", expandHome(host.identityFile));
+  if (host.proxyJump) args.push("-J", host.proxyJump);
   return args;
 }
 
@@ -39,15 +27,9 @@ function commonScpOptions(host: HostConfig, settings: GlobalSettings): string[] 
     "-o", "ConnectTimeout=10",
     "-o", `StrictHostKeyChecking=${settings.strictHostKeyChecking ? "yes" : "accept-new"}`,
   ];
-  if (host.port && host.port !== 22) {
-    args.push("-P", String(host.port));
-  }
-  if (host.identityFile) {
-    args.push("-i", expandHome(host.identityFile));
-  }
-  if (host.proxyJump) {
-    args.push("-o", `ProxyJump=${host.proxyJump}`);
-  }
+  if (host.port && host.port !== 22) args.push("-P", String(host.port));
+  if (host.identityFile) args.push("-i", expandHome(host.identityFile));
+  if (host.proxyJump) args.push("-o", `ProxyJump=${host.proxyJump}`);
   return args;
 }
 
@@ -59,11 +41,7 @@ export async function runSsh(input: {
   limiter: Semaphore;
 }): Promise<ExecutionResult> {
   const timeoutSeconds = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
-  const args = [
-    ...commonSshOptions(input.host, input.settings),
-    sshTarget(input.host),
-    input.command,
-  ];
+  const args = [...commonSshOptions(input.host, input.settings), sshTarget(input.host), input.command];
   return await input.limiter.use(async () => await runProcess("ssh", args, {
     timeoutMs: timeoutSeconds * 1000,
     maxOutputBytes: input.settings.maxOutputBytes,
@@ -82,28 +60,20 @@ export async function runScp(input: {
 }): Promise<ExecutionResult> {
   const timeoutSeconds = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
   const args = commonScpOptions(input.host, input.settings);
-  if (input.recursive) {
-    args.push("-r");
-  }
-
+  if (input.recursive) args.push("-r");
   const remote = `${sshTarget(input.host)}:${shellQuote(input.remotePath)}`;
-  if (input.direction === "upload") {
-    args.push(input.localPath, remote);
-  } else {
-    args.push(remote, input.localPath);
-  }
-
+  if (input.direction === "upload") args.push(input.localPath, remote);
+  else args.push(remote, input.localPath);
   return await input.limiter.use(async () => await runProcess("scp", args, {
     timeoutMs: timeoutSeconds * 1000,
     maxOutputBytes: input.settings.maxOutputBytes,
   }));
 }
 
-function probeScript(host: HostConfig): string {
+export function buildEnvironmentProbeScript(host: HostConfig): string {
   const roots = Array.from(new Set(["/opt/ros", ...host.allowedRemotePaths]))
     .map(shellQuote)
     .join(" ");
-
   return `set +e
 meta() { printf 'HELIX_META\\t%s\\t%s\\n' "$1" "$2"; }
 tool() { if command -v "$1" >/dev/null 2>&1; then value=$("$1" --version 2>&1 | head -n 1); printf 'HELIX_TOOL\\t%s\\t%s\\n' "$1" "$value"; else printf 'HELIX_TOOL\\t%s\\t\\n' "$1"; fi; }
@@ -130,12 +100,7 @@ done | head -n 100 | while IFS= read -r file; do printf 'HELIX_SOURCE\\t%s\\n' "
 
 export function parseEnvironmentProbe(output: string): EnvironmentProbe {
   const probe: EnvironmentProbe = {
-    os: {
-      name: null,
-      version: null,
-      prettyName: null,
-      kernel: null,
-    },
+    os: { name: null, version: null, prettyName: null, kernel: null },
     arch: null,
     shell: null,
     cwd: null,
@@ -143,7 +108,6 @@ export function parseEnvironmentProbe(output: string): EnvironmentProbe {
     containers: [],
     candidateSourceScripts: [],
   };
-
   for (const line of output.split(/\r?\n/)) {
     const fields = line.split("\t");
     const kind = fields[0];
@@ -170,7 +134,6 @@ export function parseEnvironmentProbe(output: string): EnvironmentProbe {
       probe.candidateSourceScripts.push(fields.slice(1).join("\t"));
     }
   }
-
   return probe;
 }
 
@@ -180,12 +143,6 @@ export async function probeEnvironment(input: {
   timeoutSeconds?: number;
   limiter: Semaphore;
 }): Promise<{ result: ExecutionResult; probe: EnvironmentProbe | null }> {
-  const result = await runSsh({
-    ...input,
-    command: probeScript(input.host),
-  });
-  return {
-    result,
-    probe: result.ok ? parseEnvironmentProbe(result.stdout) : null,
-  };
+  const result = await runSsh({ ...input, command: buildEnvironmentProbeScript(input.host) });
+  return { result, probe: result.ok ? parseEnvironmentProbe(result.stdout) : null };
 }
