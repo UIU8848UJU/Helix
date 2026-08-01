@@ -51,6 +51,12 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup Node.js for registration smoke test
+        if: runner.os == 'Windows'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
@@ -61,3 +67,8 @@ jobs:
 
       - name: Build release broker
         run: cargo build --release --manifest-path apps/credential-broker/Cargo.toml
+
+      - name: Test MCP registration scripts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-mcp-registration.ps1
