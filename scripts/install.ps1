@@ -1,3 +1,12 @@
+[CmdletBinding()]
+param(
+    [ValidateSet("Auto", "Claude", "Codex", "All", "None")]
+    [string]$RegisterClient = "Auto",
+
+    [ValidateSet("user", "local", "project")]
+    [string]$ClaudeScope = "user"
+)
+
 $ErrorActionPreference = "Stop"
 
 $RootDir = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -95,3 +104,21 @@ Write-Host "MCP client configuration:"
   }
 }
 "@ | Write-Host
+
+if ($RegisterClient -ne "None") {
+    Write-Host ""
+    Write-Host "Registering MCP clients: $RegisterClient"
+    try {
+        & (Join-Path $PSScriptRoot "register-mcp.ps1") `
+            -Client $RegisterClient `
+            -ClaudeScope $ClaudeScope `
+            -ConfigPath $ConfigFile `
+            -EntryPath $Entry `
+            -BrokerPath $Broker `
+            -SkipIfUnavailable
+    } catch {
+        Write-Warning "Helix was installed, but MCP client registration failed: $($_.Exception.Message)"
+        Write-Host "Retry after fixing the client installation:"
+        Write-Host ".\scripts\register-mcp.ps1 -Client $RegisterClient -ClaudeScope $ClaudeScope"
+    }
+}
