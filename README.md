@@ -1,6 +1,6 @@
 # Helix
 
-Helix 是面向 AI Agent 的基础设施（AI Infra）仓库。首个模块是受控 SSH MCP，用于主机管理、远程命令、文件传输、sudo、Docker/Compose 和环境探测。
+Helix 是面向 AI Agent 的基础设施（AI Infra）仓库。首个模块是受控的 SSH MCP，用于主机管理、远程命令、文件传输、sudo、Docker/Compose 和环境探测。
 
 ## 当前结构
 
@@ -9,7 +9,7 @@ apps/ssh-mcp/                 TypeScript MCP 控制层
 apps/credential-broker/       Rust Windows 凭据与密码 SSH 执行器
 docs/architecture/            技术设计
 examples/                      配置示例
-scripts/                       安装脚本
+scripts/                       安装、注册和卸载脚本
 ```
 
 网页抓取和浏览器自动化不会与 SSH MCP 放在同一个进程中。后续 Web Research MCP 将独立部署，避免不可信网页内容直接获得远程执行权限。
@@ -26,6 +26,7 @@ scripts/                       安装脚本
 - Docker 容器列表、容器内执行、Docker Compose 执行
 - OS、架构、工具链、容器和环境脚本探测
 - 超时、输出上限、并发控制和 JSONL 审计
+- Claude Code / Codex CLI 自动注册与安全注销
 
 ## 安装
 
@@ -47,6 +48,24 @@ cd Helix
 .\scripts\install.ps1
 ```
 
+安装脚本默认使用 `-RegisterClient Auto`：检测到 `claude` 或 `codex` CLI 后，自动通过它们的官方 MCP 子命令注册 `helix-ssh`。Claude Code 默认使用用户级 scope，Codex 使用用户级 `config.toml`。
+
+也可以显式选择：
+
+```powershell
+# 只注册 Claude Code
+.\scripts\install.ps1 -RegisterClient Claude -ClaudeScope user
+
+# 只注册 Codex
+.\scripts\install.ps1 -RegisterClient Codex
+
+# 两者都必须存在并注册
+.\scripts\install.ps1 -RegisterClient All
+
+# 只安装，不修改任何客户端配置
+.\scripts\install.ps1 -RegisterClient None
+```
+
 开发构建要求：
 
 - Node.js 20+
@@ -62,6 +81,33 @@ cd Helix
 - Windows：`%APPDATA%\Helix\ssh-mcp.json`
 
 可使用 `HELIX_SSH_CONFIG`、`HELIX_CREDENTIAL_BROKER` 覆盖路径。
+
+## MCP 客户端注册
+
+安装完成后可以单独注册：
+
+```powershell
+# 自动注册所有检测到的客户端
+.\scripts\register-mcp.ps1 -Client Auto
+
+# Claude Code：user / local / project
+.\scripts\register-mcp.ps1 -Client Claude -ClaudeScope user
+
+# Codex 用户级配置
+.\scripts\register-mcp.ps1 -Client Codex
+```
+
+脚本执行前会备份现有配置文件，然后删除同名旧条目并重新注册，因此可重复执行。注册完成后重启 Claude Code 或 Codex，通过 `/mcp` 或 MCP 列表检查连接。
+
+注销：
+
+```powershell
+.\scripts\unregister-mcp.ps1 -Client Auto
+.\scripts\unregister-mcp.ps1 -Client Claude -ClaudeScope user
+.\scripts\unregister-mcp.ps1 -Client Codex
+```
+
+Claude Code 的 `project` scope 会修改当前目录的 `.mcp.json`；`local` 和 `user` scope 由 Claude Code CLI 管理在用户配置中。Codex 当前通过官方 CLI 注册到用户级配置。
 
 ## Windows 密码凭据
 
@@ -92,7 +138,7 @@ $Broker = ".\apps\credential-broker\target\release\helix-credential-broker.exe"
 
 ## sudo 人工审核
 
-1. AI 调用 `sudo_request`，Helix校验主机级锚定正则 allowlist。
+1. AI 调用 `sudo_request`，Helix 校验主机级锚定正则 allowlist。
 2. 工具返回一个本地 `approvalCommand`。
 3. 用户在独立终端运行该命令，核对主机、完整命令和理由，输入大写 `APPROVE`。
 4. AI 调用 `sudo_execute`。
@@ -117,7 +163,9 @@ cargo build --release --manifest-path apps/credential-broker/Cargo.toml
 node apps/ssh-mcp/build/index.js
 ```
 
-## MCP 客户端配置
+## MCP 客户端手工配置
+
+自动注册不可用时，可以手工使用：
 
 ```json
 {
