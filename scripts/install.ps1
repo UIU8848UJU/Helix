@@ -6,7 +6,7 @@ $ConfigFile = if ($env:HELIX_SSH_CONFIG) { $env:HELIX_SSH_CONFIG } else { Join-P
 
 function Require-Command([string]$Name) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
-        throw "缺少依赖: $Name"
+        throw "Missing dependency: $Name"
     }
 }
 
@@ -18,43 +18,43 @@ Require-Command cargo
 
 $NodeMajor = [int]((& node -p "Number(process.versions.node.split('.')[0])").Trim())
 if ($NodeMajor -lt 20) {
-    throw "需要 Node.js 20+，当前版本: $(& node --version)"
+    throw "Node.js 20 or newer is required. Current version: $(& node --version)"
 }
 
 Push-Location $RootDir
 try {
     & npm install
-    if ($LASTEXITCODE -ne 0) { throw "npm install 失败" }
+    if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
 
     & npm run check
-    if ($LASTEXITCODE -ne 0) { throw "TypeScript 类型检查失败" }
+    if ($LASTEXITCODE -ne 0) { throw "TypeScript type check failed" }
 
     & npm test
-    if ($LASTEXITCODE -ne 0) { throw "TypeScript 单元测试失败" }
+    if ($LASTEXITCODE -ne 0) { throw "TypeScript tests failed" }
 
     & npm run build
-    if ($LASTEXITCODE -ne 0) { throw "npm run build 失败" }
+    if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
 
     & cargo test --release --manifest-path "apps/credential-broker/Cargo.toml"
-    if ($LASTEXITCODE -ne 0) { throw "Rust Broker 单元测试失败" }
+    if ($LASTEXITCODE -ne 0) { throw "Rust broker tests failed" }
 
     & cargo build --release --manifest-path "apps/credential-broker/Cargo.toml"
-    if ($LASTEXITCODE -ne 0) { throw "Rust Broker 构建失败" }
+    if ($LASTEXITCODE -ne 0) { throw "Rust broker build failed" }
 } finally {
     Pop-Location
 }
 
 $Broker = Join-Path $RootDir "apps\credential-broker\target\release\helix-credential-broker.exe"
 if (-not (Test-Path $Broker)) {
-    throw "未找到 Rust Broker: $Broker"
+    throw "Rust broker was not found: $Broker"
 }
 
 New-Item -ItemType Directory -Force -Path (Split-Path $ConfigFile -Parent) | Out-Null
 if (-not (Test-Path $ConfigFile)) {
     Copy-Item (Join-Path $RootDir "examples\ssh-mcp.config.json") $ConfigFile
-    Write-Host "已创建配置: $ConfigFile"
+    Write-Host "Created config: $ConfigFile"
 } else {
-    Write-Host "保留现有配置: $ConfigFile"
+    Write-Host "Keeping existing config: $ConfigFile"
 }
 
 $Config = Get-Content $ConfigFile -Raw | ConvertFrom-Json
@@ -72,15 +72,15 @@ $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 $Entry = Join-Path $RootDir "apps\ssh-mcp\build\index.js"
 Write-Host ""
-Write-Host "Helix SSH MCP 安装完成。"
-Write-Host "入口: $Entry"
+Write-Host "Helix SSH MCP installation completed."
+Write-Host "Entry:  $Entry"
 Write-Host "Broker: $Broker"
-Write-Host "配置: $ConfigFile"
+Write-Host "Config: $ConfigFile"
 Write-Host ""
-Write-Host "录入密码示例（密码通过隐藏输入读取）:"
+Write-Host "Credential storage example (password input is hidden):"
 Write-Host "& `"$Broker`" credential-store --target `"Helix/ssh/build-password/login`" --username `"developer`""
 Write-Host ""
-Write-Host "MCP 客户端配置片段:"
+Write-Host "MCP client configuration:"
 @"
 {
   "mcpServers": {
