@@ -58,7 +58,8 @@ if (-not (Test-Path $Broker)) {
     throw "Rust broker was not found: $Broker"
 }
 
-New-Item -ItemType Directory -Force -Path (Split-Path $ConfigFile -Parent) | Out-Null
+$RuntimeDir = Split-Path $ConfigFile -Parent
+New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
 if (-not (Test-Path $ConfigFile)) {
     Copy-Item (Join-Path $RootDir "examples\ssh-mcp.config.json") $ConfigFile
     Write-Host "Created config: $ConfigFile"
@@ -79,12 +80,24 @@ $Json = $Config | ConvertTo-Json -Depth 20
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($ConfigFile, $Json + [Environment]::NewLine, $Utf8NoBom)
 
+$GuideSource = Join-Path $RootDir "docs\guides\HELIX_AI_GUIDE.md"
+$GuideFile = Join-Path $RuntimeDir "HELIX_AI_GUIDE.md"
+Copy-Item -LiteralPath $GuideSource -Destination $GuideFile -Force
+
+$SkillSource = Join-Path $RootDir "skills\helix-remote-operations\SKILL.md"
+$SkillDir = Join-Path $RuntimeDir "skills\helix-remote-operations"
+$SkillFile = Join-Path $SkillDir "SKILL.md"
+New-Item -ItemType Directory -Force -Path $SkillDir | Out-Null
+Copy-Item -LiteralPath $SkillSource -Destination $SkillFile -Force
+
 $Entry = Join-Path $RootDir "apps\ssh-mcp\build\index.js"
 Write-Host ""
 Write-Host "Helix SSH MCP installation completed."
 Write-Host "Entry:  $Entry"
 Write-Host "Broker: $Broker"
 Write-Host "Config: $ConfigFile"
+Write-Host "AI guide: $GuideFile"
+Write-Host "Skill:    $SkillFile"
 Write-Host ""
 Write-Host "Credential storage example (password input is hidden):"
 Write-Host "& `"$Broker`" credential-store --target `"Helix/ssh/build-password/login`" --username `"developer`""
@@ -98,7 +111,8 @@ Write-Host "MCP client configuration:"
       "args": ["$($Entry.Replace('\', '\\'))"],
       "env": {
         "HELIX_SSH_CONFIG": "$($ConfigFile.Replace('\', '\\'))",
-        "HELIX_CREDENTIAL_BROKER": "$($Broker.Replace('\', '\\'))"
+        "HELIX_CREDENTIAL_BROKER": "$($Broker.Replace('\', '\\'))",
+        "HELIX_AI_GUIDE": "$($GuideFile.Replace('\', '\\'))"
       }
     }
   }
