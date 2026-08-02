@@ -7,6 +7,7 @@ $LogFile = Join-Path $TempRoot "cli.log"
 $Entry = Join-Path $TempRoot "index.js"
 $Broker = Join-Path $TempRoot "helix-credential-broker.exe"
 $Config = Join-Path $TempRoot "ssh-mcp.json"
+$Guide = Join-Path $TempRoot "HELIX_AI_GUIDE.md"
 $OldPath = $env:PATH
 $OldHome = $env:HOME
 $OldUserProfile = $env:USERPROFILE
@@ -14,7 +15,7 @@ $OldLog = $env:HELIX_TEST_LOG
 
 try {
     New-Item -ItemType Directory -Force -Path $FakeBin | Out-Null
-    New-Item -ItemType File -Force -Path $Entry, $Broker | Out-Null
+    New-Item -ItemType File -Force -Path $Entry, $Broker, $Guide | Out-Null
     Set-Content -LiteralPath $Config -Value '{"version":1,"settings":{},"hosts":{}}' -Encoding utf8
 
     @'
@@ -39,7 +40,8 @@ exit /b 0
         -ClaudeScope user `
         -ConfigPath $Config `
         -EntryPath $Entry `
-        -BrokerPath $Broker
+        -BrokerPath $Broker `
+        -GuidePath $Guide
 
     & (Join-Path $RootDir "scripts\unregister-mcp.ps1") `
         -Client All `
@@ -48,7 +50,10 @@ exit /b 0
     $Log = Get-Content -LiteralPath $LogFile -Raw
     $Expected = @(
         'claude mcp remove --scope user helix-ssh',
-        'claude mcp add-json --scope user helix-ssh',
+        'claude mcp add helix-ssh --scope user',
+        '--env HELIX_SSH_CONFIG=',
+        '--env HELIX_CREDENTIAL_BROKER=',
+        '--env HELIX_AI_GUIDE=',
         'claude mcp get helix-ssh',
         'codex mcp remove helix-ssh',
         'codex mcp add helix-ssh --env HELIX_SSH_CONFIG=',
@@ -57,7 +62,7 @@ exit /b 0
 
     foreach ($Pattern in $Expected) {
         if (-not $Log.Contains($Pattern)) {
-            throw "注册脚本测试失败，缺少命令片段: $Pattern`n实际日志:`n$Log"
+            throw "Registration script smoke test failed. Missing command fragment: $Pattern`nActual log:`n$Log"
         }
     }
 
