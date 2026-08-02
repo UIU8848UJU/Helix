@@ -130,17 +130,6 @@ switch ($Client) {
     }
 }
 
-$ServerConfig = [ordered]@{
-    type = "stdio"
-    command = $Node.Source
-    args = @($EntryPath)
-    env = [ordered]@{
-        HELIX_SSH_CONFIG = $ConfigPath
-        HELIX_CREDENTIAL_BROKER = $BrokerPath
-    }
-}
-$ServerJson = $ServerConfig | ConvertTo-Json -Depth 10 -Compress
-
 if ($Targets -contains "Claude") {
     $ClaudeConfigPath = if ($ClaudeScope -eq "project") {
         Join-Path (Get-Location).Path ".mcp.json"
@@ -150,7 +139,13 @@ if ($Targets -contains "Claude") {
     Backup-File $ClaudeConfigPath
 
     Invoke-External $Claude.Source @("mcp", "remove", "--scope", $ClaudeScope, $Name) -IgnoreExitCode
-    Invoke-External $Claude.Source @("mcp", "add-json", "--scope", $ClaudeScope, $Name, $ServerJson)
+    Invoke-External $Claude.Source @(
+        "mcp", "add", $Name,
+        "--scope", $ClaudeScope,
+        "--env", "HELIX_SSH_CONFIG=$ConfigPath",
+        "--env", "HELIX_CREDENTIAL_BROKER=$BrokerPath",
+        "--", $Node.Source, $EntryPath
+    )
     Invoke-External $Claude.Source @("mcp", "get", $Name)
     Write-Host "Claude Code registration completed: $Name, scope=$ClaudeScope"
 }
