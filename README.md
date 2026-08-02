@@ -8,8 +8,10 @@ Helix 是面向 AI Agent 的基础设施（AI Infra）仓库。首个模块是�
 apps/ssh-mcp/                 TypeScript MCP 控制层
 apps/credential-broker/       Rust Windows 凭据与密码 SSH 执行器
 docs/architecture/            技术设计
-examples/                      配置示例
-scripts/                       安装、注册和卸载脚本
+docs/guides/                  人工与 AI 操作指南
+skills/                       Helix 复杂工作流 Skill
+examples/                     配置示例
+scripts/                      安装、注册和卸载脚本
 ```
 
 网页抓取和浏览器自动化不会与 SSH MCP 放在同一个进程中。后续 Web Research MCP 将独立部署，避免不可信网页内容直接获得远程执行权限。
@@ -25,8 +27,29 @@ scripts/                       安装、注册和卸载脚本
 - `reviewed-nopasswd` 与 `reviewed-password` 两种 sudo 模式
 - Docker 容器列表、容器内执行、Docker Compose 执行
 - OS、架构、工具链、容器和环境脚本探测
+- MCP 初始化 instructions、强化工具描述和 `helix_help` 自描述工具
+- 本地 `HELIX_AI_GUIDE.md` 与 `helix-remote-operations` Skill
 - 超时、输出上限、并发控制和 JSONL 审计
 - Claude Code / Codex CLI 自动注册与安全注销
+
+## AI 操作引导的四层结构
+
+Helix 不依赖 AI 自己猜测工具流程，而是提供四层一致的引导：
+
+1. **MCP instructions 与工具描述**：客户端连接时获得跨工具约束；普通执行工具明确禁止嵌入 sudo，配置工具明确只用于管理员任务。
+2. **`helix_help`**：AI 可按 `overview`、`connect`、`exec`、`sudo`、`transfer`、`docker`、`configuration`、`troubleshooting` 查询权威流程。
+3. **本地指南**：安装时复制到 `%APPDATA%\Helix\HELIX_AI_GUIDE.md` 或 `~/.config/helix/HELIX_AI_GUIDE.md`，供人工阅读、离线检查和审计。
+4. **Skill**：`skills/helix-remote-operations/SKILL.md` 编排环境探测、文件传输、Docker、source、编译、诊断和 reviewed sudo 等复杂任务。
+
+核心规则：
+
+- 正常操作和排障时不得自动修改 `ssh-mcp.json`；
+- alias、hostname、username 是三个不同字段；
+- 不得要求或泄露明文密码；
+- `ssh_exec`、`docker_exec`、`compose_exec` 不得嵌入 sudo；
+- `sudo_request` 返回后必须展示 `approvalCommand` 并停止；
+- 只有用户明确确认本地审批完成后，才能用完全相同的 host、requestId、command 调用 `sudo_execute`；
+- allowlist 或路径策略拒绝时只报告边界，不得通过改配置或改写命令绕过。
 
 ## 安装
 
@@ -72,15 +95,23 @@ cd Helix
 - npm
 - OpenSSH Client（密钥后端）
 - Rust 1.85+（构建 Credential Broker）
+- Windows vendored OpenSSL 首次编译需要 Perl
 
-内网正式运行只需要编译后的 JavaScript、Node.js、Broker EXE，以及所选后端需要的系统组件；不要求安装 TypeScript 或 Rust。
+内网正式运行只需要编译后的 JavaScript、Node.js、Broker EXE，以及所选后端需要的系统组件；不要求安装 TypeScript、Rust 或 Perl。
 
 默认配置：
 
 - Linux/macOS：`~/.config/helix/ssh-mcp.json`
 - Windows：`%APPDATA%\Helix\ssh-mcp.json`
 
-可使用 `HELIX_SSH_CONFIG`、`HELIX_CREDENTIAL_BROKER` 覆盖路径。
+本地指南和 Skill 默认安装在配置文件同级目录：
+
+```text
+HELIX_AI_GUIDE.md
+skills/helix-remote-operations/SKILL.md
+```
+
+可使用 `HELIX_SSH_CONFIG`、`HELIX_CREDENTIAL_BROKER`、`HELIX_AI_GUIDE` 覆盖路径。
 
 ## MCP 客户端注册
 
@@ -97,7 +128,7 @@ cd Helix
 .\scripts\register-mcp.ps1 -Client Codex
 ```
 
-脚本执行前会备份现有配置文件，然后删除同名旧条目并重新注册，因此可重复执行。注册完成后重启 Claude Code 或 Codex，通过 `/mcp` 或 MCP 列表检查连接。
+脚本执行前会备份现有配置文件，然后删除同名旧条目并重新注册，因此可重复执行。注册时会同时传入 `HELIX_AI_GUIDE`。注册完成后重启 Claude Code 或 Codex，通过 `/mcp` 或 MCP 列表检查连接。
 
 注销：
 
@@ -140,9 +171,10 @@ $Broker = ".\apps\credential-broker\target\release\helix-credential-broker.exe"
 
 1. AI 调用 `sudo_request`，Helix 校验主机级锚定正则 allowlist。
 2. 工具返回一个本地 `approvalCommand`。
-3. 用户在独立终端运行该命令，核对主机、完整命令和理由，输入大写 `APPROVE`。
-4. AI 调用 `sudo_execute`。
-5. 一次性批准 token 与主机和完整命令哈希绑定，消费后立即删除。
+3. AI 必须把审批命令和完整 sudo 命令展示给用户，然后停止。
+4. 用户在独立终端运行该命令，核对主机、完整命令和理由，输入大写 `APPROVE`。
+5. 用户明确确认已经审批后，AI 才调用 `sudo_execute`。
+6. 一次性批准 token 与主机和完整命令哈希绑定，消费后立即删除。
 
 密码 sudo 的密码只由 Rust Broker 从 Credential Manager 读取并写入 SSH Channel stdin，不进入 MCP、命令行参数、环境变量或日志。
 
@@ -163,6 +195,12 @@ cargo build --release --manifest-path apps/credential-broker/Cargo.toml
 node apps/ssh-mcp/build/index.js
 ```
 
+AI 不确定操作流程时应调用：
+
+```text
+helix_help({ "topic": "sudo" })
+```
+
 ## MCP 客户端手工配置
 
 自动注册不可用时，可以手工使用：
@@ -175,7 +213,8 @@ node apps/ssh-mcp/build/index.js
       "args": ["/absolute/path/to/Helix/apps/ssh-mcp/build/index.js"],
       "env": {
         "HELIX_SSH_CONFIG": "/absolute/path/to/ssh-mcp.json",
-        "HELIX_CREDENTIAL_BROKER": "C:\\Tools\\Helix\\helix-credential-broker.exe"
+        "HELIX_CREDENTIAL_BROKER": "C:\\Tools\\Helix\\helix-credential-broker.exe",
+        "HELIX_AI_GUIDE": "C:\\Users\\user\\AppData\\Roaming\\Helix\\HELIX_AI_GUIDE.md"
       }
     }
   }
@@ -192,7 +231,11 @@ export HELIX_ALLOW_HOST_MUTATION=1
 
 或在配置中设置 `settings.allowHostMutation=true`。
 
-完整设计见：
+即使开启主机写操作，AI 也只能在用户明确要求配置变更时使用；不得把修改配置作为普通连接、权限或路径问题的自动解决方案。
+
+完整设计和操作说明见：
 
 - [SSH MCP v1 技术设计](docs/architecture/ssh-mcp-v1.md)
 - [Windows Credential Broker](docs/architecture/windows-credential-broker.md)
+- [Helix AI Operations Guide](docs/guides/HELIX_AI_GUIDE.md)
+- [Helix Remote Operations Skill](skills/helix-remote-operations/SKILL.md)
