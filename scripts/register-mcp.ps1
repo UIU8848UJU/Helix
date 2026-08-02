@@ -31,7 +31,7 @@ function Backup-File([string]$PathValue) {
     $Timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
     $BackupPath = "$PathValue.helix-backup-$Timestamp"
     Copy-Item -LiteralPath $PathValue -Destination $BackupPath -Force
-    Write-Host "已备份配置: $BackupPath"
+    Write-Host "Backed up config: $BackupPath"
 }
 
 function Format-Argument([string]$Value) {
@@ -55,12 +55,12 @@ function Invoke-External(
     & $FilePath @Arguments | Out-Host
     $ExitCode = $LASTEXITCODE
     if ($ExitCode -ne 0 -and -not $IgnoreExitCode) {
-        throw "命令执行失败，退出码 $ExitCode：$FilePath $Display"
+        throw "Command failed with exit code ${ExitCode}: $FilePath $Display"
     }
 }
 
 if ($Name -notmatch '^[A-Za-z0-9._-]+$') {
-    throw "MCP 名称只能包含字母、数字、点、下划线和短横线"
+    throw "MCP name may only contain letters, digits, dot, underscore, and dash"
 }
 
 if (-not $ConfigPath) {
@@ -93,7 +93,7 @@ $BrokerPath = Resolve-FullPath $BrokerPath
 
 foreach ($RequiredPath in @($ConfigPath, $EntryPath, $BrokerPath)) {
     if (-not (Test-Path -LiteralPath $RequiredPath)) {
-        throw "缺少 Helix 运行文件: $RequiredPath。请先执行 scripts\install.ps1"
+        throw "Missing Helix runtime file: $RequiredPath. Run scripts\install.ps1 first"
     }
 }
 
@@ -104,23 +104,23 @@ $Targets = @()
 
 switch ($Client) {
     "Claude" {
-        if (-not $Claude) { throw "未找到 Claude Code CLI：claude" }
+        if (-not $Claude) { throw "Claude Code CLI was not found: claude" }
         $Targets += "Claude"
     }
     "Codex" {
-        if (-not $Codex) { throw "未找到 Codex CLI：codex" }
+        if (-not $Codex) { throw "Codex CLI was not found: codex" }
         $Targets += "Codex"
     }
     "All" {
-        if (-not $Claude) { throw "未找到 Claude Code CLI：claude" }
-        if (-not $Codex) { throw "未找到 Codex CLI：codex" }
+        if (-not $Claude) { throw "Claude Code CLI was not found: claude" }
+        if (-not $Codex) { throw "Codex CLI was not found: codex" }
         $Targets += @("Claude", "Codex")
     }
     "Auto" {
         if ($Claude) { $Targets += "Claude" }
         if ($Codex) { $Targets += "Codex" }
         if ($Targets.Count -eq 0) {
-            $Message = "未检测到 Claude Code 或 Codex CLI，跳过 MCP 注册"
+            $Message = "Claude Code and Codex CLI were not detected; MCP registration was skipped"
             if ($SkipIfUnavailable) {
                 Write-Warning $Message
                 return
@@ -152,7 +152,7 @@ if ($Targets -contains "Claude") {
     Invoke-External $Claude.Source @("mcp", "remove", "--scope", $ClaudeScope, $Name) -IgnoreExitCode
     Invoke-External $Claude.Source @("mcp", "add-json", "--scope", $ClaudeScope, $Name, $ServerJson)
     Invoke-External $Claude.Source @("mcp", "get", $Name)
-    Write-Host "Claude Code 注册完成：$Name，scope=$ClaudeScope"
+    Write-Host "Claude Code registration completed: $Name, scope=$ClaudeScope"
 }
 
 if ($Targets -contains "Codex") {
@@ -167,8 +167,8 @@ if ($Targets -contains "Codex") {
         "--", $Node.Source, $EntryPath
     )
     Invoke-External $Codex.Source @("mcp", "get", $Name)
-    Write-Host "Codex 注册完成：$Name（用户级配置）"
+    Write-Host "Codex registration completed: $Name (user-level config)"
 }
 
 Write-Host ""
-Write-Host "请重启对应客户端，并使用 /mcp 或 MCP 列表确认 helix-ssh 已连接。"
+Write-Host "Restart the selected client and verify helix-ssh using /mcp or the MCP list."
