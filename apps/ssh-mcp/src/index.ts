@@ -2,6 +2,7 @@
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ConfigStore } from "./config.js";
+import { registerGuidance } from "./guidance.js";
 import { createServer } from "./server.js";
 
 async function main(): Promise<void> {
@@ -9,6 +10,8 @@ async function main(): Promise<void> {
   await store.read();
 
   const server = createServer(store);
+  registerGuidance(server);
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(`Helix SSH MCP running on stdio; config=${store.filePath}`);
