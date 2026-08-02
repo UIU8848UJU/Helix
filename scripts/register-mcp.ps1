@@ -10,6 +10,7 @@ param(
     [string]$ConfigPath,
     [string]$EntryPath,
     [string]$BrokerPath,
+    [string]$GuidePath,
     [switch]$SkipIfUnavailable,
     [switch]$DryRun
 )
@@ -91,7 +92,23 @@ if (-not $BrokerPath) {
 }
 $BrokerPath = Resolve-FullPath $BrokerPath
 
-foreach ($RequiredPath in @($ConfigPath, $EntryPath, $BrokerPath)) {
+if (-not $GuidePath) {
+    if ($env:HELIX_AI_GUIDE) {
+        $GuidePath = $env:HELIX_AI_GUIDE
+    } else {
+        $GuidePath = Join-Path (Split-Path $ConfigPath -Parent) "HELIX_AI_GUIDE.md"
+    }
+}
+$GuidePath = Resolve-FullPath $GuidePath
+
+if (-not (Test-Path -LiteralPath $GuidePath)) {
+    $GuideSource = Join-Path $RootDir "docs\guides\HELIX_AI_GUIDE.md"
+    New-Item -ItemType Directory -Force -Path (Split-Path $GuidePath -Parent) | Out-Null
+    Copy-Item -LiteralPath $GuideSource -Destination $GuidePath -Force
+    Write-Host "Installed AI guide: $GuidePath"
+}
+
+foreach ($RequiredPath in @($ConfigPath, $EntryPath, $BrokerPath, $GuidePath)) {
     if (-not (Test-Path -LiteralPath $RequiredPath)) {
         throw "Missing Helix runtime file: $RequiredPath. Run scripts\install.ps1 first"
     }
@@ -144,6 +161,7 @@ if ($Targets -contains "Claude") {
         "--scope", $ClaudeScope,
         "--env", "HELIX_SSH_CONFIG=$ConfigPath",
         "--env", "HELIX_CREDENTIAL_BROKER=$BrokerPath",
+        "--env", "HELIX_AI_GUIDE=$GuidePath",
         "--", $Node.Source, $EntryPath
     )
     Invoke-External $Claude.Source @("mcp", "get", $Name)
@@ -159,6 +177,7 @@ if ($Targets -contains "Codex") {
         "mcp", "add", $Name,
         "--env", "HELIX_SSH_CONFIG=$ConfigPath",
         "--env", "HELIX_CREDENTIAL_BROKER=$BrokerPath",
+        "--env", "HELIX_AI_GUIDE=$GuidePath",
         "--", $Node.Source, $EntryPath
     )
     Invoke-External $Codex.Source @("mcp", "get", $Name)
