@@ -8,6 +8,7 @@ $Entry = Join-Path $TempRoot "index.js"
 $Broker = Join-Path $TempRoot "helix-credential-broker.exe"
 $Config = Join-Path $TempRoot "ssh-mcp.json"
 $Guide = Join-Path $TempRoot "HELIX_AI_GUIDE.md"
+$Admin = Join-Path $TempRoot "helix-admin.ps1"
 $OldPath = $env:PATH
 $OldHome = $env:HOME
 $OldUserProfile = $env:USERPROFILE
@@ -15,7 +16,7 @@ $OldLog = $env:HELIX_TEST_LOG
 
 try {
     New-Item -ItemType Directory -Force -Path $FakeBin | Out-Null
-    New-Item -ItemType File -Force -Path $Entry, $Broker, $Guide | Out-Null
+    New-Item -ItemType File -Force -Path $Entry, $Broker, $Guide, $Admin | Out-Null
     Set-Content -LiteralPath $Config -Value '{"version":1,"settings":{},"hosts":{}}' -Encoding utf8
 
     @'
@@ -41,7 +42,8 @@ exit /b 0
         -ConfigPath $Config `
         -EntryPath $Entry `
         -BrokerPath $Broker `
-        -GuidePath $Guide
+        -GuidePath $Guide `
+        -AdminScriptPath $Admin
 
     & (Join-Path $RootDir "scripts\unregister-mcp.ps1") `
         -Client All `
@@ -54,6 +56,7 @@ exit /b 0
         '--env HELIX_SSH_CONFIG=',
         '--env HELIX_CREDENTIAL_BROKER=',
         '--env HELIX_AI_GUIDE=',
+        '--env HELIX_ADMIN_SCRIPT=',
         'claude mcp get helix-ssh',
         'codex mcp remove helix-ssh',
         'codex mcp add helix-ssh --env HELIX_SSH_CONFIG=',
