@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 use protocol::{BrokerRequest, BrokerResponse};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashSet,
     io::{self, Read},
     path::PathBuf,
 };
@@ -31,6 +32,12 @@ enum Command {
         target: String,
         #[arg(long)]
         username: String,
+    },
+    CredentialEnroll {
+        #[arg(long)]
+        username: String,
+        #[arg(long = "target", required = true)]
+        targets: Vec<String>,
     },
     CredentialDelete {
         #[arg(long)]
@@ -56,6 +63,24 @@ fn require_hash(command: &str, expected: &str) -> Result<()> {
         return Err(anyhow!("command hash mismatch"));
     }
     Ok(())
+}
+
+fn normalize_targets(targets: Vec<String>) -> Result<Vec<String>> {
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::new();
+    for target in targets {
+        let trimmed = target.trim();
+        if trimmed.is_empty() {
+            return Err(anyhow!("credential target must not be empty"));
+        }
+        if seen.insert(trimmed.to_owned()) {
+            normalized.push(trimmed.to_owned());
+        }
+    }
+    if normalized.is_empty() {
+        return Err(anyhow!("at least one credential target is required"));
+    }
+    Ok(normalized)
 }
 
 fn handle(request: BrokerRequest) -> Result<BrokerResponse> {
@@ -215,6 +240,15 @@ fn main() -> Result<()> {
             eprintln!("Stored credential: {target}");
             Ok(())
         }
+        Command::CredentialEnroll { username, targets } => {
+            let targets = normalize_targets(targets)?;
+            let password = zeroize::Zeroizing::new(rpassword::prompt_password("Password: ")?);
+            for target in &targets {
+                credential::write(target, &username, password.as_str())?;
+            }
+            eprintln!("Stored {} credential target(s)", targets.len());
+            Ok(())
+        }
         Command::CredentialDelete { target } => credential::delete(&target),
         Command::CredentialExists { target } => {
             println!("{}", credential::exists(&target));
@@ -238,5 +272,21 @@ mod tests {
     fn ping_protocol_round_trip() {
         let request: BrokerRequest = serde_json::from_str(r#"{"op":"ping"}"#).unwrap();
         assert!(matches!(request, BrokerRequest::Ping));
+    }
+
+    #[test]
+    fn credential_enroll_targets_are_trimmed_and_deduplicated() {
+        let targets = normalize_targets(vec![
+            " Helix/ssh/test/login ".to_string(),
+            "Helix/ssh/test/login".to_string(),
+            "Helix/ssh/test/sudo".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(targets, vec!["Helix/ssh/test/login", "Helix/ssh/test/sudo"]);
+    }
+
+    #[test]
+    fn credential_enroll_rejects_empty_targets() {
+        assert!(normalize_targets(vec![" ".to_string()]).is_err());
     }
 }
