@@ -90,6 +90,10 @@ $SkillFile = Join-Path $SkillDir "SKILL.md"
 New-Item -ItemType Directory -Force -Path $SkillDir | Out-Null
 Copy-Item -LiteralPath $SkillSource -Destination $SkillFile -Force
 
+$AdminSource = Join-Path $RootDir "scripts\helix-admin.ps1"
+$AdminFile = Join-Path $RuntimeDir "helix-admin.ps1"
+Copy-Item -LiteralPath $AdminSource -Destination $AdminFile -Force
+
 $Entry = Join-Path $RootDir "apps\ssh-mcp\build\index.js"
 Write-Host ""
 Write-Host "Helix SSH MCP installation completed."
@@ -98,9 +102,10 @@ Write-Host "Broker: $Broker"
 Write-Host "Config: $ConfigFile"
 Write-Host "AI guide: $GuideFile"
 Write-Host "Skill:    $SkillFile"
+Write-Host "Admin:    $AdminFile"
 Write-Host ""
-Write-Host "Credential storage example (password input is hidden):"
-Write-Host "& `"$Broker`" credential-store --target `"Helix/ssh/build-password/login`" --username `"developer`""
+Write-Host "Credential enrollment example (one hidden password prompt for login and sudo):"
+Write-Host "& `"$AdminFile`" credential set -Host `"build-password`" -Kind all"
 Write-Host ""
 Write-Host "MCP client configuration:"
 @"
@@ -112,7 +117,8 @@ Write-Host "MCP client configuration:"
       "env": {
         "HELIX_SSH_CONFIG": "$($ConfigFile.Replace('\', '\\'))",
         "HELIX_CREDENTIAL_BROKER": "$($Broker.Replace('\', '\\'))",
-        "HELIX_AI_GUIDE": "$($GuideFile.Replace('\', '\\'))"
+        "HELIX_AI_GUIDE": "$($GuideFile.Replace('\', '\\'))",
+        "HELIX_ADMIN_SCRIPT": "$($AdminFile.Replace('\', '\\'))"
       }
     }
   }
@@ -129,6 +135,7 @@ if ($RegisterClient -ne "None") {
             -ConfigPath $ConfigFile `
             -EntryPath $Entry `
             -BrokerPath $Broker `
+            -AdminScriptPath $AdminFile `
             -SkipIfUnavailable
     } catch {
         Write-Warning "Helix was installed, but MCP client registration failed: $($_.Exception.Message)"
