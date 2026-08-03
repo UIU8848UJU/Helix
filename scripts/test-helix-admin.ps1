@@ -52,13 +52,21 @@ exit /b 0
     $Config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $ConfigPath -Encoding utf8
 
     $HostJson = & $ScriptPath host get -Host test -ConfigPath $ConfigPath | Out-String
-    if ($LASTEXITCODE -ne 0 -or -not $HostJson.Contains('"username":  "developer"')) {
-        throw "Host query smoke test failed: $HostJson"
+    if (-not $?) {
+        throw "Host query command failed: $HostJson"
+    }
+    $HostResult = $HostJson | ConvertFrom-Json
+    if ($HostResult.username -ne "developer" -or $HostResult.hostname -ne "127.0.0.1") {
+        throw "Host query smoke test returned unexpected data: $HostJson"
     }
 
     $StatusJson = & $ScriptPath credential status -Host test -Kind all -ConfigPath $ConfigPath | Out-String
-    if ($LASTEXITCODE -ne 0 -or -not $StatusJson.Contains('"exists":  true')) {
-        throw "Credential status smoke test failed: $StatusJson"
+    if (-not $?) {
+        throw "Credential status command failed: $StatusJson"
+    }
+    $StatusResult = @($StatusJson | ConvertFrom-Json)
+    if ($StatusResult.Count -ne 2 -or @($StatusResult | Where-Object { -not $_.exists }).Count -ne 0) {
+        throw "Credential status smoke test returned unexpected data: $StatusJson"
     }
 
     Write-Host "Helix admin script smoke test passed."
