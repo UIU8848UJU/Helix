@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { registerAdminTools } from "./admin.js";
 import { ConfigStore } from "./config.js";
 import { registerGuidance } from "./guidance.js";
 import { createServer } from "./server.js";
@@ -10,6 +11,7 @@ async function main(): Promise<void> {
   await store.read();
 
   const server = createServer(store);
+  registerAdminTools(server, store);
   registerGuidance(server);
 
   const transport = new StdioServerTransport();
