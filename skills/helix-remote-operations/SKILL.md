@@ -1,6 +1,6 @@
 ---
 name: helix-remote-operations
-description: Use Helix SSH MCP to inspect remote hosts, transfer files, enter Docker or Compose services, source environments, build software, diagnose failures, and request reviewed sudo without exposing credentials or weakening policy.
+description: Use Helix SSH MCP to inspect remote hosts, onboard or offboard hosts, enroll credentials locally, transfer files, enter Docker or Compose services, source environments, build software, diagnose failures, and request reviewed sudo without exposing credentials or weakening policy.
 ---
 
 # Helix Remote Operations
@@ -18,6 +18,7 @@ Use this skill when a task requires controlled work on a configured remote machi
 - Reuse the exact approved host, requestId, and command. Do not broaden or rewrite the command.
 - Do not bypass host-key checks, path allowlists, sudo allowlists, timeouts, or output limits.
 - Use host mutation tools only for an explicit administrative configuration request.
+- Never run a local credential enrollment or deletion command on behalf of the user; display it and stop.
 
 ## First Actions
 
@@ -27,6 +28,39 @@ Use this skill when a task requires controlled work on a configured remote machi
 4. For password-backed hosts, call `credential_status`.
 5. Call `ssh_check` before changing assumptions or proposing configuration edits.
 6. Call `environment_probe` before working in an unfamiliar environment.
+
+## Workflow: Host Onboarding
+
+Enter this workflow only after the user explicitly asks to add a host.
+
+1. Confirm alias, hostname, SSH username, port, authentication type, allowed remote paths, and sudo mode.
+2. Call `host_onboard`; do not manually edit JSON.
+3. For Windows Credential Manager authentication, call `credential_enroll_request`.
+4. Show the returned `enrollmentCommand` and selected credential references.
+5. Stop. Password input must happen in the user's local hidden Broker terminal.
+6. After the user confirms completion, call `credential_status`.
+7. Call `ssh_check`.
+8. Report alias, `username@hostname`, authentication mode, credential existence, and connectivity.
+
+By default, enrollment prompts once and stores the same password for all selected login/sudo targets. Use `separatePasswords=true` only when the user says the login and sudo passwords differ.
+
+## Workflow: Host Offboarding
+
+1. Confirm the exact alias and that the user intends to remove its non-secret configuration.
+2. Call `host_offboard`.
+3. Report `orphanedCredentials` and `credentialsDeleted=false`.
+4. If `cleanupCommand` is returned, ask whether the user wants to remove those credentials.
+5. Do not infer credential deletion permission from host removal permission.
+6. If approved, show the local cleanup command and stop; the user runs it locally.
+
+## Workflow: Credential Maintenance
+
+- Query existence with `credential_status`.
+- Create or update credentials with `credential_enroll_request`.
+- Request deletion with `credential_delete_request`.
+- Never request the password in chat.
+- Never place passwords in config, command arguments, environment variables, or logs.
+- After enrollment, verify with `credential_status` and `ssh_check`.
 
 ## Workflow: Ordinary Remote Command
 
@@ -134,16 +168,19 @@ Before using host mutation tools, state:
 - whether it expands access or privilege;
 - how it will be validated.
 
+Prefer `host_onboard` and `host_offboard` for lifecycle operations. Use lower-level `host_add`, `host_update`, or `host_remove` only when the high-level tools cannot express the explicit administrative change.
+
 Never store plaintext credentials in configuration. Store only credential references managed by the Broker.
 
 ## Completion Report
 
-At the end of a remote task, report:
+Report:
 
-- host alias used;
-- execution context: host, container, or Compose service;
-- important commands performed;
-- whether sudo was requested and approved;
-- exit status and concise output summary;
+- selected host alias and `username@hostname`;
+- environment used: host, Docker container, or Compose service;
+- commands executed and their exit codes;
+- source scripts and working directory;
 - files transferred or changed;
-- unresolved risks or next validation step.
+- sudo approvals performed;
+- credential enrollment or cleanup commands handed to the user;
+- remaining issues and the reproducible next action.
