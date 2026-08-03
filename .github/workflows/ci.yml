@@ -72,3 +72,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/test-mcp-registration.ps1
+
+      - name: Test Helix admin script
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-helix-admin.ps1
