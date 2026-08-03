@@ -173,13 +173,19 @@ Helix/ssh/jetson-dev/login
 Helix/ssh/jetson-dev/sudo
 ```
 
-主机写操作默认关闭。管理员可设置：
+主机写操作默认关闭。Windows PowerShell 可临时设置：
 
 ```powershell
 $env:HELIX_ALLOW_HOST_MUTATION = "1"
 ```
 
-或在配置中设置 `settings.allowHostMutation=true`。
+Linux/macOS shell 可设置：
+
+```bash
+export HELIX_ALLOW_HOST_MUTATION=1
+```
+
+也可以在配置中设置 `settings.allowHostMutation=true`。
 
 随后 AI 调用 `credential_enroll_request`。工具只返回本地 `enrollmentCommand`，AI 必须展示命令并停止。用户在本地终端执行后，Broker 通过隐藏输入读取密码。
 
@@ -285,13 +291,7 @@ helix_help({ "topic": "sudo" })
 
 ## 主机配置写操作
 
-`host_add`、`host_update`、`host_remove`、`host_onboard`、`host_offboard` 默认关闭。管理员可设置：
-
-```bash
-export HELIX_ALLOW_HOST_MUTATION=1
-```
-
-或在配置中设置 `settings.allowHostMutation=true`。
+`host_add`、`host_update`、`host_remove`、`host_onboard`、`host_offboard` 默认关闭。管理员可设置 `HELIX_ALLOW_HOST_MUTATION=1`，或在配置中设置 `settings.allowHostMutation=true`。
 
 即使开启主机写操作，AI 也只能在用户明确要求配置变更时使用；不得把修改配置作为普通连接、权限或路径问题的自动解决方案。
 
