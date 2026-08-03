@@ -29,7 +29,8 @@ username@hostname
 7. 只有用户明确表示已经在本地完成审批后，AI 才能调用 `sudo_execute`。
 8. `sudo_execute` 的 host、requestId 和 command 必须与审批请求完全一致。
 9. allowlist、路径或主机密钥校验失败时，应报告边界，不得通过改配置、拆命令或混淆命令绕过。
-10. `host_add`、`host_update`、`host_remove` 只用于用户明确发起的管理员配置任务。
+10. `host_add`、`host_update`、`host_remove`、`host_onboard`、`host_offboard` 只用于用户明确发起的管理员配置任务。
+11. `credential_enroll_request` 或 `credential_delete_request` 返回本地命令后，AI 必须展示命令并停止，不能代替用户输入或删除密码。
 
 ## 3. 标准连接流程
 
@@ -58,7 +59,75 @@ host_list
 
 在用户没有明确要求修改配置前，只报告事实和建议，不直接编辑 JSON。
 
-## 4. 普通命令
+## 4. 主机新增、查询和删除
+
+查询使用：
+
+```text
+host_list
+host_get
+```
+
+用户明确要求新增主机时，优先使用 `host_onboard`，不要让 AI 手工拼接 JSON。输入至少包含：
+
+- alias；
+- hostname；
+- username；
+- authType；
+- sudoMode。
+
+Windows 密码认证默认自动生成：
+
+```text
+Helix/ssh/<alias>/login
+Helix/ssh/<alias>/sudo
+```
+
+主机写操作仍受 `allowHostMutation` 或 `HELIX_ALLOW_HOST_MUTATION=1` 控制。
+
+下线主机使用 `host_offboard`。它只删除非敏感主机配置，不自动删除 Windows Credential Manager 中的凭据。工具会返回：
+
+- `orphanedCredentials`；
+- `credentialsDeleted=false`；
+- 可选的本地 `cleanupCommand`。
+
+AI 必须询问用户是否清理凭据，不能因为用户要求删除主机就推断可以同时删除秘密。
+
+## 5. 凭据录入与更新
+
+AI 调用：
+
+```text
+credential_enroll_request(host, kind, separatePasswords)
+```
+
+工具返回 `enrollmentCommand` 后：
+
+1. 展示命令和涉及的 credentialRef；
+2. 告诉用户密码只会在本地隐藏终端输入；
+3. 停止，等待用户明确确认录入完成；
+4. 再调用 `credential_status`；
+5. 最后调用 `ssh_check`。
+
+默认 `separatePasswords=false`，Broker 只提示一次密码，并把同一密码写入所选 login/sudo 目标。登录密码和 sudo 密码不同时，才设置 `separatePasswords=true`。
+
+本地脚本默认位置：
+
+```text
+%APPDATA%\Helix\helix-admin.ps1
+```
+
+手工录入示例：
+
+```powershell
+& "$env:APPDATA\Helix\helix-admin.ps1" credential set `
+  -Host "jetson-dev" `
+  -Kind all
+```
+
+凭据删除使用 `credential_delete_request`，同样必须把本地命令交给用户执行，不能通过 MCP 直接删除。
+
+## 6. 普通命令
 
 普通远端命令使用 `ssh_exec`。
 
@@ -91,7 +160,7 @@ command: colcon build
 - `timedOut`
 - `truncated`
 
-## 5. sudo 人工审批
+## 7. sudo 人工审批
 
 ### 阶段一：申请
 
@@ -118,9 +187,9 @@ AI 必须把 `approvalCommand` 原样展示给用户并停止。
 
 - 主机 alias；
 - 远端 hostname/username；
-- 完整 sudo 命令；
-- AI 提供的理由；
-- 过期时间。
+- 完整命令；
+- 申请理由；
+- 有效期。
 
 确认无误后输入大写：
 
@@ -130,137 +199,110 @@ APPROVE
 
 ### 阶段三：执行
 
-用户明确回复“已经批准”后，AI 调用：
+用户明确回复已完成审批后，AI 调用：
 
 ```text
-sudo_execute(host, requestId, exact_same_command)
+sudo_execute(host, requestId, exact_command)
 ```
 
-审批是：
-
-- 本地完成；
-- 有效期有限；
-- 绑定主机；
-- 绑定完整命令哈希；
-- 只能消费一次。
+host、requestId、command 必须完全一致。批准不能复用，也不能用于相似命令。
 
 ### allowlist 拒绝
 
 AI 应报告：
 
 - 被拒绝的完整命令；
-- 当前主机 sudo 策略不允许；
-- 管理员需要添加哪一类锚定规则。
+- 当前 sudo 模式；
+- 需要管理员评估的最窄锚定规则。
 
-AI 不得：
+不得自动修改 JSON、拆分命令、编码命令或申请宽泛 shell 绕过限制。
 
-- 自动修改 `sudo.allow`；
-- 把一条命令拆成几条以绕过规则；
-- 使用编码、变量、通配符或 shell 包装绕过审核；
-- 把命令改成允许但语义更宽的 shell。
+## 8. Docker 与 Compose
 
-## 6. 文件传输
-
-使用：
-
-- `ssh_upload`
-- `ssh_download`
-
-规则：
-
-- 优先使用绝对路径；
-- 目录传输时才设置 `recursive=true`；
-- 本地路径必须位于允许根目录；
-- 远端路径必须位于该主机 `allowedRemotePaths`；
-- 路径被拒绝时，不得自动扩大白名单。
-
-## 7. Docker 与 Compose
-
-推荐流程：
+先使用：
 
 ```text
 environment_probe
-  → docker_list / compose_ps
-  → docker_exec / compose_exec
+docker_list
+compose_ps
 ```
 
-`docker_exec` 和 `compose_exec` 支持：
-
-- cwd
-- env
-- sourceScripts
-- user
-- shell
-
-它们本身不是 sudo 工具。如果远端 Docker 需要 root，应针对最终完整 Docker 命令走 reviewed sudo 流程，而不是在容器执行工具里嵌入 sudo。
-
-## 8. 远程编译推荐流程
-
-1. `host_list` 选择 alias。
-2. `ssh_check` 验证连接。
-3. `environment_probe` 读取 OS、架构、Docker、编译器和 source 脚本。
-4. 确认代码位于允许路径；需要时使用 `ssh_upload`。
-5. 需要容器时先 `docker_list` 或 `compose_ps`。
-6. 使用 `ssh_exec`、`docker_exec` 或 `compose_exec` 运行构建。
-7. 构建失败时先分析 stderr 和退出码，再执行最小诊断命令。
-8. 只有明确需要系统权限时才申请 sudo。
-9. 输出编译结果、失败阶段、日志位置和下一步建议。
-
-## 9. 配置变更
-
-配置变更是独立的管理员任务。开始前 AI 必须说明：
-
-- 要改哪个 host alias；
-- 要改哪个字段；
-- 为什么需要改；
-- 会扩大还是收紧权限；
-- 是否涉及凭据引用、路径或 sudo allowlist。
-
-用户明确同意后才使用：
-
-- `host_add`
-- `host_update`
-- `host_remove`
-
-配置只保存 credential reference，不保存明文密码。
-
-## 10. `helix_help`
-
-AI 不确定流程时，应主动调用：
+再根据实际名称调用：
 
 ```text
-helix_help(topic)
+docker_exec
+compose_exec
 ```
 
-支持 topic：
+优先使用结构化的 cwd、env、sourceScripts、user 和 shell 参数。
 
-- `overview`
-- `connect`
-- `exec`
-- `sudo`
-- `transfer`
-- `docker`
-- `configuration`
-- `troubleshooting`
+如果 Docker 本身要求 root 权限，应为最终完整 Docker 命令申请 reviewed sudo，不得在 `docker_exec` 中加入 sudo。
 
-MCP 返回内容比这份静态文件更适合当前 Agent 直接消费。该文件用于人工阅读、离线检查和审计。
+## 9. 文件传输
 
-## 11. 人工提示词示例
-
-### 普通远程任务
+使用：
 
 ```text
-使用 helix-ssh 在 jetson-dev 上检查环境并编译项目。先做 ssh_check 和 environment_probe，不要修改 Helix JSON；普通命令使用 ssh_exec，需要权限时走 sudo_request 并停下来等我审批。
+ssh_upload
+ssh_download
 ```
 
-### sudo 任务
+要求：
+
+- 尽量使用绝对路径；
+- 目录传输才设置 `recursive=true`；
+- 本地路径和远端路径必须在 allowlist 中；
+- 路径被拒绝时只报告策略边界，不自动扩大路径权限。
+
+## 10. 编译任务建议流程
 
 ```text
-在 jetson-dev 上重启 test-agent 服务。必须使用 sudo_request → 本地人工审批 → sudo_execute；返回 approvalCommand 后停止，等我明确说已经批准。
+host_list
+  → credential_status
+  → ssh_check
+  → environment_probe
+  → 确认源码路径和容器
+  → 必要时上传文件
+  → source 环境
+  → 执行编译
+  → 分析第一个有意义的错误
+  → 最小化诊断
+  → 必要时申请精确 sudo
 ```
 
-### 排障任务
+不要在编译失败后盲目反复全量执行。优先识别：
 
-```text
-检查 jetson-dev 为什么无法登录。按 host_get、credential_status、ssh_check 的顺序排查，只报告发现，不要自动修改 username、hostname 或 credentialRef。
-```
+- 编译器或架构不匹配；
+- 依赖缺失；
+- source 环境遗漏；
+- 磁盘空间；
+- 权限问题；
+- 容器或工作目录错误。
+
+## 11. 配置修改
+
+只有用户明确要求新增、修改或删除主机/策略时，才能进入配置管理模式。
+
+修改前说明：
+
+- 修改哪个 alias；
+- 修改哪个字段；
+- 原值和新值；
+- 修改原因；
+- 是否扩大网络、路径或 sudo 权限；
+- 如何验证。
+
+配置中只能保存 credentialRef，不能保存明文密码。
+
+## 12. 完成报告
+
+远程任务完成后至少说明：
+
+- 使用的主机 alias；
+- 执行环境：主机、Docker 容器或 Compose service；
+- 实际执行的关键命令；
+- 是否使用了 sourceScripts；
+- 是否发生 sudo 审批；
+- exit code 和关键输出；
+- 修改或上传了哪些文件；
+- 仍存在的问题及下一步。
