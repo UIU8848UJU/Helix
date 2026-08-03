@@ -99,7 +99,8 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
         if (!hostMutationAllowed(current)) throw new Error("Host mutation is disabled");
         if (current.hosts[input.alias]) throw new Error(`Host alias already exists: ${input.alias}`);
 
-        const authType = input.authType ?? "windows-credential";
+        const defaultAuthType = process.platform === "win32" ? "windows-credential" : "openssh";
+        const authType = input.authType ?? defaultAuthType;
         const sudoMode = input.sudoMode
           ?? (authType === "windows-credential" ? "reviewed-password" : "disabled");
         const loginCredentialRef = `Helix/ssh/${input.alias}/login`;
@@ -125,17 +126,17 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
         };
 
         const host = validateHost(input.alias, candidate);
+        const refs = credentialRefsForHost(host);
+        const scriptPath = refs.login || refs.sudo ? await requireAdminScript(store) : null;
         await store.mutate((config) => { config.hosts[input.alias] = host; });
 
-        const refs = credentialRefsForHost(host);
         const result: Record<string, unknown> = {
           alias: input.alias,
           host: redactHost(host),
           credentialRefs: refs,
           credentialsStored: false,
         };
-        if (refs.login || refs.sudo) {
-          const scriptPath = await requireAdminScript(store);
+        if (scriptPath) {
           result.nextStep = "Call credential_enroll_request, show the returned enrollmentCommand to the user, and stop until local enrollment is complete.";
           result.enrollmentCommand = buildCredentialAdminCommand({
             scriptPath,
@@ -167,6 +168,7 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
         const existing = current.hosts[host];
         if (!existing) throw new Error(`Unknown host alias: ${host}`);
         const refs = Object.values(credentialRefsForHost(existing)).filter((value): value is string => Boolean(value));
+        const scriptPath = refs.length ? await requireAdminScript(store) : null;
         await store.mutate((config) => { delete config.hosts[host]; });
 
         const result: Record<string, unknown> = {
@@ -174,8 +176,7 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
           credentialsDeleted: false,
           orphanedCredentials: refs,
         };
-        if (refs.length) {
-          const scriptPath = await requireAdminScript(store);
+        if (scriptPath) {
           result.cleanupCommand = buildCredentialAdminCommand({
             scriptPath,
             configPath: store.filePath,
@@ -243,6 +244,7 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
         const selectedKind = kind ?? "all";
         if (selectedKind === "login" && !refs.login) throw new Error(`Host ${host} does not use a managed login credential`);
         if (selectedKind === "sudo" && !refs.sudo) throw new Error(`Host ${host} has no managed sudo credential`);
+        if (selectedKind === "all" && !refs.login && !refs.sudo) throw new Error(`Host ${host} has no managed credentials`);
         const scriptPath = await requireAdminScript(store);
         return textResult({
           host,
