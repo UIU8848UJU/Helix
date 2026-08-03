@@ -11,7 +11,7 @@ docs/architecture/            技术设计
 docs/guides/                  人工与 AI 操作指南
 skills/                       Helix 复杂工作流 Skill
 examples/                     配置示例
-scripts/                      安装、注册和卸载脚本
+scripts/                      安装、注册、管理和卸载脚本
 ```
 
 网页抓取和浏览器自动化不会与 SSH MCP 放在同一个进程中。后续 Web Research MCP 将独立部署，避免不可信网页内容直接获得远程执行权限。
@@ -19,10 +19,14 @@ scripts/                      安装、注册和卸载脚本
 ## 功能
 
 - 主机配置：列出、读取、添加、修改、删除
+- 高层主机管理：`host_onboard` 自动生成凭据引用，`host_offboard` 安全下线并保留凭据恢复能力
 - 两种认证后端：系统 OpenSSH/SSH Agent，或 Windows Credential Manager 密码认证
+- 凭据录入请求：AI 只生成本地命令，密码通过本地隐藏终端输入
+- 默认一次密码输入同时写入 login/sudo 两个凭据目标；不同密码可显式分开录入
 - SSH 连通性检查与普通命令执行，支持 cwd、环境变量和 source 脚本
 - SCP 或 SFTP 上传、下载文件/目录
 - `credential_status` 只检查凭据是否存在，不返回秘密
+- `credential_delete_request` 只生成本地清理命令，不通过 MCP 直接删除秘密
 - 两阶段 sudo：`sudo_request` 本地人工审核，`sudo_execute` 一次性执行
 - `reviewed-nopasswd` 与 `reviewed-password` 两种 sudo 模式
 - Docker 容器列表、容器内执行、Docker Compose 执行
@@ -104,14 +108,15 @@ cd Helix
 - Linux/macOS：`~/.config/helix/ssh-mcp.json`
 - Windows：`%APPDATA%\Helix\ssh-mcp.json`
 
-本地指南和 Skill 默认安装在配置文件同级目录：
+Windows 本地引导和管理文件默认安装在配置同级目录：
 
 ```text
 HELIX_AI_GUIDE.md
+helix-admin.ps1
 skills/helix-remote-operations/SKILL.md
 ```
 
-可使用 `HELIX_SSH_CONFIG`、`HELIX_CREDENTIAL_BROKER`、`HELIX_AI_GUIDE` 覆盖路径。
+可使用 `HELIX_SSH_CONFIG`、`HELIX_CREDENTIAL_BROKER`、`HELIX_AI_GUIDE`、`HELIX_ADMIN_SCRIPT` 覆盖路径。
 
 ## MCP 客户端注册
 
@@ -128,7 +133,7 @@ skills/helix-remote-operations/SKILL.md
 .\scripts\register-mcp.ps1 -Client Codex
 ```
 
-脚本执行前会备份现有配置文件，然后删除同名旧条目并重新注册，因此可重复执行。注册时会同时传入 `HELIX_AI_GUIDE`。注册完成后重启 Claude Code 或 Codex，通过 `/mcp` 或 MCP 列表检查连接。
+脚本执行前会备份现有配置文件，然后删除同名旧条目并重新注册，因此可重复执行。注册时会同时传入 `HELIX_AI_GUIDE` 和 `HELIX_ADMIN_SCRIPT`。注册完成后重启 Claude Code 或 Codex，通过 `/mcp` 或 MCP 列表检查连接。
 
 注销：
 
@@ -140,32 +145,88 @@ skills/helix-remote-operations/SKILL.md
 
 Claude Code 的 `project` scope 会修改当前目录的 `.mcp.json`；`local` 和 `user` scope 由 Claude Code CLI 管理在用户配置中。Codex 当前通过官方 CLI 注册到用户级配置。
 
-## Windows 密码凭据
+## 主机管理与凭据录入
 
-Broker 不提供读取明文密码的接口。密码通过隐藏终端输入写入 Windows Credential Manager：
+查询主机使用：
 
-```powershell
-$Broker = ".\apps\credential-broker\target\release\helix-credential-broker.exe"
-
-& $Broker credential-store `
-  --target "Helix/ssh/build-password/login" `
-  --username "developer"
-
-& $Broker credential-store `
-  --target "Helix/ssh/build-password/sudo" `
-  --username "developer"
+```text
+host_list
+host_get
 ```
 
-配置文件只保存：
+管理员明确要求新增主机时使用 `host_onboard`，例如：
+
+```json
+{
+  "alias": "jetson-dev",
+  "hostname": "192.168.0.110",
+  "username": "jetson_developer",
+  "authType": "windows-credential",
+  "sudoMode": "reviewed-password"
+}
+```
+
+Helix 自动生成：
+
+```text
+Helix/ssh/jetson-dev/login
+Helix/ssh/jetson-dev/sudo
+```
+
+主机写操作默认关闭。管理员可设置：
+
+```powershell
+$env:HELIX_ALLOW_HOST_MUTATION = "1"
+```
+
+或在配置中设置 `settings.allowHostMutation=true`。
+
+随后 AI 调用 `credential_enroll_request`。工具只返回本地 `enrollmentCommand`，AI 必须展示命令并停止。用户在本地终端执行后，Broker 通过隐藏输入读取密码。
+
+本地手工方式：
+
+```powershell
+# 默认只输入一次密码，同时写入 login 和 sudo
+& "$env:APPDATA\Helix\helix-admin.ps1" credential set `
+  -Host "jetson-dev" `
+  -Kind all
+
+# 登录密码和 sudo 密码不同时分别输入
+& "$env:APPDATA\Helix\helix-admin.ps1" credential set `
+  -Host "jetson-dev" `
+  -Kind all `
+  -SeparatePasswords
+
+# 检查凭据是否存在，不读取秘密
+& "$env:APPDATA\Helix\helix-admin.ps1" credential status `
+  -Host "jetson-dev"
+```
+
+录入完成后执行：
+
+```text
+credential_status
+  → ssh_check
+```
+
+下线主机使用 `host_offboard`。它只删除非敏感主机配置，并返回孤立凭据引用及本地 `cleanupCommand`；凭据不会自动删除。
+
+完整说明见：[主机与凭据管理](docs/guides/host-credential-administration.md)。
+
+## Windows 密码凭据边界
+
+Broker 不提供读取明文密码的接口。配置文件只保存凭据引用：
 
 ```json
 {
   "auth": {
     "type": "windows-credential",
-    "credentialRef": "Helix/ssh/build-password/login"
+    "credentialRef": "Helix/ssh/jetson-dev/login"
   }
 }
 ```
+
+密码只由本地 Broker 隐藏读取并写入 Windows Credential Manager，不进入 MCP、聊天、命令行参数、环境变量或日志。
 
 ## sudo 人工审核
 
@@ -214,7 +275,8 @@ helix_help({ "topic": "sudo" })
       "env": {
         "HELIX_SSH_CONFIG": "/absolute/path/to/ssh-mcp.json",
         "HELIX_CREDENTIAL_BROKER": "C:\\Tools\\Helix\\helix-credential-broker.exe",
-        "HELIX_AI_GUIDE": "C:\\Users\\user\\AppData\\Roaming\\Helix\\HELIX_AI_GUIDE.md"
+        "HELIX_AI_GUIDE": "C:\\Users\\user\\AppData\\Roaming\\Helix\\HELIX_AI_GUIDE.md",
+        "HELIX_ADMIN_SCRIPT": "C:\\Users\\user\\AppData\\Roaming\\Helix\\helix-admin.ps1"
       }
     }
   }
@@ -223,7 +285,7 @@ helix_help({ "topic": "sudo" })
 
 ## 主机配置写操作
 
-`host_add`、`host_update`、`host_remove` 默认关闭。管理员可设置：
+`host_add`、`host_update`、`host_remove`、`host_onboard`、`host_offboard` 默认关闭。管理员可设置：
 
 ```bash
 export HELIX_ALLOW_HOST_MUTATION=1
@@ -238,4 +300,5 @@ export HELIX_ALLOW_HOST_MUTATION=1
 - [SSH MCP v1 技术设计](docs/architecture/ssh-mcp-v1.md)
 - [Windows Credential Broker](docs/architecture/windows-credential-broker.md)
 - [Helix AI Operations Guide](docs/guides/HELIX_AI_GUIDE.md)
+- [主机与凭据管理](docs/guides/host-credential-administration.md)
 - [Helix Remote Operations Skill](skills/helix-remote-operations/SKILL.md)
