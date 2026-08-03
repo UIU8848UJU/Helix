@@ -8,7 +8,8 @@ param(
     [ValidateSet("set", "status", "delete", "list", "get")]
     [string]$Action,
 
-    [string]$Host,
+    [Alias("Host")]
+    [string]$HostAlias,
 
     [ValidateSet("all", "login", "sudo")]
     [string]$Kind = "all",
@@ -78,7 +79,7 @@ function Resolve-CredentialTargets {
         return @($CredentialRef | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
     }
 
-    $HostConfig = Get-HostConfig $Host
+    $HostConfig = Get-HostConfig $HostAlias
     $Targets = @()
     if (($Kind -eq "all" -or $Kind -eq "login") -and $HostConfig.auth.type -eq "windows-credential") {
         $Targets += [PSCustomObject]@{ Kind = "login"; Ref = [string]$HostConfig.auth.credentialRef }
@@ -87,7 +88,7 @@ function Resolve-CredentialTargets {
         $Targets += [PSCustomObject]@{ Kind = "sudo"; Ref = [string]$HostConfig.sudo.credentialRef }
     }
     if ($Targets.Count -eq 0) {
-        throw "No managed credentials matched host=$Host kind=$Kind"
+        throw "No managed credentials matched host=$HostAlias kind=$Kind"
     }
     return $Targets
 }
@@ -99,7 +100,7 @@ if ($Resource -eq "host") {
             exit 0
         }
         "get" {
-            (Get-HostConfig $Host) | ConvertTo-Json -Depth 20
+            (Get-HostConfig $HostAlias) | ConvertTo-Json -Depth 20
             exit 0
         }
         default {
@@ -127,7 +128,7 @@ switch ($Action) {
     "set" {
         $ResolvedUsername = $Username
         if (-not $ResolvedUsername) {
-            $HostConfig = Get-HostConfig $Host
+            $HostConfig = Get-HostConfig $HostAlias
             $ResolvedUsername = [string]$HostConfig.username
         }
         if ([string]::IsNullOrWhiteSpace($ResolvedUsername)) {
