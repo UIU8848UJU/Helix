@@ -11,6 +11,7 @@ param(
     [string]$EntryPath,
     [string]$BrokerPath,
     [string]$GuidePath,
+    [string]$AdminScriptPath,
     [switch]$SkipIfUnavailable,
     [switch]$DryRun
 )
@@ -108,7 +109,23 @@ if (-not (Test-Path -LiteralPath $GuidePath)) {
     Write-Host "Installed AI guide: $GuidePath"
 }
 
-foreach ($RequiredPath in @($ConfigPath, $EntryPath, $BrokerPath, $GuidePath)) {
+if (-not $AdminScriptPath) {
+    if ($env:HELIX_ADMIN_SCRIPT) {
+        $AdminScriptPath = $env:HELIX_ADMIN_SCRIPT
+    } else {
+        $AdminScriptPath = Join-Path (Split-Path $ConfigPath -Parent) "helix-admin.ps1"
+    }
+}
+$AdminScriptPath = Resolve-FullPath $AdminScriptPath
+
+if (-not (Test-Path -LiteralPath $AdminScriptPath)) {
+    $AdminSource = Join-Path $RootDir "scripts\helix-admin.ps1"
+    New-Item -ItemType Directory -Force -Path (Split-Path $AdminScriptPath -Parent) | Out-Null
+    Copy-Item -LiteralPath $AdminSource -Destination $AdminScriptPath -Force
+    Write-Host "Installed admin script: $AdminScriptPath"
+}
+
+foreach ($RequiredPath in @($ConfigPath, $EntryPath, $BrokerPath, $GuidePath, $AdminScriptPath)) {
     if (-not (Test-Path -LiteralPath $RequiredPath)) {
         throw "Missing Helix runtime file: $RequiredPath. Run scripts\install.ps1 first"
     }
@@ -162,6 +179,7 @@ if ($Targets -contains "Claude") {
         "--env", "HELIX_SSH_CONFIG=$ConfigPath",
         "--env", "HELIX_CREDENTIAL_BROKER=$BrokerPath",
         "--env", "HELIX_AI_GUIDE=$GuidePath",
+        "--env", "HELIX_ADMIN_SCRIPT=$AdminScriptPath",
         "--", $Node.Source, $EntryPath
     )
     Invoke-External $Claude.Source @("mcp", "get", $Name)
@@ -178,6 +196,7 @@ if ($Targets -contains "Codex") {
         "--env", "HELIX_SSH_CONFIG=$ConfigPath",
         "--env", "HELIX_CREDENTIAL_BROKER=$BrokerPath",
         "--env", "HELIX_AI_GUIDE=$GuidePath",
+        "--env", "HELIX_ADMIN_SCRIPT=$AdminScriptPath",
         "--", $Node.Source, $EntryPath
     )
     Invoke-External $Codex.Source @("mcp", "get", $Name)
