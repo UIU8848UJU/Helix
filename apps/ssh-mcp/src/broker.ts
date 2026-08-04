@@ -104,6 +104,64 @@ export async function brokerSshExecute(input: {
   return responseToExecution(response);
 }
 
+export async function brokerSudoExecute(input: {
+  settings: GlobalSettings;
+  hostAlias: string;
+  host: HostConfig;
+  command: string;
+  timeoutSeconds?: number;
+}): Promise<ExecutionResult> {
+  const auth = passwordAuth(input.host);
+  if (!input.host.sudo.credentialRef) {
+    throw new Error("Password-backed sudo requires sudo.credentialRef");
+  }
+  const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
+  const requestId = newRequestId();
+  const startedAt = Date.now();
+  try {
+    const response = await runBroker(input.settings, {
+      op: "sudo_execute",
+      login_credential_ref: auth.credentialRef,
+      sudo_credential_ref: input.host.sudo.credentialRef,
+      host: input.host.hostname,
+      port: input.host.port ?? 22,
+      username: input.host.username,
+      command: input.command,
+      timeout_seconds: timeout,
+      max_output_bytes: input.settings.maxOutputBytes,
+      strict_host_key_checking: input.settings.strictHostKeyChecking,
+    }, timeout + 5);
+    const result = responseToExecution(response);
+    await writeAudit(input.settings, {
+      timestamp: new Date().toISOString(),
+      requestId,
+      tool: "sudo_exec",
+      host: input.hostAlias,
+      command: input.command,
+      operation: "direct sudo",
+      durationMs: result.durationMs || Date.now() - startedAt,
+      exitCode: result.exitCode,
+      timedOut: result.timedOut,
+      truncated: result.truncated,
+      success: result.ok,
+    });
+    return result;
+  } catch (error) {
+    await writeAudit(input.settings, {
+      timestamp: new Date().toISOString(),
+      requestId,
+      tool: "sudo_exec",
+      host: input.hostAlias,
+      command: input.command,
+      operation: "direct sudo",
+      durationMs: Date.now() - startedAt,
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  }
+}
+
 export async function brokerTransfer(input: {
   settings: GlobalSettings;
   host: HostConfig;
@@ -168,81 +226,4 @@ export async function brokerCredentialExists(
     credential_ref: credentialRef,
   }, 15);
   return response.exists ?? false;
-}
-
-export async function brokerConsumeApproval(input: {
-  settings: GlobalSettings;
-  requestId: string;
-  hostAlias: string;
-  commandHash: string;
-}): Promise<void> {
-  await runBroker(input.settings, {
-    op: "approval_consume",
-    request_id: input.requestId,
-    host_alias: input.hostAlias,
-    command_hash: input.commandHash,
-  }, 15);
-}
-
-export async function brokerSudoExecute(input: {
-  settings: GlobalSettings;
-  hostAlias: string;
-  host: HostConfig;
-  requestId: string;
-  commandHash: string;
-  command: string;
-  timeoutSeconds?: number;
-}): Promise<ExecutionResult> {
-  const auth = passwordAuth(input.host);
-  if (!input.host.sudo.credentialRef) {
-    throw new Error("reviewed-password sudo requires sudo.credentialRef");
-  }
-  const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
-  const requestId = newRequestId();
-  const startedAt = Date.now();
-  try {
-    const response = await runBroker(input.settings, {
-      op: "sudo_execute_approved",
-      login_credential_ref: auth.credentialRef,
-      sudo_credential_ref: input.host.sudo.credentialRef,
-      request_id: input.requestId,
-      host_alias: input.hostAlias,
-      command_hash: input.commandHash,
-      host: input.host.hostname,
-      port: input.host.port ?? 22,
-      username: input.host.username,
-      command: input.command,
-      timeout_seconds: timeout,
-      max_output_bytes: input.settings.maxOutputBytes,
-      strict_host_key_checking: input.settings.strictHostKeyChecking,
-    }, timeout + 5);
-    const result = responseToExecution(response);
-    await writeAudit(input.settings, {
-      timestamp: new Date().toISOString(),
-      requestId,
-      tool: "sudo_execute",
-      host: input.hostAlias,
-      command: input.command,
-      operation: `approved request ${input.requestId}`,
-      durationMs: result.durationMs || Date.now() - startedAt,
-      exitCode: result.exitCode,
-      timedOut: result.timedOut,
-      truncated: result.truncated,
-      success: result.ok,
-    });
-    return result;
-  } catch (error) {
-    await writeAudit(input.settings, {
-      timestamp: new Date().toISOString(),
-      requestId,
-      tool: "sudo_execute",
-      host: input.hostAlias,
-      command: input.command,
-      operation: `approved request ${input.requestId}`,
-      durationMs: Date.now() - startedAt,
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    throw error;
-  }
 }
