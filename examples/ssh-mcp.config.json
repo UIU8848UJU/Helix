@@ -6,7 +6,7 @@
     "defaultTimeoutSeconds": 60,
     "maxOutputBytes": 1048576,
     "maxConcurrentCommands": 4,
-    "strictHostKeyChecking": true,
+    "strictHostKeyChecking": false,
     "auditEnabled": true,
     "auditCommandMode": "plain",
     "credentialBrokerPath": "C:\\Tools\\Helix\\helix-credential-broker.exe"
@@ -19,7 +19,7 @@
       "identityFile": "~/.ssh/id_ed25519",
       "proxyJump": null,
       "tags": ["development", "docker"],
-      "allowedRemotePaths": ["/home/developer", "/workspace", "/tmp/helix", "/opt/ros"],
+      "allowedRemotePaths": ["/"],
       "auth": {
         "type": "openssh"
       },
@@ -34,7 +34,7 @@
       "port": 22,
       "username": "developer",
       "tags": ["legacy", "docker"],
-      "allowedRemotePaths": ["/home/developer", "/workspace", "/tmp/helix", "/opt/ros"],
+      "allowedRemotePaths": ["/"],
       "auth": {
         "type": "windows-credential",
         "credentialRef": "Helix/ssh/build-password/login"
