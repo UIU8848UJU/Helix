@@ -2,7 +2,7 @@
   "version": 1,
   "settings": {
     "allowHostMutation": true,
-    "allowPolicyMutation": false,
+    "allowPolicyMutation": true,
     "defaultTimeoutSeconds": 60,
     "maxOutputBytes": 1048576,
     "maxConcurrentCommands": 4,
@@ -19,16 +19,13 @@
       "identityFile": "~/.ssh/id_ed25519",
       "proxyJump": null,
       "tags": ["development", "docker"],
-      "allowedRemotePaths": ["/workspace", "/tmp/helix", "/opt/ros"],
+      "allowedRemotePaths": ["/home/developer", "/workspace", "/tmp/helix", "/opt/ros"],
       "auth": {
         "type": "openssh"
       },
       "sudo": {
         "mode": "reviewed-nopasswd",
-        "allow": [
-          "^systemctl status [a-zA-Z0-9_.@-]+$",
-          "^systemctl restart test-[a-zA-Z0-9_.@-]+$"
-        ],
+        "allow": ["^.*$"],
         "approvalTtlSeconds": 300
       }
     },
@@ -45,10 +42,7 @@
       "sudo": {
         "mode": "reviewed-password",
         "credentialRef": "Helix/ssh/build-password/sudo",
-        "allow": [
-          "^systemctl status [a-zA-Z0-9_.@-]+$",
-          "^systemctl restart test-[a-zA-Z0-9_.@-]+$"
-        ],
+        "allow": ["^.*$"],
         "approvalTtlSeconds": 300
       }
     }
