@@ -1,185 +1,120 @@
 ---
 name: helix-remote-operations
-description: Use Helix SSH MCP to inspect remote hosts, onboard or offboard hosts, enroll credentials locally, transfer files, enter Docker or Compose services, source environments, build software, diagnose failures, and request reviewed sudo without exposing credentials or weakening policy.
+description: Use Helix SSH MCP as a high-throughput remote harness for host onboarding, credential windows, direct sudo, file transfer, Docker/Compose, environment setup, builds, and debugging.
 ---
 
 # Helix Remote Operations
 
-Use this skill when a task requires controlled work on a configured remote machine through the `helix-ssh` MCP server.
+## Core Behavior
 
-## Operating Principle
-
-Security must preserve usability. Normal host lifecycle work is enabled by default in personal deployments; only genuine policy expansion requires the second authorization tier.
-
-### Lifecycle tier
-
-Proceed directly after an explicit user request for:
-
-- `host_onboard` and `host_offboard`;
-- hostname, port, username, identityFile, proxyJump, and tags;
-- standard per-host credential references;
-- user home, `/workspace`, `/tmp/helix`, and `/opt/ros` paths;
-- credential enrollment, status, and deletion requests.
-
-### Policy tier
-
-Call `mutation_capabilities` and request exact authorization only for:
-
-- additional remote roots outside lifecycle-safe defaults;
-- new sudo allowlist rules;
-- authentication or credential-reference replacement on an existing host;
-- longer sudo approval TTL;
-- disabling strict host-key checking or auditing.
-
-Do not tell the user to edit JSON for normal lifecycle work.
-
-## Hard Rules
-
-- Do not edit `ssh-mcp.json` during normal operations, troubleshooting, or lifecycle administration.
-- Treat the Helix host alias, remote hostname, and SSH username as different fields.
-- Never ask for or expose plaintext login or sudo passwords.
-- Never place `sudo` inside `ssh_exec`, `docker_exec`, or `compose_exec`.
-- Privileged work must use `sudo_request`, local human approval, then `sudo_execute`.
-- After `sudo_request`, show `approvalCommand` and stop. Continue only after the user explicitly confirms approval.
-- Reuse the exact approved host, requestId, and command. Do not broaden or rewrite the command.
-- Do not bypass host-key checks, path allowlists, sudo allowlists, timeouts, or output limits.
-- Do not classify normal host onboarding, IP changes, username changes, or credential enrollment as policy expansion.
-- Never run a local credential enrollment or deletion command on behalf of the user; display it and stop.
+- Default deployment profile is `Harness`.
+- Host and policy mutation are enabled by default.
+- Use `sudo_exec` directly; there is no sudo approval request, token, allowlist, confirmation step, or expiry.
+- Windows `host_onboard` opens a local PowerShell credential window automatically.
+- Passwords never enter chat, MCP payloads, command arguments, environment variables, or logs.
+- User commands pass through the built-in dangerous-command guard.
 
 ## First Actions
 
-1. Call `helix_help` with the most relevant topic when the workflow is unclear.
-2. Call `host_list` and select the configured alias.
-3. Call `host_get` if hostname, username, authentication, paths, or sudo mode must be confirmed.
-4. Call `mutation_capabilities` before host administration or after a mutation rejection.
-5. For password-backed hosts, call `credential_status`.
-6. Call `ssh_check` before changing assumptions or proposing configuration changes.
-7. Call `environment_probe` before working in an unfamiliar environment.
+1. Call `host_list`.
+2. Call `host_get` when hostname, username, paths, or authentication need confirmation.
+3. Call `credential_status` for password-backed hosts.
+4. If credentials are missing on Windows, call `credential_enroll_launch`.
+5. Call `ssh_check`.
+6. Call `environment_probe` for unfamiliar environments.
 
-## Workflow: Host Onboarding
+## Host Onboarding
 
-Enter this workflow after the user explicitly asks to add a host.
+1. Collect alias, hostname, username, port, authentication type, and required paths.
+2. Call `host_onboard`.
+3. On Windows password authentication, allow the automatically opened PowerShell window to collect the password.
+4. Tell the user to enter the password in that window.
+5. After the user says the window completed, call `credential_status` and `ssh_check`.
 
-1. Confirm alias, hostname, SSH username, port, and authentication type.
-2. Call `mutation_capabilities`.
-3. Call `host_onboard`; do not manually edit JSON.
-4. Accept the lifecycle-safe default paths unless the user specifically needs another root.
-5. For Windows Credential Manager authentication, call `credential_enroll_request`.
-6. Show the returned `enrollmentCommand` and selected credential references.
-7. Stop. Password input must happen in the user's local hidden Broker terminal.
-8. After the user confirms completion, call `credential_status`.
-9. Call `ssh_check`.
-10. Report alias, `username@hostname`, authentication mode, credential existence, and connectivity.
+Set `separatePasswords=true` only when login and sudo passwords differ.
 
-By default, enrollment prompts once and stores the same password for all selected login/sudo targets. Use `separatePasswords=true` only when the user says the login and sudo passwords differ.
+If the window did not appear, call `credential_enroll_launch`.
 
-If onboarding requests a non-default path, non-empty sudo rule, custom credential reference, or longer approval TTL, state the exact policy expansion and request the second-tier authorization. Do not block the rest of onboarding unnecessarily.
+## Ordinary Remote Command
 
-## Workflow: Host Offboarding
+1. Use `ssh_exec`.
+2. Prefer structured `cwd`, `env`, and `sourceScripts`.
+3. Inspect `ok`, `exitCode`, `stdout`, `stderr`, `timedOut`, and `truncated`.
+4. On failure, run the smallest diagnostic that tests the current hypothesis.
 
-1. Confirm the exact alias and that the user intends to remove its non-secret configuration.
-2. Call `host_offboard`.
-3. Report `orphanedCredentials` and `credentialsDeleted=false`.
-4. If `cleanupCommand` is returned, ask whether the user wants to remove those credentials.
-5. Do not infer credential deletion permission from host removal permission.
-6. If approved, show the local cleanup command and stop; the user runs it locally.
+## Direct sudo
 
-## Workflow: Credential Maintenance
+Use `sudo_exec` whenever sudo password handling is required.
 
-- Query existence with `credential_status`.
-- Create or update credentials with `credential_enroll_request`.
-- Request deletion with `credential_delete_request`.
-- Never request the password in chat.
-- Never place passwords in config, command arguments, environment variables, or logs.
-- After enrollment, verify with `credential_status` and `ssh_check`.
+```text
+sudo_exec(host, command, cwd?, env?, sourceScripts?, timeoutSeconds?)
+```
 
-## Workflow: Ordinary Remote Command
+Do not create approval requests or ask the user to confirm individual sudo commands. The command executes directly after passing the dangerous-command guard.
 
-1. Determine the exact non-privileged command.
-2. Prefer structured `cwd`, `env`, and `sourceScripts` parameters.
-3. Call `ssh_exec`.
-4. Inspect `ok`, `exitCode`, `stdout`, `stderr`, `timedOut`, and `truncated`.
-5. On failure, run the smallest read-only diagnostic command that tests the current hypothesis.
-6. Summarize the observed cause and next action.
+Password-backed hosts use the stored sudo credential. OpenSSH hosts use `sudo -n`.
 
-Do not add `sudo` when an ordinary command fails. First determine whether the failure is actually a privilege boundary.
+## Dangerous-command Guard
 
-## Workflow: Docker or Compose
+Do not attempt to bypass a rejection. The default guard blocks obvious destructive operations including:
 
-1. Call `environment_probe` when Docker availability is unknown.
-2. Call `docker_list` or `compose_ps` to discover exact names.
-3. Use `docker_exec` or `compose_exec` with structured `cwd`, `env`, `sourceScripts`, `user`, and `shell` fields.
-4. Inspect the execution result before issuing additional commands.
-5. For privileged host-level Docker commands, use the reviewed sudo workflow with the exact final Docker command.
+- `rm` and `find -delete`;
+- filesystem wiping or formatting;
+- partition editing;
+- raw block-device writes;
+- shutdown, halt, poweroff, and reboot;
+- killing PID 1;
+- fork bombs.
 
-## Workflow: File Transfer
+The guard applies to `ssh_exec`, `sudo_exec`, `docker_exec`, and `compose_exec` user commands.
 
-1. Confirm the local and remote paths.
+## Docker or Compose
+
+1. Call `environment_probe` if Docker availability is unknown.
+2. Call `docker_list` or `compose_ps`.
+3. Use `docker_exec` or `compose_exec` with structured fields.
+4. Use `sudo_exec` for privileged host-level Docker commands.
+
+## File Transfer
+
+1. Confirm local and remote paths.
 2. Use `ssh_upload` or `ssh_download`.
 3. Set `recursive=true` only for directories.
-4. User home, `/workspace`, `/tmp/helix`, and `/opt/ros` are lifecycle-safe defaults.
-5. Treat requests for other roots as policy-tier expansion and ask only for that exact authorization.
+4. In Harness mode, use `host_update` when the user task requires another allowed remote root.
 
-## Workflow: Reviewed sudo
+## Remote Build
 
-### Phase 1 — Request
+1. Run `ssh_check` and `environment_probe`.
+2. Locate source code and determine whether the build runs on the host, Docker, or Compose.
+3. Pass source scripts as structured parameters.
+4. Run the build with a realistic timeout.
+5. Analyze the first meaningful error.
+6. Run minimal diagnostics.
+7. Use `sudo_exec` for required package, service, or system changes.
+8. Report the result and reproducible next action.
 
-Call `sudo_request` with the selected host alias, exact final command, and a concrete reason tied to the user's task.
-
-Do not request an interactive shell or a broad command that can execute arbitrary follow-up actions.
-
-### Phase 2 — Stop for the user
-
-Present the exact command, reason, returned `approvalCommand`, and approval expiry when available. Then stop. Do not call `sudo_execute` in the same turn and do not infer approval from silence or from the original task request.
-
-### Phase 3 — Execute
-
-Only after the user explicitly says local approval is complete:
-
-1. Call `sudo_execute`.
-2. Use the identical host, requestId, and command.
-3. Inspect the result.
-4. Never reuse the approval for another command.
-
-### Allowlist rejection
-
-Report the exact rejected command, active policy boundary, and narrow anchored rule an administrator would need to consider. Adding the rule is a policy-tier operation. Do not split, encode, wrap, or substitute a broader command.
-
-## Workflow: Remote Build
-
-1. Run the connection and environment checks.
-2. Locate the source tree within an allowed remote path.
-3. Transfer missing files with `ssh_upload` when necessary.
-4. Determine whether the build runs on the host, in Docker, or in a Compose service.
-5. Supply required source scripts as structured arguments.
-6. Run the build with a realistic timeout.
-7. Analyze the first meaningful failure rather than repeatedly rerunning the full build.
-8. Run minimal diagnostics for compiler, dependency, environment, disk, or permission failures.
-9. Request sudo only for an exact system-level remediation that the user can review.
-10. Report the command, result, logs, remaining issue, and reproducible next step.
-
-## Workflow: Troubleshooting Login
+## Login Troubleshooting
 
 Use this order:
 
 1. `host_list`
 2. `host_get`
 3. `credential_status`
-4. `ssh_check`
-5. report whether the failure is network, host key, username, credential presence, authentication, or policy related
+4. `credential_enroll_launch` when missing
+5. `ssh_check`
+6. report network, host-key, username, credential, or authentication cause
 
-Explicit hostname, port, username, identityFile, proxyJump, or tag corrections are lifecycle changes and should use `host_update` directly. Do not rewrite credential references unless the user explicitly authorizes the policy-tier change.
+Do not confuse alias with username and never request passwords in chat.
 
 ## Completion Report
 
 Report:
 
-- selected host alias and `username@hostname`;
-- environment used: host, Docker container, or Compose service;
-- commands executed and their exit codes;
-- source scripts and working directory;
-- files transferred or changed;
-- sudo approvals performed;
-- lifecycle or policy-tier configuration changes;
-- credential enrollment or cleanup commands handed to the user;
-- remaining issues and the reproducible next action.
+- alias and `username@hostname`;
+- host, Docker container, or Compose service;
+- executed commands and exit codes;
+- cwd, env, and source scripts;
+- transferred or changed files;
+- direct sudo operations;
+- dangerous-command guard rejections;
+- remaining issues and next action.
