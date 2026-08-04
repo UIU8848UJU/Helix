@@ -7,9 +7,35 @@ description: Use Helix SSH MCP to inspect remote hosts, onboard or offboard host
 
 Use this skill when a task requires controlled work on a configured remote machine through the `helix-ssh` MCP server.
 
+## Operating Principle
+
+Security must preserve usability. Normal host lifecycle work is enabled by default in personal deployments; only genuine policy expansion requires the second authorization tier.
+
+### Lifecycle tier
+
+Proceed directly after an explicit user request for:
+
+- `host_onboard` and `host_offboard`;
+- hostname, port, username, identityFile, proxyJump, and tags;
+- standard per-host credential references;
+- user home, `/workspace`, `/tmp/helix`, and `/opt/ros` paths;
+- credential enrollment, status, and deletion requests.
+
+### Policy tier
+
+Call `mutation_capabilities` and request exact authorization only for:
+
+- additional remote roots outside lifecycle-safe defaults;
+- new sudo allowlist rules;
+- authentication or credential-reference replacement on an existing host;
+- longer sudo approval TTL;
+- disabling strict host-key checking or auditing.
+
+Do not tell the user to edit JSON for normal lifecycle work.
+
 ## Hard Rules
 
-- Do not edit `ssh-mcp.json` during normal operations or troubleshooting.
+- Do not edit `ssh-mcp.json` during normal operations, troubleshooting, or lifecycle administration.
 - Treat the Helix host alias, remote hostname, and SSH username as different fields.
 - Never ask for or expose plaintext login or sudo passwords.
 - Never place `sudo` inside `ssh_exec`, `docker_exec`, or `compose_exec`.
@@ -17,7 +43,7 @@ Use this skill when a task requires controlled work on a configured remote machi
 - After `sudo_request`, show `approvalCommand` and stop. Continue only after the user explicitly confirms approval.
 - Reuse the exact approved host, requestId, and command. Do not broaden or rewrite the command.
 - Do not bypass host-key checks, path allowlists, sudo allowlists, timeouts, or output limits.
-- Use host mutation tools only for an explicit administrative configuration request.
+- Do not classify normal host onboarding, IP changes, username changes, or credential enrollment as policy expansion.
 - Never run a local credential enrollment or deletion command on behalf of the user; display it and stop.
 
 ## First Actions
@@ -25,24 +51,29 @@ Use this skill when a task requires controlled work on a configured remote machi
 1. Call `helix_help` with the most relevant topic when the workflow is unclear.
 2. Call `host_list` and select the configured alias.
 3. Call `host_get` if hostname, username, authentication, paths, or sudo mode must be confirmed.
-4. For password-backed hosts, call `credential_status`.
-5. Call `ssh_check` before changing assumptions or proposing configuration edits.
-6. Call `environment_probe` before working in an unfamiliar environment.
+4. Call `mutation_capabilities` before host administration or after a mutation rejection.
+5. For password-backed hosts, call `credential_status`.
+6. Call `ssh_check` before changing assumptions or proposing configuration changes.
+7. Call `environment_probe` before working in an unfamiliar environment.
 
 ## Workflow: Host Onboarding
 
-Enter this workflow only after the user explicitly asks to add a host.
+Enter this workflow after the user explicitly asks to add a host.
 
-1. Confirm alias, hostname, SSH username, port, authentication type, allowed remote paths, and sudo mode.
-2. Call `host_onboard`; do not manually edit JSON.
-3. For Windows Credential Manager authentication, call `credential_enroll_request`.
-4. Show the returned `enrollmentCommand` and selected credential references.
-5. Stop. Password input must happen in the user's local hidden Broker terminal.
-6. After the user confirms completion, call `credential_status`.
-7. Call `ssh_check`.
-8. Report alias, `username@hostname`, authentication mode, credential existence, and connectivity.
+1. Confirm alias, hostname, SSH username, port, and authentication type.
+2. Call `mutation_capabilities`.
+3. Call `host_onboard`; do not manually edit JSON.
+4. Accept the lifecycle-safe default paths unless the user specifically needs another root.
+5. For Windows Credential Manager authentication, call `credential_enroll_request`.
+6. Show the returned `enrollmentCommand` and selected credential references.
+7. Stop. Password input must happen in the user's local hidden Broker terminal.
+8. After the user confirms completion, call `credential_status`.
+9. Call `ssh_check`.
+10. Report alias, `username@hostname`, authentication mode, credential existence, and connectivity.
 
 By default, enrollment prompts once and stores the same password for all selected login/sudo targets. Use `separatePasswords=true` only when the user says the login and sudo passwords differ.
+
+If onboarding requests a non-default path, non-empty sudo rule, custom credential reference, or longer approval TTL, state the exact policy expansion and request the second-tier authorization. Do not block the rest of onboarding unnecessarily.
 
 ## Workflow: Host Offboarding
 
@@ -86,31 +117,20 @@ Do not add `sudo` when an ordinary command fails. First determine whether the fa
 1. Confirm the local and remote paths.
 2. Use `ssh_upload` or `ssh_download`.
 3. Set `recursive=true` only for directories.
-4. Treat path rejection as a policy boundary.
-5. Do not expand `allowedRemotePaths` or local path roots unless the user explicitly starts an administrative configuration task.
+4. User home, `/workspace`, `/tmp/helix`, and `/opt/ros` are lifecycle-safe defaults.
+5. Treat requests for other roots as policy-tier expansion and ask only for that exact authorization.
 
 ## Workflow: Reviewed sudo
 
 ### Phase 1 — Request
 
-Call `sudo_request` with:
-
-- the selected host alias;
-- the exact final command;
-- a concrete reason tied to the user's task.
+Call `sudo_request` with the selected host alias, exact final command, and a concrete reason tied to the user's task.
 
 Do not request an interactive shell or a broad command that can execute arbitrary follow-up actions.
 
 ### Phase 2 — Stop for the user
 
-Present:
-
-- the exact command;
-- the reason;
-- the returned `approvalCommand`;
-- the approval expiry when available.
-
-Then stop. Do not call `sudo_execute` in the same turn and do not infer approval from silence or from the original task request.
+Present the exact command, reason, returned `approvalCommand`, and approval expiry when available. Then stop. Do not call `sudo_execute` in the same turn and do not infer approval from silence or from the original task request.
 
 ### Phase 3 — Execute
 
@@ -123,13 +143,7 @@ Only after the user explicitly says local approval is complete:
 
 ### Allowlist rejection
 
-Report:
-
-- the exact rejected command;
-- the active policy boundary;
-- the narrow anchored rule an administrator would need to consider.
-
-Do not edit configuration, split the command, encode it, wrap it in a shell, or substitute a broader allowed command.
+Report the exact rejected command, active policy boundary, and narrow anchored rule an administrator would need to consider. Adding the rule is a policy-tier operation. Do not split, encode, wrap, or substitute a broader command.
 
 ## Workflow: Remote Build
 
@@ -154,23 +168,7 @@ Use this order:
 4. `ssh_check`
 5. report whether the failure is network, host key, username, credential presence, authentication, or policy related
 
-Do not rename aliases, replace hostnames with usernames, or rewrite credential references without an explicit administrative request.
-
-## Administrative Configuration Changes
-
-Enter this mode only when the user explicitly asks to add, update, or remove a host or policy.
-
-Before using host mutation tools, state:
-
-- the alias and field being changed;
-- the old and proposed values when known;
-- why the change is required;
-- whether it expands access or privilege;
-- how it will be validated.
-
-Prefer `host_onboard` and `host_offboard` for lifecycle operations. Use lower-level `host_add`, `host_update`, or `host_remove` only when the high-level tools cannot express the explicit administrative change.
-
-Never store plaintext credentials in configuration. Store only credential references managed by the Broker.
+Explicit hostname, port, username, identityFile, proxyJump, or tag corrections are lifecycle changes and should use `host_update` directly. Do not rewrite credential references unless the user explicitly authorizes the policy-tier change.
 
 ## Completion Report
 
@@ -182,5 +180,6 @@ Report:
 - source scripts and working directory;
 - files transferred or changed;
 - sudo approvals performed;
+- lifecycle or policy-tier configuration changes;
 - credential enrollment or cleanup commands handed to the user;
 - remaining issues and the reproducible next action.
