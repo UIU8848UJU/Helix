@@ -3,7 +3,14 @@ import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { ConfigStore, hostMutationAllowed, redactHost, validateHost } from "./config.js";
+import {
+  ConfigStore,
+  hostMutationAllowed,
+  policyMutationAllowed,
+  redactHost,
+  safeLifecycleRemotePaths,
+  validateHost,
+} from "./config.js";
 import type { HostConfig } from "./types.js";
 
 function textResult(value: unknown): { content: Array<{ type: "text"; text: string }> } {
@@ -77,8 +84,40 @@ async function requireAdminScript(store: ConfigStore): Promise<string> {
 
 export function registerAdminTools(server: McpServer, store: ConfigStore): void {
   server.tool(
+    "mutation_capabilities",
+    "Report the two mutation tiers. Normal host lifecycle is enabled by default; security-policy expansion is separately locked by default.",
+    {},
+    async () => {
+      const config = await store.read();
+      return textResult({
+        hostLifecycle: {
+          allowed: hostMutationAllowed(config),
+          operations: [
+            "host_onboard and host_offboard",
+            "change hostname, port, username, identityFile, proxyJump, and tags",
+            "use standard per-host credential references",
+            "use lifecycle-safe paths under the user home, /workspace, /tmp/helix, and /opt/ros",
+            "enroll, check, and request deletion of credentials",
+          ],
+        },
+        policyMutation: {
+          allowed: policyMutationAllowed(config),
+          protectedChanges: [
+            "add remote paths outside lifecycle-safe defaults",
+            "add sudo allowlist rules",
+            "replace authentication or credential references on an existing host",
+            "increase sudo approval TTL",
+            "disable strict host-key checking or auditing",
+          ],
+        },
+        guidance: "Use host_onboard for new hosts. Safe lifecycle operations should not ask the user to edit JSON. Only request policy authorization when the exact protected change is necessary.",
+      });
+    },
+  );
+
+  server.tool(
     "host_onboard",
-    "Administrative high-level host creation. Generates safe credential references automatically and never accepts plaintext passwords. Host mutation must be enabled and the user must explicitly request onboarding.",
+    "Preferred host creation workflow. Normal lifecycle onboarding is enabled by default, generates standard credential references, and uses useful safe paths. Only custom policy expansion requires allowPolicyMutation.",
     {
       alias: z.string(),
       hostname: z.string(),
@@ -96,7 +135,9 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
     async (input) => {
       try {
         const current = await store.read();
-        if (!hostMutationAllowed(current)) throw new Error("Host mutation is disabled");
+        if (!hostMutationAllowed(current)) {
+          throw new Error("Host lifecycle mutation is disabled by the deployment profile");
+        }
         if (current.hosts[input.alias]) throw new Error(`Host alias already exists: ${input.alias}`);
 
         const defaultAuthType = process.platform === "win32" ? "windows-credential" : "openssh";
@@ -113,7 +154,7 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
           identityFile: input.identityFile,
           proxyJump: input.proxyJump,
           tags: input.tags ?? [],
-          allowedRemotePaths: input.allowedRemotePaths ?? ["/tmp/helix"],
+          allowedRemotePaths: input.allowedRemotePaths ?? safeLifecycleRemotePaths(input.username),
           auth: authType === "windows-credential"
             ? { type: "windows-credential" as const, credentialRef: loginCredentialRef }
             : { type: "openssh" as const },
@@ -133,6 +174,7 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
         const result: Record<string, unknown> = {
           alias: input.alias,
           host: redactHost(host),
+          mutationTier: "host-lifecycle",
           credentialRefs: refs,
           credentialsStored: false,
         };
@@ -157,14 +199,16 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
 
   server.tool(
     "host_offboard",
-    "Administrative high-level host removal. Removes only the non-secret host configuration and returns a separate local cleanup command for orphaned credentials; credentials are never deleted automatically.",
+    "Normal lifecycle host removal. Removes only non-secret host configuration and returns a separate local cleanup command for orphaned credentials; credentials are never deleted automatically.",
     {
       host: z.string(),
     },
     async ({ host }) => {
       try {
         const current = await store.read();
-        if (!hostMutationAllowed(current)) throw new Error("Host mutation is disabled");
+        if (!hostMutationAllowed(current)) {
+          throw new Error("Host lifecycle mutation is disabled by the deployment profile");
+        }
         const existing = current.hosts[host];
         if (!existing) throw new Error(`Unknown host alias: ${host}`);
         const refs = Object.values(credentialRefsForHost(existing)).filter((value): value is string => Boolean(value));
@@ -173,6 +217,7 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
 
         const result: Record<string, unknown> = {
           removed: host,
+          mutationTier: "host-lifecycle",
           credentialsDeleted: false,
           orphanedCredentials: refs,
         };
