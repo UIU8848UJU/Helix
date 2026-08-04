@@ -15,6 +15,17 @@ pub enum BrokerRequest {
         max_output_bytes: usize,
         strict_host_key_checking: bool,
     },
+    SudoExecute {
+        login_credential_ref: String,
+        sudo_credential_ref: String,
+        host: String,
+        port: u16,
+        username: Option<String>,
+        command: String,
+        timeout_seconds: u64,
+        max_output_bytes: usize,
+        strict_host_key_checking: bool,
+    },
     SftpUpload {
         credential_ref: String,
         host: String,
@@ -35,25 +46,6 @@ pub enum BrokerRequest {
         local_path: String,
         recursive: bool,
         timeout_seconds: u64,
-        strict_host_key_checking: bool,
-    },
-    ApprovalConsume {
-        request_id: String,
-        host_alias: String,
-        command_hash: String,
-    },
-    SudoExecuteApproved {
-        login_credential_ref: String,
-        sudo_credential_ref: String,
-        request_id: String,
-        host_alias: String,
-        command_hash: String,
-        host: String,
-        port: u16,
-        username: Option<String>,
-        command: String,
-        timeout_seconds: u64,
-        max_output_bytes: usize,
         strict_host_key_checking: bool,
     },
 }
@@ -102,31 +94,4 @@ impl BrokerResponse {
             ..Self::success()
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PendingApproval {
-    pub version: u32,
-    pub request_id: String,
-    pub host_alias: String,
-    pub hostname: String,
-    pub username: Option<String>,
-    pub command: String,
-    pub command_hash: String,
-    pub reason: String,
-    pub created_at: String,
-    pub expires_at_unix_ms: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ApprovedToken {
-    pub version: u32,
-    pub request_id: String,
-    pub host_alias: String,
-    pub command_hash: String,
-    pub approved_by: String,
-    pub approved_at_unix_ms: u64,
-    pub expires_at_unix_ms: u64,
 }
