@@ -68,6 +68,26 @@ jobs:
       - name: Build release broker
         run: cargo build --release --manifest-path apps/credential-broker/Cargo.toml
 
+      - name: Parse PowerShell scripts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $Failed = $false
+          Get-ChildItem -LiteralPath ./scripts -Filter '*.ps1' | ForEach-Object {
+            $Tokens = $null
+            $Errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName,
+              [ref]$Tokens,
+              [ref]$Errors
+            )
+            if ($Errors.Count -gt 0) {
+              $Failed = $true
+              Write-Error "$($_.Name): $($Errors | ForEach-Object Message | Out-String)"
+            }
+          }
+          if ($Failed) { throw 'PowerShell parser errors were found' }
+
       - name: Test MCP registration scripts
         if: runner.os == 'Windows'
         shell: pwsh
