@@ -34,7 +34,8 @@ const hostSchema = z.object({
 });
 
 const settingsSchema = z.object({
-  allowHostMutation: z.boolean().default(false),
+  allowHostMutation: z.boolean().default(true),
+  allowPolicyMutation: z.boolean().default(false),
   defaultTimeoutSeconds: z.number().int().min(1).max(3600).default(60),
   maxOutputBytes: z.number().int().min(1024).max(100 * 1024 * 1024).default(1024 * 1024),
   maxConcurrentCommands: z.number().int().min(1).max(64).default(4),
@@ -93,6 +94,102 @@ export function validateHost(hostAlias: string, input: unknown): HostConfig {
   return parsed;
 }
 
+function booleanOverride(name: string, fallback: boolean): boolean {
+  const value = process.env[name];
+  if (value === "1" || value?.toLowerCase() === "true") return true;
+  if (value === "0" || value?.toLowerCase() === "false") return false;
+  return fallback;
+}
+
+export function hostMutationAllowed(config: HelixConfig): boolean {
+  return booleanOverride("HELIX_ALLOW_HOST_MUTATION", config.settings.allowHostMutation);
+}
+
+export function policyMutationAllowed(config: HelixConfig): boolean {
+  return booleanOverride("HELIX_ALLOW_POLICY_MUTATION", config.settings.allowPolicyMutation);
+}
+
+export function safeLifecycleRemotePaths(username?: string): string[] {
+  const paths = ["/workspace", "/tmp/helix", "/opt/ros"];
+  if (username) paths.unshift(`/home/${username}`);
+  return paths;
+}
+
+function sameValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function addedValues(before: string[], after: string[]): string[] {
+  const existing = new Set(before);
+  return after.filter((value) => !existing.has(value));
+}
+
+function collectHostPolicyExpansions(
+  alias: string,
+  before: HostConfig | undefined,
+  after: HostConfig | undefined,
+): string[] {
+  if (!after) return [];
+
+  const changes: string[] = [];
+  const safePaths = new Set(safeLifecycleRemotePaths(after.username));
+  const standardLoginRef = `Helix/ssh/${alias}/login`;
+  const standardSudoRef = `Helix/ssh/${alias}/sudo`;
+
+  if (!before) {
+    const unsafePaths = after.allowedRemotePaths.filter((value) => !safePaths.has(value));
+    if (unsafePaths.length) changes.push(`${alias}.allowedRemotePaths(+${unsafePaths.join(",")})`);
+    if (after.auth.type === "windows-credential" && after.auth.credentialRef !== standardLoginRef) {
+      changes.push(`${alias}.auth.credentialRef`);
+    }
+    if (after.sudo.credentialRef && after.sudo.credentialRef !== standardSudoRef) {
+      changes.push(`${alias}.sudo.credentialRef`);
+    }
+    if (after.sudo.allow.length) changes.push(`${alias}.sudo.allow`);
+    if (after.sudo.approvalTtlSeconds > 300) changes.push(`${alias}.sudo.approvalTtlSeconds`);
+    return changes;
+  }
+
+  const newPaths = addedValues(before.allowedRemotePaths, after.allowedRemotePaths)
+    .filter((value) => !safePaths.has(value));
+  if (newPaths.length) changes.push(`${alias}.allowedRemotePaths(+${newPaths.join(",")})`);
+
+  if (!sameValue(before.auth, after.auth)) changes.push(`${alias}.auth`);
+
+  const addedSudoRules = addedValues(before.sudo.allow, after.sudo.allow);
+  if (addedSudoRules.length) changes.push(`${alias}.sudo.allow`);
+
+  if (after.sudo.credentialRef !== before.sudo.credentialRef) {
+    changes.push(`${alias}.sudo.credentialRef`);
+  }
+
+  if (after.sudo.approvalTtlSeconds > before.sudo.approvalTtlSeconds) {
+    changes.push(`${alias}.sudo.approvalTtlSeconds`);
+  }
+
+  const modeExpansion = before.sudo.mode === "disabled" && after.sudo.mode !== "disabled" && after.sudo.allow.length > 0;
+  const nopasswdExpansion = before.sudo.mode === "reviewed-password" && after.sudo.mode === "reviewed-nopasswd" && after.sudo.allow.length > 0;
+  if (modeExpansion || nopasswdExpansion) changes.push(`${alias}.sudo.mode`);
+
+  return changes;
+}
+
+export function collectPolicyExpansions(before: HelixConfig, after: HelixConfig): string[] {
+  const changes: string[] = [];
+  const aliases = new Set([...Object.keys(before.hosts), ...Object.keys(after.hosts)]);
+  for (const alias of aliases) {
+    changes.push(...collectHostPolicyExpansions(alias, before.hosts[alias], after.hosts[alias]));
+  }
+
+  if (before.settings.strictHostKeyChecking && !after.settings.strictHostKeyChecking) {
+    changes.push("settings.strictHostKeyChecking");
+  }
+  if (before.settings.auditEnabled && !after.settings.auditEnabled) {
+    changes.push("settings.auditEnabled");
+  }
+  return [...new Set(changes)];
+}
+
 export class ConfigStore {
   readonly filePath: string;
   private writeChain: Promise<void> = Promise.resolve();
@@ -131,16 +228,21 @@ export class ConfigStore {
   }
 
   async mutate(mutator: (config: HelixConfig) => void): Promise<HelixConfig> {
-    const config = await this.read();
+    const before = await this.read();
+    const config = structuredClone(before);
     mutator(config);
     const validated = validateConfig(config);
+    const policyExpansions = collectPolicyExpansions(before, validated);
+    if (policyExpansions.length && !policyMutationAllowed(before)) {
+      throw new Error(
+        `Policy mutation is disabled; normal host lifecycle changes remain enabled. `
+        + `Requested policy expansion: ${policyExpansions.join(", ")}. `
+        + "Use safe lifecycle defaults or explicitly enable settings.allowPolicyMutation for this administrative task.",
+      );
+    }
     await this.write(validated);
     return validated;
   }
-}
-
-export function hostMutationAllowed(config: HelixConfig): boolean {
-  return config.settings.allowHostMutation || process.env.HELIX_ALLOW_HOST_MUTATION === "1";
 }
 
 export function redactHost(host: HostConfig): Record<string, unknown> {
