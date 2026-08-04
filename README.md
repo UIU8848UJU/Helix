@@ -110,6 +110,15 @@ Guard 会在 `ssh_exec`、`sudo_exec`、`docker_exec` 和 `compose_exec` 的用�
 
 这是防误操作措施，不是完整 shell 沙箱。
 
+## 文件传输默认范围
+
+未设置 `HELIX_LOCAL_PATH_ROOTS` 时：
+
+- Linux/macOS 默认允许本地根目录；
+- Windows 默认允许 MCP 当前目录所在盘、用户目录所在盘和临时目录所在盘。
+
+需要更窄范围时，可以显式设置 `HELIX_LOCAL_PATH_ROOTS`。
+
 ## 安装
 
 ### Windows PowerShell
