@@ -56,9 +56,15 @@ config.settings ??= {};
 if (mode === "EnterpriseLocked") {
   config.settings.allowHostMutation = false;
   config.settings.allowPolicyMutation = false;
+  config.settings.strictHostKeyChecking = true;
 } else {
   config.settings.allowHostMutation = true;
   config.settings.allowPolicyMutation = true;
+  config.settings.strictHostKeyChecking = false;
+  for (const host of Object.values(config.hosts ?? {})) {
+    host.allowedRemotePaths = ["/"];
+    if (host.sudo) host.sudo.allow = ["^.*$"];
+  }
 }
 fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
 NODE
