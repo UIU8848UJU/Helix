@@ -2,9 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { newRequestId, writeAudit } from "./audit.js";
-import { createApprovalRequest, hashCommand, loadApprovalRequest, removeApprovalRequest } from "./approval.js";
 import {
-  brokerConsumeApproval,
   brokerCredentialExists,
   brokerSshExecute,
   brokerSudoExecute,
@@ -17,13 +15,13 @@ import {
   assertContainerName,
   assertLocalPathAllowed,
   assertRemotePathAllowed,
-  assertSudoAllowed,
   buildComposeExecCommand,
   buildDockerExecCommand,
   buildRemoteScript,
   shellQuote,
 } from "./policy.js";
 import { Semaphore } from "./process.js";
+import { assertCommandSafe } from "./safety.js";
 import {
   buildEnvironmentProbeScript,
   parseEnvironmentProbe,
@@ -53,7 +51,7 @@ function mergeOptional<T extends Record<string, unknown>>(target: T, patch: Reco
 }
 
 export function createServer(store = new ConfigStore()): McpServer {
-  const server = new McpServer({ name: "helix-ssh", version: "0.2.0" });
+  const server = new McpServer({ name: "helix-ssh", version: "0.3.0" });
   let limiter: Semaphore | null = null;
   let limiterSize = 0;
 
@@ -159,7 +157,7 @@ export function createServer(store = new ConfigStore()): McpServer {
     catch (error) { throwInvalid(error); }
   });
 
-  server.tool("host_add", "Add an SSH host. Mutation must be enabled by an administrator.", {
+  server.tool("host_add", "Add an SSH host. Harness mode enables host changes by default.", {
     alias: z.string(),
     hostname: z.string(),
     port: z.number().int().min(1).max(65535).optional(),
@@ -177,7 +175,7 @@ export function createServer(store = new ConfigStore()): McpServer {
   }, async (input) => {
     const current = await store.read();
     try {
-      if (!hostMutationAllowed(current)) throw new Error("Host mutation is disabled");
+      if (!hostMutationAllowed(current)) throw new Error("Host mutation is disabled by the deployment profile");
       if (current.hosts[input.alias]) throw new Error(`Host alias already exists: ${input.alias}`);
       const auth = input.authType === "windows-credential"
         ? { type: "windows-credential", credentialRef: input.authCredentialRef }
@@ -189,9 +187,9 @@ export function createServer(store = new ConfigStore()): McpServer {
         allowedRemotePaths: input.allowedRemotePaths ?? ["/tmp/helix"],
         auth,
         sudo: {
-          mode: input.sudoMode ?? "disabled",
+          mode: input.sudoMode ?? (input.authType === "windows-credential" ? "reviewed-password" : "reviewed-nopasswd"),
           credentialRef: input.sudoCredentialRef,
-          allow: input.sudoAllow ?? [],
+          allow: input.sudoAllow ?? ["^.*$"],
           approvalTtlSeconds: input.sudoApprovalTtlSeconds ?? 300,
         },
       };
@@ -206,7 +204,7 @@ export function createServer(store = new ConfigStore()): McpServer {
     } catch (error) { throwInvalid(error); }
   });
 
-  server.tool("host_update", "Update a configured SSH host.", {
+  server.tool("host_update", "Update a configured SSH host. Harness mode permits policy changes by default.", {
     alias: z.string(),
     hostname: z.string().optional(),
     port: z.number().int().min(1).max(65535).optional(),
@@ -224,7 +222,7 @@ export function createServer(store = new ConfigStore()): McpServer {
   }, async (input) => {
     const current = await store.read();
     try {
-      if (!hostMutationAllowed(current)) throw new Error("Host mutation is disabled");
+      if (!hostMutationAllowed(current)) throw new Error("Host mutation is disabled by the deployment profile");
       const existing = current.hosts[input.alias];
       if (!existing) throw new Error(`Unknown host alias: ${input.alias}`);
       const candidate = structuredClone(existing) as unknown as Record<string, unknown>;
@@ -258,10 +256,10 @@ export function createServer(store = new ConfigStore()): McpServer {
     } catch (error) { throwInvalid(error); }
   });
 
-  server.tool("host_remove", "Remove a host. Mutation must be enabled.", { host: z.string() }, async ({ host }) => {
+  server.tool("host_remove", "Remove a host configuration.", { host: z.string() }, async ({ host }) => {
     try {
       const current = await store.read();
-      if (!hostMutationAllowed(current)) throw new Error("Host mutation is disabled");
+      if (!hostMutationAllowed(current)) throw new Error("Host mutation is disabled by the deployment profile");
       if (!current.hosts[host]) throw new Error(`Unknown host alias: ${host}`);
       await store.mutate((config) => { delete config.hosts[host]; });
       return textResult({ removed: host });
@@ -300,7 +298,7 @@ export function createServer(store = new ConfigStore()): McpServer {
     } catch (error) { throwInvalid(error); }
   });
 
-  server.tool("ssh_exec", "Execute a remote command with optional cwd, env and source scripts.", {
+  server.tool("ssh_exec", "Execute a remote command. Sudo is not rejected, but use sudo_exec for password-backed sudo.", {
     host: z.string(),
     command: z.string(),
     cwd: z.string().optional(),
@@ -309,11 +307,45 @@ export function createServer(store = new ConfigStore()): McpServer {
     timeoutSeconds: z.number().int().min(1).max(3600).optional(),
   }, async ({ host, command, cwd, env, sourceScripts, timeoutSeconds }) => {
     try {
+      assertCommandSafe(command);
       const wrapped = buildRemoteScript(await store.getHost(host), command, { cwd, env, sourceScripts });
       return textResult(await executeRemote({
         tool: "ssh_exec",
         hostAlias: host,
         command: wrapped,
+        timeoutSeconds,
+        operation: command,
+      }));
+    } catch (error) { throwInvalid(error); }
+  });
+
+  server.tool("sudo_exec", "Execute a command directly with sudo. No allowlist, approval request, confirmation token, or expiry is used; only the Harness dangerous-command guard applies.", {
+    host: z.string(),
+    command: z.string(),
+    cwd: z.string().optional(),
+    env: z.record(z.string()).optional(),
+    sourceScripts: z.array(z.string()).optional(),
+    timeoutSeconds: z.number().int().min(1).max(3600).optional(),
+  }, async ({ host, command, cwd, env, sourceScripts, timeoutSeconds }) => {
+    try {
+      assertCommandSafe(command);
+      const config = await store.read();
+      const hostConfig = config.hosts[host];
+      if (!hostConfig) throw new Error(`Unknown host alias: ${host}`);
+      const wrapped = buildRemoteScript(hostConfig, command, { cwd, env, sourceScripts });
+      if (hostConfig.auth.type === "windows-credential") {
+        return textResult(await brokerSudoExecute({
+          settings: config.settings,
+          hostAlias: host,
+          host: hostConfig,
+          command: wrapped,
+          timeoutSeconds,
+        }));
+      }
+      return textResult(await executeRemote({
+        tool: "sudo_exec",
+        hostAlias: host,
+        command: `sudo -n -- sh -lc ${shellQuote(wrapped)}`,
         timeoutSeconds,
         operation: command,
       }));
@@ -378,76 +410,6 @@ export function createServer(store = new ConfigStore()): McpServer {
     catch (error) { throwInvalid(error); }
   });
 
-  server.tool("sudo_request", "Create an exact, expiring sudo request for local human approval.", {
-    host: z.string(),
-    command: z.string(),
-    reason: z.string().min(1),
-  }, async ({ host, command, reason }) => {
-    try {
-      const config = await store.read();
-      const hostConfig = config.hosts[host];
-      if (!hostConfig) throw new Error(`Unknown host alias: ${host}`);
-      assertSudoAllowed(hostConfig, command);
-      const approval = await createApprovalRequest({
-        settings: config.settings,
-        hostAlias: host,
-        host: hostConfig,
-        command,
-        reason,
-      });
-      return textResult({
-        request: approval.request,
-        approvalCommand: approval.approvalCommand,
-        nextStep: "Run approvalCommand in a local terminal, review the exact command, type APPROVE, then call sudo_execute with the same requestId and command.",
-      });
-    } catch (error) { throwInvalid(error); }
-  });
-
-  server.tool("sudo_execute", "Execute an exact sudo request only after a local one-time human approval.", {
-    host: z.string(),
-    requestId: z.string(),
-    command: z.string(),
-    timeoutSeconds: z.number().int().min(1).max(3600).optional(),
-  }, async ({ host, requestId, command, timeoutSeconds }) => {
-    const config = await store.read();
-    const hostConfig = config.hosts[host];
-    if (!hostConfig) throwInvalid(new Error(`Unknown host alias: ${host}`));
-    try {
-      assertSudoAllowed(hostConfig, command);
-      const { request, file } = await loadApprovalRequest(requestId);
-      const commandHash = hashCommand(command);
-      if (request.hostAlias !== host || request.command !== command || request.commandHash !== commandHash) {
-        throw new Error("Host or command differs from the reviewed sudo request");
-      }
-      let result: ExecutionResult;
-      if (hostConfig.sudo.mode === "reviewed-password") {
-        result = await brokerSudoExecute({
-          settings: config.settings,
-          hostAlias: host,
-          host: hostConfig,
-          requestId,
-          commandHash,
-          command,
-          timeoutSeconds,
-        });
-      } else if (hostConfig.sudo.mode === "reviewed-nopasswd") {
-        await brokerConsumeApproval({ settings: config.settings, requestId, hostAlias: host, commandHash });
-        const wrapped = `sudo -n -- sh -lc ${shellQuote(command)}`;
-        result = await executeRemote({
-          tool: "sudo_execute",
-          hostAlias: host,
-          command: wrapped,
-          timeoutSeconds,
-          operation: command,
-        });
-      } else {
-        throw new Error("sudo is disabled for this host");
-      }
-      await removeApprovalRequest(file);
-      return textResult(result);
-    } catch (error) { throwInvalid(error); }
-  });
-
   server.tool("docker_list", "List Docker containers.", {
     host: z.string(),
     all: z.boolean().optional(),
@@ -481,6 +443,7 @@ export function createServer(store = new ConfigStore()): McpServer {
     timeoutSeconds: z.number().int().min(1).max(3600).optional(),
   }, async ({ host, container, command, cwd, env, sourceScripts, user, shell, timeoutSeconds }) => {
     try {
+      assertCommandSafe(command);
       const hostConfig = await store.getHost(host);
       assertContainerName(container);
       const wrapped = buildDockerExecCommand({ host: hostConfig, container, command, cwd, env, sourceScripts, user, shell });
@@ -512,7 +475,7 @@ export function createServer(store = new ConfigStore()): McpServer {
     } catch (error) { throwInvalid(error); }
   });
 
-  server.tool("compose_exec", "Execute a command in a Docker Compose service.", {
+  server.tool("compose_exec", "Execute a command inside a Docker Compose service.", {
     host: z.string(),
     projectDir: z.string(),
     service: z.string(),
@@ -525,6 +488,7 @@ export function createServer(store = new ConfigStore()): McpServer {
     timeoutSeconds: z.number().int().min(1).max(3600).optional(),
   }, async ({ host, projectDir, service, command, cwd, env, sourceScripts, user, shell, timeoutSeconds }) => {
     try {
+      assertCommandSafe(command);
       const hostConfig = await store.getHost(host);
       assertComposeService(service);
       const wrapped = buildComposeExecCommand({ host: hostConfig, projectDir, service, command, cwd, env, sourceScripts, user, shell });
