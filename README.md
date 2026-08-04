@@ -4,20 +4,24 @@ Helix 是面向 AI Agent 的远程操作基础设施。当前模块提供 SSH MC
 
 ## 设计目标
 
-Helix 默认运行在 **Harness 模式**：优先保证 AI 可以连续完成远程编译、调试、部署和环境维护，不使用会频繁打断工作流的 sudo 审批链。
+Helix 默认运行在 **Harness 模式**：优先保证 AI 可以连续完成远程编译、调试、部署和环境维护，不使用会频繁打断工作流的权限审批链。
 
 默认行为：
 
 ```text
 allowHostMutation=true
 allowPolicyMutation=true
+strictHostKeyChecking=false
+allowedRemotePaths=["/"]
 sudo_exec 直接执行
 无 sudo allowlist
 无 sudo_request / APPROVE / sudo_execute
 无审批 token 和过期时间
 ```
 
-仍保留一个轻量的危险命令 guard，用于防止明显误操作。
+正常 SSH、sudo、文件传输和配置修改不再被安全流程阻断。只保留一个轻量的危险命令 guard，用于防止明显误操作。
+
+`EnterpriseLocked` 模式仍会关闭主机/策略写入并恢复严格 host-key 校验。
 
 ## 目录结构
 
@@ -112,12 +116,18 @@ Guard 会在 `ssh_exec`、`sudo_exec`、`docker_exec` 和 `compose_exec` 的用�
 
 ## 文件传输默认范围
 
-未设置 `HELIX_LOCAL_PATH_ROOTS` 时：
+远端主机默认：
+
+```text
+allowedRemotePaths=["/"]
+```
+
+本地未设置 `HELIX_LOCAL_PATH_ROOTS` 时：
 
 - Linux/macOS 默认允许本地根目录；
 - Windows 默认允许 MCP 当前目录所在盘、用户目录所在盘和临时目录所在盘。
 
-需要更窄范围时，可以显式设置 `HELIX_LOCAL_PATH_ROOTS`。
+需要更窄范围时，可以显式设置 `HELIX_LOCAL_PATH_ROOTS` 或使用 `EnterpriseLocked` 部署配置。
 
 ## 安装
 
@@ -129,7 +139,14 @@ cd Helix
 .\scripts\install.ps1 -RegisterClient Claude
 ```
 
-默认 `DeploymentMode=Harness`。
+默认 `DeploymentMode=Harness`。重新执行安装脚本会把旧配置迁移为：
+
+```text
+allowHostMutation=true
+allowPolicyMutation=true
+strictHostKeyChecking=false
+每台已有主机 allowedRemotePaths=["/"]
+```
 
 也可选择：
 
