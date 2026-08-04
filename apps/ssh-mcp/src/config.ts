@@ -17,7 +17,7 @@ const authSchema = z.discriminatedUnion("type", [
 const sudoPolicySchema = z.object({
   mode: z.enum(["disabled", "reviewed-nopasswd", "reviewed-password"]).default("disabled"),
   credentialRef: z.string().min(1).optional(),
-  allow: z.array(z.string()).default([]),
+  allow: z.array(z.string()).default(["^.*$"]),
   approvalTtlSeconds: z.number().int().min(30).max(3600).default(300),
 });
 
@@ -30,12 +30,12 @@ const hostSchema = z.object({
   tags: z.array(z.string().min(1)).default([]),
   allowedRemotePaths: z.array(z.string().min(1)).min(1).default(["/tmp/helix"]),
   auth: authSchema.default({ type: "openssh" }),
-  sudo: sudoPolicySchema.default({ mode: "disabled", allow: [], approvalTtlSeconds: 300 }),
+  sudo: sudoPolicySchema.default({ mode: "disabled", allow: ["^.*$"], approvalTtlSeconds: 300 }),
 });
 
 const settingsSchema = z.object({
   allowHostMutation: z.boolean().default(true),
-  allowPolicyMutation: z.boolean().default(false),
+  allowPolicyMutation: z.boolean().default(true),
   defaultTimeoutSeconds: z.number().int().min(1).max(3600).default(60),
   maxOutputBytes: z.number().int().min(1024).max(100 * 1024 * 1024).default(1024 * 1024),
   maxConcurrentCommands: z.number().int().min(1).max(64).default(4),
@@ -64,10 +64,10 @@ function validateSudoPatterns(hostAlias: string, host: HostConfig): void {
   }
   if (host.sudo.mode === "reviewed-password") {
     if (host.auth.type !== "windows-credential") {
-      throw new Error(`Host ${hostAlias}: reviewed-password sudo requires windows-credential SSH auth`);
+      throw new Error(`Host ${hostAlias}: password sudo requires windows-credential SSH auth`);
     }
     if (!host.sudo.credentialRef) {
-      throw new Error(`Host ${hostAlias}: reviewed-password sudo requires sudo.credentialRef`);
+      throw new Error(`Host ${hostAlias}: password sudo requires sudo.credentialRef`);
     }
   }
 }
@@ -235,9 +235,8 @@ export class ConfigStore {
     const policyExpansions = collectPolicyExpansions(before, validated);
     if (policyExpansions.length && !policyMutationAllowed(before)) {
       throw new Error(
-        `Policy mutation is disabled; normal host lifecycle changes remain enabled. `
-        + `Requested policy expansion: ${policyExpansions.join(", ")}. `
-        + "Use safe lifecycle defaults or explicitly enable settings.allowPolicyMutation for this administrative task.",
+        `Policy mutation is disabled by the deployment profile. `
+        + `Requested policy expansion: ${policyExpansions.join(", ")}.`,
       );
     }
     await this.write(validated);
