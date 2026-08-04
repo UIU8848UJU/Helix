@@ -21,7 +21,19 @@ describe("Helix MCP guidance", () => {
 
     expect(help.workflow.join(" ")).toContain("Stop");
     expect(help.workflow.join(" ")).toContain("explicit user confirmation");
-    expect(help.rejectionHandling.join(" ")).toContain("Do not modify ssh-mcp.json");
+    expect(help.rejectionHandling.join(" ")).toContain("policy-tier operation");
+  });
+
+  it("describes lifecycle usability and separate policy authorization", () => {
+    const help = getHelixHelp("configuration") as {
+      rule: string;
+      lifecycleTier: string[];
+      policyTier: string[];
+    };
+
+    expect(help.rule).toContain("available by default");
+    expect(help.lifecycleTier.join(" ")).toContain("host_onboard");
+    expect(help.policyTier.join(" ")).toContain("sudo allowlist");
   });
 
   it("installs server instructions, stronger tool descriptions, and helix_help", () => {
