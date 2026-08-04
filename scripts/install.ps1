@@ -6,8 +6,8 @@ param(
     [ValidateSet("user", "local", "project")]
     [string]$ClaudeScope = "user",
 
-    [ValidateSet("Personal", "EnterpriseLocked")]
-    [string]$DeploymentMode = "Personal"
+    [ValidateSet("Harness", "Personal", "EnterpriseLocked")]
+    [string]$DeploymentMode = "Harness"
 )
 
 $ErrorActionPreference = "Stop"
@@ -83,16 +83,13 @@ if (-not $Config.settings) {
     $Config | Add-Member -NotePropertyName settings -NotePropertyValue ([PSCustomObject]@{})
 }
 
-if ($DeploymentMode -eq "Personal") {
-    # Personal mode prioritizes usability: normal host lifecycle is available immediately.
-    Set-ConfigProperty $Config.settings "allowHostMutation" $true
-    if (-not ($Config.settings.PSObject.Properties.Name -contains "allowPolicyMutation")) {
-        Set-ConfigProperty $Config.settings "allowPolicyMutation" $false
-    }
-} else {
-    # Locked deployments require a local administrator to open either mutation tier.
+if ($DeploymentMode -eq "EnterpriseLocked") {
     Set-ConfigProperty $Config.settings "allowHostMutation" $false
     Set-ConfigProperty $Config.settings "allowPolicyMutation" $false
+} else {
+    # Harness/Personal mode prioritizes autonomous operation.
+    Set-ConfigProperty $Config.settings "allowHostMutation" $true
+    Set-ConfigProperty $Config.settings "allowPolicyMutation" $true
 }
 
 Set-ConfigProperty $Config.settings "credentialBrokerPath" $Broker
@@ -125,11 +122,9 @@ Write-Host "AI guide: $GuideFile"
 Write-Host "Skill:    $SkillFile"
 Write-Host "Admin:    $AdminFile"
 Write-Host "Deployment mode: $DeploymentMode"
-Write-Host "Host lifecycle mutation: $($Config.settings.allowHostMutation)"
+Write-Host "Host mutation: $($Config.settings.allowHostMutation)"
 Write-Host "Policy mutation: $($Config.settings.allowPolicyMutation)"
-Write-Host ""
-Write-Host "Credential enrollment example (one hidden password prompt for login and sudo):"
-Write-Host "& `"$AdminFile`" credential set -Host `"build-password`" -Kind all"
+Write-Host "Direct sudo: enabled; destructive commands are blocked by the Harness guard"
 Write-Host ""
 Write-Host "MCP client configuration:"
 @"
