@@ -1,4 +1,3 @@
-mod approval;
 mod credential;
 mod protocol;
 mod ssh;
@@ -6,7 +5,6 @@ mod ssh;
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use protocol::{BrokerRequest, BrokerResponse};
-use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     io::{self, Read},
@@ -47,22 +45,6 @@ enum Command {
         #[arg(long)]
         target: String,
     },
-    Approve {
-        #[arg(long)]
-        request_file: PathBuf,
-    },
-}
-
-fn command_hash(command: &str) -> String {
-    hex::encode(Sha256::digest(command.as_bytes()))
-}
-
-fn require_hash(command: &str, expected: &str) -> Result<()> {
-    let actual = command_hash(command);
-    if actual != expected {
-        return Err(anyhow!("command hash mismatch"));
-    }
-    Ok(())
 }
 
 fn normalize_targets(targets: Vec<String>) -> Result<Vec<String>> {
@@ -83,6 +65,27 @@ fn normalize_targets(targets: Vec<String>) -> Result<Vec<String>> {
     Ok(normalized)
 }
 
+fn connect(
+    credential_ref: &str,
+    host: &str,
+    port: u16,
+    username: Option<&str>,
+    timeout_seconds: u64,
+    strict_host_key_checking: bool,
+) -> Result<ssh2::Session> {
+    let login = credential::read(credential_ref)?;
+    ssh::connect(
+        &ssh::ConnectOptions {
+            host,
+            port,
+            username,
+            timeout_seconds,
+            strict_host_key_checking,
+        },
+        &login,
+    )
+}
+
 fn handle(request: BrokerRequest) -> Result<BrokerResponse> {
     match request {
         BrokerRequest::Ping => Ok(BrokerResponse::success()),
@@ -100,18 +103,39 @@ fn handle(request: BrokerRequest) -> Result<BrokerResponse> {
             max_output_bytes,
             strict_host_key_checking,
         } => {
-            let login = credential::read(&credential_ref)?;
-            let session = ssh::connect(
-                &ssh::ConnectOptions {
-                    host: &host,
-                    port,
-                    username: username.as_deref(),
-                    timeout_seconds,
-                    strict_host_key_checking,
-                },
-                &login,
+            let session = connect(
+                &credential_ref,
+                &host,
+                port,
+                username.as_deref(),
+                timeout_seconds,
+                strict_host_key_checking,
             )?;
             ssh::execute(&session, &command, None, max_output_bytes)
+        }
+        BrokerRequest::SudoExecute {
+            login_credential_ref,
+            sudo_credential_ref,
+            host,
+            port,
+            username,
+            command,
+            timeout_seconds,
+            max_output_bytes,
+            strict_host_key_checking,
+        } => {
+            let session = connect(
+                &login_credential_ref,
+                &host,
+                port,
+                username.as_deref(),
+                timeout_seconds,
+                strict_host_key_checking,
+            )?;
+            let sudo = credential::read(&sudo_credential_ref)?;
+            let quoted = command.replace('\'', "'\"'\"'");
+            let wrapped = format!("sudo -S -p '' -- sh -lc '{}'", quoted);
+            ssh::execute(&session, &wrapped, Some(&sudo.secret), max_output_bytes)
         }
         BrokerRequest::SftpUpload {
             credential_ref,
@@ -124,16 +148,13 @@ fn handle(request: BrokerRequest) -> Result<BrokerResponse> {
             timeout_seconds,
             strict_host_key_checking,
         } => {
-            let login = credential::read(&credential_ref)?;
-            let session = ssh::connect(
-                &ssh::ConnectOptions {
-                    host: &host,
-                    port,
-                    username: username.as_deref(),
-                    timeout_seconds,
-                    strict_host_key_checking,
-                },
-                &login,
+            let session = connect(
+                &credential_ref,
+                &host,
+                port,
+                username.as_deref(),
+                timeout_seconds,
+                strict_host_key_checking,
             )?;
             ssh::upload(
                 &session,
@@ -154,16 +175,13 @@ fn handle(request: BrokerRequest) -> Result<BrokerResponse> {
             timeout_seconds,
             strict_host_key_checking,
         } => {
-            let login = credential::read(&credential_ref)?;
-            let session = ssh::connect(
-                &ssh::ConnectOptions {
-                    host: &host,
-                    port,
-                    username: username.as_deref(),
-                    timeout_seconds,
-                    strict_host_key_checking,
-                },
-                &login,
+            let session = connect(
+                &credential_ref,
+                &host,
+                port,
+                username.as_deref(),
+                timeout_seconds,
+                strict_host_key_checking,
             )?;
             ssh::download(
                 &session,
@@ -172,47 +190,6 @@ fn handle(request: BrokerRequest) -> Result<BrokerResponse> {
                 recursive,
             )?;
             Ok(BrokerResponse::success())
-        }
-        BrokerRequest::ApprovalConsume {
-            request_id,
-            host_alias,
-            command_hash,
-        } => {
-            let _token = approval::consume(&request_id, &host_alias, &command_hash)?;
-            Ok(BrokerResponse::success())
-        }
-        BrokerRequest::SudoExecuteApproved {
-            login_credential_ref,
-            sudo_credential_ref,
-            request_id,
-            host_alias,
-            command_hash: expected_hash,
-            host,
-            port,
-            username,
-            command,
-            timeout_seconds,
-            max_output_bytes,
-            strict_host_key_checking,
-        } => {
-            require_hash(&command, &expected_hash)?;
-            let _token = approval::consume(&request_id, &host_alias, &expected_hash)?;
-            let login = credential::read(&login_credential_ref)?;
-            let sudo = credential::read(&sudo_credential_ref)?;
-            let session = ssh::connect(
-                &ssh::ConnectOptions {
-                    host: &host,
-                    port,
-                    username: username.as_deref(),
-                    timeout_seconds,
-                    strict_host_key_checking,
-                },
-                &login,
-            )?;
-            let prompt = format!("[HELIX-SUDO:{request_id}]");
-            let quoted = command.replace('\'', "'\"'\"'");
-            let wrapped = format!("sudo -k -S -p '{}' -- sh -lc '{}'", prompt, quoted);
-            ssh::execute(&session, &wrapped, Some(&sudo.secret), max_output_bytes)
         }
     }
 }
@@ -254,7 +231,6 @@ fn main() -> Result<()> {
             println!("{}", credential::exists(&target));
             Ok(())
         }
-        Command::Approve { request_file } => approval::approve_file(&request_file),
     }
 }
 
@@ -263,15 +239,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn command_hash_is_stable() {
-        assert_eq!(command_hash("id"), command_hash("id"));
-        assert_ne!(command_hash("id"), command_hash("id "));
-    }
-
-    #[test]
     fn ping_protocol_round_trip() {
         let request: BrokerRequest = serde_json::from_str(r#"{"op":"ping"}"#).unwrap();
         assert!(matches!(request, BrokerRequest::Ping));
+    }
+
+    #[test]
+    fn direct_sudo_protocol_round_trip() {
+        let request: BrokerRequest = serde_json::from_str(
+            r#"{"op":"sudo_execute","login_credential_ref":"a","sudo_credential_ref":"b","host":"127.0.0.1","port":22,"username":"dev","command":"id","timeout_seconds":10,"max_output_bytes":1024,"strict_host_key_checking":true}"#,
+        )
+        .unwrap();
+        assert!(matches!(request, BrokerRequest::SudoExecute { .. }));
     }
 
     #[test]
