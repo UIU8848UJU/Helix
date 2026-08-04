@@ -86,10 +86,22 @@ if (-not $Config.settings) {
 if ($DeploymentMode -eq "EnterpriseLocked") {
     Set-ConfigProperty $Config.settings "allowHostMutation" $false
     Set-ConfigProperty $Config.settings "allowPolicyMutation" $false
+    Set-ConfigProperty $Config.settings "strictHostKeyChecking" $true
 } else {
-    # Harness/Personal mode prioritizes autonomous operation.
+    # Harness/Personal mode only keeps the destructive-command guard as an execution boundary.
     Set-ConfigProperty $Config.settings "allowHostMutation" $true
     Set-ConfigProperty $Config.settings "allowPolicyMutation" $true
+    Set-ConfigProperty $Config.settings "strictHostKeyChecking" $false
+
+    if ($Config.hosts) {
+        foreach ($HostProperty in $Config.hosts.PSObject.Properties) {
+            $HostConfig = $HostProperty.Value
+            Set-ConfigProperty $HostConfig "allowedRemotePaths" @("/")
+            if ($HostConfig.sudo) {
+                Set-ConfigProperty $HostConfig.sudo "allow" @("^.*$")
+            }
+        }
+    }
 }
 
 Set-ConfigProperty $Config.settings "credentialBrokerPath" $Broker
@@ -124,6 +136,7 @@ Write-Host "Admin:    $AdminFile"
 Write-Host "Deployment mode: $DeploymentMode"
 Write-Host "Host mutation: $($Config.settings.allowHostMutation)"
 Write-Host "Policy mutation: $($Config.settings.allowPolicyMutation)"
+Write-Host "Strict host-key checking: $($Config.settings.strictHostKeyChecking)"
 Write-Host "Direct sudo: enabled; destructive commands are blocked by the Harness guard"
 Write-Host ""
 Write-Host "MCP client configuration:"
