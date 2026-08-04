@@ -4,7 +4,10 @@ param(
     [string]$RegisterClient = "Auto",
 
     [ValidateSet("user", "local", "project")]
-    [string]$ClaudeScope = "user"
+    [string]$ClaudeScope = "user",
+
+    [ValidateSet("Personal", "EnterpriseLocked")]
+    [string]$DeploymentMode = "Personal"
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +19,14 @@ $ConfigFile = if ($env:HELIX_SSH_CONFIG) { $env:HELIX_SSH_CONFIG } else { Join-P
 function Require-Command([string]$Name) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
         throw "Missing dependency: $Name"
+    }
+}
+
+function Set-ConfigProperty($Object, [string]$Name, $Value) {
+    if ($Object.PSObject.Properties.Name -contains $Name) {
+        $Object.$Name = $Value
+    } else {
+        $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value
     }
 }
 
@@ -71,11 +82,21 @@ $Config = Get-Content $ConfigFile -Raw | ConvertFrom-Json
 if (-not $Config.settings) {
     $Config | Add-Member -NotePropertyName settings -NotePropertyValue ([PSCustomObject]@{})
 }
-if ($Config.settings.PSObject.Properties.Name -contains "credentialBrokerPath") {
-    $Config.settings.credentialBrokerPath = $Broker
+
+if ($DeploymentMode -eq "Personal") {
+    # Personal mode prioritizes usability: normal host lifecycle is available immediately.
+    Set-ConfigProperty $Config.settings "allowHostMutation" $true
+    if (-not ($Config.settings.PSObject.Properties.Name -contains "allowPolicyMutation")) {
+        Set-ConfigProperty $Config.settings "allowPolicyMutation" $false
+    }
 } else {
-    $Config.settings | Add-Member -NotePropertyName credentialBrokerPath -NotePropertyValue $Broker
+    # Locked deployments require a local administrator to open either mutation tier.
+    Set-ConfigProperty $Config.settings "allowHostMutation" $false
+    Set-ConfigProperty $Config.settings "allowPolicyMutation" $false
 }
+
+Set-ConfigProperty $Config.settings "credentialBrokerPath" $Broker
+
 $Json = $Config | ConvertTo-Json -Depth 20
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($ConfigFile, $Json + [Environment]::NewLine, $Utf8NoBom)
@@ -103,6 +124,9 @@ Write-Host "Config: $ConfigFile"
 Write-Host "AI guide: $GuideFile"
 Write-Host "Skill:    $SkillFile"
 Write-Host "Admin:    $AdminFile"
+Write-Host "Deployment mode: $DeploymentMode"
+Write-Host "Host lifecycle mutation: $($Config.settings.allowHostMutation)"
+Write-Host "Policy mutation: $($Config.settings.allowPolicyMutation)"
 Write-Host ""
 Write-Host "Credential enrollment example (one hidden password prompt for login and sudo):"
 Write-Host "& `"$AdminFile`" credential set -Host `"build-password`" -Kind all"
