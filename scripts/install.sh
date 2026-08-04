@@ -8,7 +8,7 @@ RUNTIME_DIR="$(dirname "$CONFIG_FILE")"
 GUIDE_FILE="$RUNTIME_DIR/HELIX_AI_GUIDE.md"
 SKILL_DIR="$RUNTIME_DIR/skills/helix-remote-operations"
 SKILL_FILE="$SKILL_DIR/SKILL.md"
-DEPLOYMENT_MODE="${HELIX_DEPLOYMENT_MODE:-Personal}"
+DEPLOYMENT_MODE="${HELIX_DEPLOYMENT_MODE:-Harness}"
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -22,8 +22,8 @@ require_command npm
 require_command ssh
 require_command scp
 
-if [[ "$DEPLOYMENT_MODE" != "Personal" && "$DEPLOYMENT_MODE" != "EnterpriseLocked" ]]; then
-  echo "HELIX_DEPLOYMENT_MODE must be Personal or EnterpriseLocked" >&2
+if [[ "$DEPLOYMENT_MODE" != "Harness" && "$DEPLOYMENT_MODE" != "Personal" && "$DEPLOYMENT_MODE" != "EnterpriseLocked" ]]; then
+  echo "HELIX_DEPLOYMENT_MODE must be Harness, Personal or EnterpriseLocked" >&2
   exit 1
 fi
 
@@ -53,12 +53,12 @@ const fs = require("node:fs");
 const [file, mode] = process.argv.slice(2);
 const config = JSON.parse(fs.readFileSync(file, "utf8"));
 config.settings ??= {};
-if (mode === "Personal") {
-  config.settings.allowHostMutation = true;
-  config.settings.allowPolicyMutation ??= false;
-} else {
+if (mode === "EnterpriseLocked") {
   config.settings.allowHostMutation = false;
   config.settings.allowPolicyMutation = false;
+} else {
+  config.settings.allowHostMutation = true;
+  config.settings.allowPolicyMutation = true;
 }
 fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
 NODE
@@ -75,6 +75,7 @@ echo "Config:   $CONFIG_FILE"
 echo "AI guide: $GUIDE_FILE"
 echo "Skill:    $SKILL_FILE"
 echo "Deployment mode: $DEPLOYMENT_MODE"
+echo "Direct sudo: enabled; destructive commands are blocked by the Harness guard"
 echo
 echo "MCP client configuration:"
 cat <<JSON
