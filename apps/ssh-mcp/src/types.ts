@@ -25,6 +25,7 @@ export interface HostConfig {
 
 export interface GlobalSettings {
   allowHostMutation: boolean;
+  allowPolicyMutation: boolean;
   defaultTimeoutSeconds: number;
   maxOutputBytes: number;
   maxConcurrentCommands: number;
