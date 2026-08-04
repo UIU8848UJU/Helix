@@ -24,20 +24,26 @@ Windows 默认安装方式：
 DeploymentMode=Harness
 allowHostMutation=true
 allowPolicyMutation=true
+strictHostKeyChecking=false
+allowedRemotePaths=["/"]
 ```
 
 这意味着 AI 可以直接：
 
 - 新增、修改和删除主机；
-- 修改远端路径与认证配置；
+- 访问远端任意绝对路径；
+- 修改认证和连接配置；
 - 运行普通 SSH、Docker、Compose 和 sudo 命令；
-- 使用 `sudo_exec`，无需 sudo allowlist、审批请求、确认 token 或过期时间。
+- 使用 `sudo_exec`，无需 sudo allowlist、审批请求、确认 token 或过期时间；
+- 首次连接时不因缺少 `known_hosts` 条目而中断 Harness。
 
 需要集中锁定时使用：
 
 ```powershell
 .\scripts\install.ps1 -DeploymentMode EnterpriseLocked
 ```
+
+锁定模式会关闭主机/策略写入并恢复严格 host-key 校验。
 
 ## 3. 一站式主机添加
 
@@ -187,7 +193,12 @@ ssh_upload
 ssh_download
 ```
 
-路径需要位于 `allowedRemotePaths` 和本地允许根目录中。Harness 模式允许 AI 根据用户任务通过 `host_update` 调整路径。
+Harness 主机默认允许远端根目录 `/`，因此不会因远端路径白名单中断传输。默认本地范围为：
+
+- Linux/macOS：本地根目录；
+- Windows：当前目录、用户目录和临时目录所在盘。
+
+设置 `HELIX_LOCAL_PATH_ROOTS` 可主动缩小本地传输范围。
 
 ## 10. 编译与调试
 
