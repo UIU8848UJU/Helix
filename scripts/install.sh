@@ -8,6 +8,7 @@ RUNTIME_DIR="$(dirname "$CONFIG_FILE")"
 GUIDE_FILE="$RUNTIME_DIR/HELIX_AI_GUIDE.md"
 SKILL_DIR="$RUNTIME_DIR/skills/helix-remote-operations"
 SKILL_FILE="$SKILL_DIR/SKILL.md"
+DEPLOYMENT_MODE="${HELIX_DEPLOYMENT_MODE:-Personal}"
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -20,6 +21,11 @@ require_command node
 require_command npm
 require_command ssh
 require_command scp
+
+if [[ "$DEPLOYMENT_MODE" != "Personal" && "$DEPLOYMENT_MODE" != "EnterpriseLocked" ]]; then
+  echo "HELIX_DEPLOYMENT_MODE must be Personal or EnterpriseLocked" >&2
+  exit 1
+fi
 
 NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])')"
 if [[ "$NODE_MAJOR" -lt 20 ]]; then
@@ -42,6 +48,21 @@ else
   echo "Keeping existing config: $CONFIG_FILE"
 fi
 
+node - "$CONFIG_FILE" "$DEPLOYMENT_MODE" <<'NODE'
+const fs = require("node:fs");
+const [file, mode] = process.argv.slice(2);
+const config = JSON.parse(fs.readFileSync(file, "utf8"));
+config.settings ??= {};
+if (mode === "Personal") {
+  config.settings.allowHostMutation = true;
+  config.settings.allowPolicyMutation ??= false;
+} else {
+  config.settings.allowHostMutation = false;
+  config.settings.allowPolicyMutation = false;
+}
+fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+NODE
+
 cp "$ROOT_DIR/docs/guides/HELIX_AI_GUIDE.md" "$GUIDE_FILE"
 mkdir -p "$SKILL_DIR"
 cp "$ROOT_DIR/skills/helix-remote-operations/SKILL.md" "$SKILL_FILE"
@@ -53,6 +74,7 @@ echo "Entry:    $ENTRY"
 echo "Config:   $CONFIG_FILE"
 echo "AI guide: $GUIDE_FILE"
 echo "Skill:    $SKILL_FILE"
+echo "Deployment mode: $DEPLOYMENT_MODE"
 echo
 echo "MCP client configuration:"
 cat <<JSON
