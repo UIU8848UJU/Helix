@@ -83,7 +83,8 @@ jobs:
             )
             if ($Errors.Count -gt 0) {
               $Failed = $true
-              Write-Error "$($_.Name): $($Errors | ForEach-Object Message | Out-String)"
+              $Messages = $Errors | ForEach-Object { $_.Message }
+              Write-Error "$($_.Name): $($Messages -join '; ')"
             }
           }
           if ($Failed) { throw 'PowerShell parser errors were found' }
