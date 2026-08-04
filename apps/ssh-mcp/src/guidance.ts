@@ -6,12 +6,14 @@ export const HELIX_SERVER_INSTRUCTIONS = [
   "Helix is a controlled SSH operations server. Call helix_help when the workflow is unclear.",
   "Start remote work with host_list, then credential_status and ssh_check when authentication or connectivity is uncertain.",
   "Treat host aliases as Helix identifiers; hostname is the remote address and username is the SSH account.",
+  "Normal host lifecycle management is designed to be usable by default. Use host_onboard, host_update for connection fields, host_offboard, and credential request tools instead of editing ssh-mcp.json.",
+  "Call mutation_capabilities when a host change is rejected. Host lifecycle and security-policy expansion are separate tiers.",
+  "Only expanded paths, sudo rules, credential-reference replacement, longer approval windows, or weakened global protections require allowPolicyMutation.",
   "Use ssh_exec only for non-privileged commands. Never add sudo to ssh_exec, docker_exec, or compose_exec.",
   "For privileged work, call sudo_request with the exact final command and a concrete reason. Show approvalCommand to the user and STOP. Do not call sudo_execute until the user explicitly confirms local approval is complete.",
   "sudo_execute must reuse the exact host, requestId, and command returned by the reviewed request. Never alter or broaden the approved command.",
-  "If a command is rejected by the sudo allowlist, report the missing rule and requested command. Do not edit ssh-mcp.json or weaken policy unless the user explicitly asks for an administrative configuration change.",
+  "If a command is rejected by the sudo allowlist, report the missing rule and requested command. Do not edit ssh-mcp.json or weaken policy unless the user explicitly asks for that exact policy expansion.",
   "Never ask for, print, store, or return plaintext login or sudo passwords. Use credential_status to check only whether configured credentials exist.",
-  "Do not modify Helix configuration during normal troubleshooting. host_add, host_update, and host_remove are administrative operations and require an explicit user request.",
 ].join("\n");
 
 export const HELP_TOPICS = [
@@ -28,18 +30,28 @@ export const HELP_TOPICS = [
 export type HelpTopic = (typeof HELP_TOPICS)[number];
 
 export const TOOL_DESCRIPTIONS: Record<string, string> = {
+  mutation_capabilities:
+    "Check the two mutation tiers before asking the user to change configuration: normal host lifecycle is enabled by default, while genuine policy expansion is locked separately.",
   host_list:
     "Start here: list configured Helix host aliases and redacted connection settings. An alias is not the SSH username or hostname.",
   host_get:
     "Read one host's redacted settings. Use this to understand username, hostname, authentication, paths, and sudo policy without editing configuration.",
+  host_onboard:
+    "Preferred way to add a host. Uses standard credential references and useful lifecycle-safe paths; only custom policy expansion needs the second authorization tier.",
   host_add:
-    "Administrative only: add a host after the user explicitly asks to change Helix configuration. Never use this as connection troubleshooting.",
+    "Low-level host creation. Prefer host_onboard so credential references and safe defaults are generated consistently.",
   host_update:
-    "Administrative only: update a host after the user explicitly approves the configuration change. Never weaken sudo or path policy to make an operation pass.",
+    "Update connection details such as hostname, port, username, identity file, proxy jump, and tags normally. Expanding paths, sudo, credentials, or approval policy requires allowPolicyMutation.",
+  host_offboard:
+    "Preferred way to remove a host configuration without automatically deleting stored credentials.",
   host_remove:
-    "Administrative only: remove a configured host after an explicit user request.",
+    "Low-level host removal after an explicit user request. Prefer host_offboard when credential cleanup guidance is useful.",
   credential_status:
     "Check whether the configured login and sudo credentials exist. This never returns secret values and should precede password-auth troubleshooting.",
+  credential_enroll_request:
+    "Generate a local hidden-input credential enrollment command. Show it to the user and STOP; do not request passwords in chat.",
+  credential_delete_request:
+    "Generate a local credential cleanup command. Show it and wait for explicit user action; do not delete secrets automatically.",
   ssh_check:
     "Check SSH connectivity using the configured authentication backend. Prefer this before changing configuration when login fails.",
   ssh_exec:
@@ -66,7 +78,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
 
 const HELP: Record<HelpTopic, object> = {
   overview: {
-    purpose: "Controlled remote operations for AI agents without exposing plaintext credentials.",
+    purpose: "Controlled remote operations for AI agents without exposing plaintext credentials or making normal administration cumbersome.",
     standardFlow: [
       "host_list",
       "host_get when details are needed",
@@ -74,6 +86,12 @@ const HELP: Record<HelpTopic, object> = {
       "ssh_check",
       "environment_probe for unfamiliar environments",
       "ssh_exec, transfer, Docker, or reviewed sudo tools",
+    ],
+    hostAdministration: [
+      "Use host_onboard for new hosts and host_offboard for removal.",
+      "Normal connection-field updates are available in the host lifecycle tier.",
+      "Call mutation_capabilities instead of asking the user to inspect JSON.",
+      "Request policy authorization only for the exact protected expansion that is actually needed.",
     ],
     nonNegotiableRules: [
       "Do not edit ssh-mcp.json during normal operations or troubleshooting.",
@@ -92,7 +110,7 @@ const HELP: Record<HelpTopic, object> = {
     onFailure: [
       "Report the exact host alias, hostname, username, and error without secrets.",
       "Check host-key, network reachability, account name, and credential existence.",
-      "Do not rewrite the JSON unless the user explicitly requests an administrative change.",
+      "Use host_update for explicit connection-field corrections; do not rewrite JSON.",
     ],
   },
   exec: {
@@ -112,9 +130,9 @@ const HELP: Record<HelpTopic, object> = {
       "After the user confirms approval, call sudo_execute using the same host, requestId, and byte-for-byte identical command.",
     ],
     rejectionHandling: [
-      "If the allowlist rejects the command, report the exact rejected command and that an administrator must add an anchored rule.",
+      "If the allowlist rejects the command, report the exact rejected command and the narrow anchored rule that would be needed.",
       "Do not split, rewrite, broaden, or obfuscate the command to bypass policy.",
-      "Do not modify ssh-mcp.json unless the user explicitly switches to an administrative configuration task.",
+      "Adding a sudo rule is a policy-tier operation and requires explicit authorization.",
     ],
     security: "Approval is local, expiring, one-time, and bound to the host and exact command hash.",
   },
@@ -123,7 +141,8 @@ const HELP: Record<HelpTopic, object> = {
       "Use ssh_upload or ssh_download.",
       "Use absolute paths whenever possible.",
       "Set recursive only for directories.",
-      "A path rejection is a policy result, not a reason to edit configuration automatically.",
+      "User home, /workspace, /tmp/helix, and /opt/ros are lifecycle-safe onboarding defaults.",
+      "Adding other remote roots is a policy-tier expansion.",
     ],
   },
   docker: {
@@ -135,11 +154,25 @@ const HELP: Record<HelpTopic, object> = {
     privilegeBoundary: "Container tools are non-privileged. Host-level privileged Docker commands require sudo_request and sudo_execute.",
   },
   configuration: {
-    rule: "Configuration changes are administrative operations, not automatic troubleshooting steps.",
+    rule: "Usability-first tiering: normal host lifecycle is available by default; only actual security-policy expansion needs a second authorization switch.",
+    lifecycleTier: [
+      "host_onboard and host_offboard",
+      "hostname, port, username, identityFile, proxyJump, and tags",
+      "standard per-host credential references",
+      "safe onboarding roots under the user home, /workspace, /tmp/helix, and /opt/ros",
+      "credential enrollment, status, and deletion requests",
+    ],
+    policyTier: [
+      "remote roots outside lifecycle-safe defaults",
+      "new sudo allowlist rules",
+      "authentication or credential-reference replacement on an existing host",
+      "longer sudo approval TTL",
+      "disabling strict host-key checking or auditing",
+    ],
     workflow: [
-      "Explain the exact proposed change and why it is needed.",
-      "Wait for an explicit user request to change configuration.",
-      "Use host_add, host_update, or host_remove only when host mutation is enabled.",
+      "Use mutation_capabilities to inspect both tiers.",
+      "Proceed directly for explicitly requested lifecycle changes.",
+      "For policy expansion, state the exact old and new values and request authorization for only that change.",
       "Never place plaintext passwords in configuration; store only credential references.",
     ],
   },
@@ -150,10 +183,12 @@ const HELP: Record<HelpTopic, object> = {
       "ssh_check",
       "environment_probe",
       "a minimal read-only ssh_exec command",
+      "mutation_capabilities when a requested host change is rejected",
       "report the observed boundary or policy failure",
     ],
     avoid: [
-      "Editing ssh-mcp.json without an explicit administrative request.",
+      "Editing ssh-mcp.json during normal workflows.",
+      "Treating all host changes as dangerous policy changes.",
       "Changing usernames based on host aliases.",
       "Adding sudo to ordinary execution tools.",
       "Asking the user to paste passwords into chat.",
