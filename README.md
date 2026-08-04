@@ -20,6 +20,8 @@ scripts/                      安装、注册、管理和卸载脚本
 
 - 主机配置：列出、读取、添加、修改、删除
 - 高层主机管理：`host_onboard` 自动生成凭据引用，`host_offboard` 安全下线并保留凭据恢复能力
+- 可用性优先的双层变更权限：正常主机生命周期默认开启，真正的安全策略扩权默认关闭
+- `mutation_capabilities` 明确告诉 AI 当前允许的生命周期操作和受保护的策略操作
 - 两种认证后端：系统 OpenSSH/SSH Agent，或 Windows Credential Manager 密码认证
 - 凭据录入请求：AI 只生成本地命令，密码通过本地隐藏终端输入
 - 默认一次密码输入同时写入 login/sudo 两个凭据目标；不同密码可显式分开录入
@@ -36,11 +38,37 @@ scripts/                      安装、注册、管理和卸载脚本
 - 超时、输出上限、并发控制和 JSONL 审计
 - Claude Code / Codex CLI 自动注册与安全注销
 
+## 可用性优先的安全分级
+
+Helix 不把所有配置写操作都视为同一风险级别。
+
+### 主机生命周期层：个人模式默认开启
+
+以下操作在用户明确要求后可以直接执行，不需要先修改 JSON：
+
+- `host_onboard` / `host_offboard`
+- 修改 hostname、port、username、identityFile、proxyJump 和 tags
+- 使用标准的 `Helix/ssh/<alias>/login` 与 `Helix/ssh/<alias>/sudo` 凭据引用
+- 使用用户目录、`/workspace`、`/tmp/helix`、`/opt/ros` 等生命周期安全路径
+- 生成本地凭据录入、状态检查和删除请求
+
+### 安全策略层：默认关闭
+
+只有以下真正扩大权限或削弱保护的变更才需要 `allowPolicyMutation=true`：
+
+- 增加生命周期安全范围以外的远端根目录
+- 新增 sudo allowlist 规则
+- 替换已有主机的认证方式或凭据引用
+- 延长 sudo 审批有效时间
+- 关闭严格主机密钥校验或审计
+
+所有 MCP 配置写入都会经过同一套中央策略比较，不能通过换一个工具绕过分级。
+
 ## AI 操作引导的四层结构
 
 Helix 不依赖 AI 自己猜测工具流程，而是提供四层一致的引导：
 
-1. **MCP instructions 与工具描述**：客户端连接时获得跨工具约束；普通执行工具明确禁止嵌入 sudo，配置工具明确只用于管理员任务。
+1. **MCP instructions 与工具描述**：客户端连接时获得跨工具约束；正常主机生命周期应直接走工具，策略扩权才请求第二层授权。
 2. **`helix_help`**：AI 可按 `overview`、`connect`、`exec`、`sudo`、`transfer`、`docker`、`configuration`、`troubleshooting` 查询权威流程。
 3. **本地指南**：安装时复制到 `%APPDATA%\Helix\HELIX_AI_GUIDE.md` 或 `~/.config/helix/HELIX_AI_GUIDE.md`，供人工阅读、离线检查和审计。
 4. **Skill**：`skills/helix-remote-operations/SKILL.md` 编排环境探测、文件传输、Docker、source、编译、诊断和 reviewed sudo 等复杂任务。
@@ -53,7 +81,8 @@ Helix 不依赖 AI 自己猜测工具流程，而是提供四层一致的引导�
 - `ssh_exec`、`docker_exec`、`compose_exec` 不得嵌入 sudo；
 - `sudo_request` 返回后必须展示 `approvalCommand` 并停止；
 - 只有用户明确确认本地审批完成后，才能用完全相同的 host、requestId、command 调用 `sudo_execute`；
-- allowlist 或路径策略拒绝时只报告边界，不得通过改配置或改写命令绕过。
+- AI 不得把普通主机生命周期操作误报成高风险策略变更；
+- allowlist 或路径策略拒绝时只报告准确边界，不得通过改写命令绕过。
 
 ## 安装
 
@@ -65,7 +94,11 @@ cd Helix
 bash scripts/install.sh
 ```
 
-Linux/macOS 当前使用 OpenSSH/SSH Agent 后端。
+Linux/macOS 当前使用 OpenSSH/SSH Agent 后端。默认使用 `Personal` 部署模式；企业锁定模式可设置：
+
+```bash
+HELIX_DEPLOYMENT_MODE=EnterpriseLocked bash scripts/install.sh
+```
 
 ### Windows PowerShell
 
@@ -75,9 +108,28 @@ cd Helix
 .\scripts\install.ps1
 ```
 
-安装脚本默认使用 `-RegisterClient Auto`：检测到 `claude` 或 `codex` CLI 后，自动通过它们的官方 MCP 子命令注册 `helix-ssh`。Claude Code 默认使用用户级 scope，Codex 使用用户级 `config.toml`。
+安装脚本默认使用：
 
-也可以显式选择：
+```text
+DeploymentMode = Personal
+allowHostMutation = true
+allowPolicyMutation = false
+RegisterClient = Auto
+```
+
+因此个人开发机重装后，添加、删除和修正主机连接信息会直接可用，旧配置中的 `allowHostMutation:false` 也会迁移为可用状态；安全策略扩权仍保持关闭。
+
+企业锁定部署：
+
+```powershell
+.\scripts\install.ps1 `
+  -DeploymentMode EnterpriseLocked `
+  -RegisterClient Claude
+```
+
+该模式会把两个变更层都关闭，等待本地管理员显式开放。
+
+也可以显式选择客户端：
 
 ```powershell
 # 只注册 Claude Code
@@ -147,14 +199,15 @@ Claude Code 的 `project` scope 会修改当前目录的 `.mcp.json`；`local` �
 
 ## 主机管理与凭据录入
 
-查询主机使用：
+查询主机和变更层状态：
 
 ```text
 host_list
 host_get
+mutation_capabilities
 ```
 
-管理员明确要求新增主机时使用 `host_onboard`，例如：
+新增主机时使用 `host_onboard`：
 
 ```json
 {
@@ -173,19 +226,14 @@ Helix/ssh/jetson-dev/login
 Helix/ssh/jetson-dev/sudo
 ```
 
-主机写操作默认关闭。Windows PowerShell 可临时设置：
+并默认配置以下实用路径：
 
-```powershell
-$env:HELIX_ALLOW_HOST_MUTATION = "1"
+```text
+/home/jetson_developer
+/workspace
+/tmp/helix
+/opt/ros
 ```
-
-Linux/macOS shell 可设置：
-
-```bash
-export HELIX_ALLOW_HOST_MUTATION=1
-```
-
-也可以在配置中设置 `settings.allowHostMutation=true`。
 
 随后 AI 调用 `credential_enroll_request`。工具只返回本地 `enrollmentCommand`，AI 必须展示命令并停止。用户在本地终端执行后，Broker 通过隐藏输入读取密码。
 
@@ -218,6 +266,27 @@ credential_status
 下线主机使用 `host_offboard`。它只删除非敏感主机配置，并返回孤立凭据引用及本地 `cleanupCommand`；凭据不会自动删除。
 
 完整说明见：[主机与凭据管理](docs/guides/host-credential-administration.md)。
+
+## 临时开放策略层
+
+只有确实需要扩大路径、增加 sudo 规则或替换凭据策略时才开放：
+
+```powershell
+$env:HELIX_ALLOW_POLICY_MUTATION = "1"
+```
+
+或者在配置中设置：
+
+```json
+{
+  "settings": {
+    "allowHostMutation": true,
+    "allowPolicyMutation": true
+  }
+}
+```
+
+完成策略调整后应恢复为 `false`。企业锁定环境还可使用 `HELIX_ALLOW_HOST_MUTATION=0` 强制关闭生命周期写操作。
 
 ## Windows 密码凭据边界
 
@@ -265,7 +334,8 @@ node apps/ssh-mcp/build/index.js
 AI 不确定操作流程时应调用：
 
 ```text
-helix_help({ "topic": "sudo" })
+helix_help({ "topic": "configuration" })
+mutation_capabilities()
 ```
 
 ## MCP 客户端手工配置
@@ -288,12 +358,6 @@ helix_help({ "topic": "sudo" })
   }
 }
 ```
-
-## 主机配置写操作
-
-`host_add`、`host_update`、`host_remove`、`host_onboard`、`host_offboard` 默认关闭。管理员可设置 `HELIX_ALLOW_HOST_MUTATION=1`，或在配置中设置 `settings.allowHostMutation=true`。
-
-即使开启主机写操作，AI 也只能在用户明确要求配置变更时使用；不得把修改配置作为普通连接、权限或路径问题的自动解决方案。
 
 完整设计和操作说明见：
 
