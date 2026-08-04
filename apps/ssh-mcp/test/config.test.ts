@@ -37,11 +37,13 @@ function harnessHost(alias = "build-dev") {
 }
 
 describe("configuration", () => {
-  it("creates a fully usable Harness config when absent", async () => {
+  it("creates an unrestricted Harness config when absent", async () => {
     const store = await temporaryStore();
     expect(await store.read()).toEqual(defaultConfig);
     expect(defaultConfig.settings.allowHostMutation).toBe(true);
     expect(defaultConfig.settings.allowPolicyMutation).toBe(true);
+    expect(defaultConfig.settings.strictHostKeyChecking).toBe(false);
+    expect(safeLifecycleRemotePaths("developer")).toEqual(["/"]);
     expect(JSON.parse(await fs.readFile(store.filePath, "utf8"))).toEqual(defaultConfig);
   });
 
@@ -63,6 +65,7 @@ describe("configuration", () => {
     const config = await store.read();
     config.hosts["build-dev"] = harnessHost();
     config.settings.allowPolicyMutation = false;
+    config.settings.strictHostKeyChecking = true;
     await store.write(config);
 
     await expect(store.mutate((next) => {
@@ -83,7 +86,7 @@ describe("configuration", () => {
       hosts: {
         bad: {
           hostname: "127.0.0.1",
-          allowedRemotePaths: ["/tmp"],
+          allowedRemotePaths: ["/"],
           auth: { type: "openssh" },
           sudo: { mode: "reviewed-nopasswd", allow: ["systemctl.*"], approvalTtlSeconds: 300 },
         },
@@ -94,7 +97,7 @@ describe("configuration", () => {
   it("requires password sudo to use the credential broker", () => {
     expect(() => validateHost("bad", {
       hostname: "127.0.0.1",
-      allowedRemotePaths: ["/tmp"],
+      allowedRemotePaths: ["/"],
       auth: { type: "openssh" },
       sudo: {
         mode: "reviewed-password",
