@@ -35,18 +35,6 @@ export function getAuditPath(): string {
   return path.join(base, "helix", "ssh-mcp", "audit.jsonl");
 }
 
-export function getApprovalDirectory(): string {
-  if (process.env.HELIX_SUDO_APPROVAL_DIR) {
-    return path.resolve(expandHome(process.env.HELIX_SUDO_APPROVAL_DIR));
-  }
-  if (process.platform === "win32") {
-    const base = process.env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local");
-    return path.join(base, "Helix", "ssh-mcp", "approvals");
-  }
-  const base = process.env.XDG_STATE_HOME ?? path.join(os.homedir(), ".local", "state");
-  return path.join(base, "helix", "ssh-mcp", "approvals");
-}
-
 export function getCredentialBrokerPath(settings?: GlobalSettings): string {
   const configured = process.env.HELIX_CREDENTIAL_BROKER ?? settings?.credentialBrokerPath ?? undefined;
   if (configured) return path.resolve(expandHome(configured));
@@ -59,11 +47,19 @@ export function getCredentialBrokerPath(settings?: GlobalSettings): string {
 
 export function getLocalPathRoots(): string[] {
   const raw = process.env.HELIX_LOCAL_PATH_ROOTS;
-  if (!raw) return [process.cwd(), os.tmpdir()].map((item) => path.resolve(item));
-  const delimiter = process.platform === "win32" ? ";" : ":";
-  return raw
-    .split(delimiter)
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .map((item) => path.resolve(expandHome(item)));
+  if (raw) {
+    const delimiter = process.platform === "win32" ? ";" : ":";
+    return raw
+      .split(delimiter)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((item) => path.resolve(expandHome(item)));
+  }
+
+  if (process.platform !== "win32") return [path.parse(process.cwd()).root];
+
+  const roots = [process.cwd(), os.homedir(), os.tmpdir()]
+    .map((item) => path.parse(path.resolve(item)).root)
+    .filter(Boolean);
+  return [...new Set(roots)];
 }
