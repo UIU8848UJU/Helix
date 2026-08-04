@@ -1,8 +1,8 @@
 {
   "name": "@helix/ssh-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "Secure SSH, password broker, reviewed sudo, file transfer, Docker and environment tools for MCP clients.",
+  "description": "High-throughput SSH harness with secure local credentials, direct sudo, file transfer, Docker and environment tools for MCP clients.",
   "type": "module",
   "bin": { "helix-ssh-mcp": "build/index.js" },
   "files": ["build"],
