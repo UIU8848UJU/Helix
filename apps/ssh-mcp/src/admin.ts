@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -42,7 +43,7 @@ export function credentialRefsForHost(host: HostConfig): { login: string | null;
   };
 }
 
-export function buildCredentialAdminCommand(input: {
+export function buildCredentialAdminArgs(input: {
   scriptPath: string;
   configPath: string;
   action: "set" | "status" | "delete";
@@ -50,26 +51,52 @@ export function buildCredentialAdminCommand(input: {
   kind?: "all" | "login" | "sudo";
   credentialRefs?: string[];
   separatePasswords?: boolean;
-}): string {
+}): string[] {
   const args = [
-    "powershell",
     "-NoProfile",
     "-ExecutionPolicy",
     "Bypass",
     "-File",
-    powershellQuote(input.scriptPath),
+    input.scriptPath,
     "credential",
     input.action,
     "-ConfigPath",
-    powershellQuote(input.configPath),
+    input.configPath,
   ];
-  if (input.host) args.push("-Host", powershellQuote(input.host));
+  if (input.host) args.push("-Host", input.host);
   if (input.kind) args.push("-Kind", input.kind);
-  if (input.credentialRefs?.length) {
-    args.push("-CredentialRef", input.credentialRefs.map(powershellQuote).join(","));
-  }
+  if (input.credentialRefs?.length) args.push("-CredentialRef", input.credentialRefs.join(","));
   if (input.separatePasswords) args.push("-SeparatePasswords");
-  return args.join(" ");
+  return args;
+}
+
+export function buildCredentialAdminCommand(input: Parameters<typeof buildCredentialAdminArgs>[0]): string {
+  const args = buildCredentialAdminArgs(input);
+  return ["powershell", ...args.map((value, index) => {
+    const previous = args[index - 1];
+    return previous?.startsWith("-") && !value.includes(" ") ? value : powershellQuote(value);
+  })].join(" ");
+}
+
+export function launchCredentialWindow(input: Parameters<typeof buildCredentialAdminArgs>[0]): { pid: number | null } {
+  if (process.platform !== "win32") {
+    throw new Error("Interactive credential windows are only available on Windows");
+  }
+  const executable = path.join(
+    process.env.SystemRoot ?? "C:\\Windows",
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+  const child = spawn(executable, buildCredentialAdminArgs(input), {
+    shell: false,
+    detached: true,
+    stdio: "ignore",
+    windowsHide: false,
+  });
+  child.unref();
+  return { pid: child.pid ?? null };
 }
 
 async function requireAdminScript(store: ConfigStore): Promise<string> {
@@ -82,42 +109,37 @@ async function requireAdminScript(store: ConfigStore): Promise<string> {
   return scriptPath;
 }
 
+async function enrollmentContext(store: ConfigStore, host: string, kind: "all" | "login" | "sudo") {
+  const hostConfig = await store.getHost(host);
+  const refs = credentialRefsForHost(hostConfig);
+  if (kind === "login" && !refs.login) throw new Error(`Host ${host} does not use a managed login credential`);
+  if (kind === "sudo" && !refs.sudo) throw new Error(`Host ${host} has no managed sudo credential`);
+  if (kind === "all" && !refs.login && !refs.sudo) throw new Error(`Host ${host} has no managed credentials`);
+  return { refs, scriptPath: await requireAdminScript(store) };
+}
+
 export function registerAdminTools(server: McpServer, store: ConfigStore): void {
   server.tool(
     "mutation_capabilities",
-    "Report the two mutation tiers. Normal host lifecycle is enabled by default; security-policy expansion is separately locked by default.",
+    "Report the active deployment profile. Personal/Harness mode enables host and policy changes by default; EnterpriseLocked can disable them.",
     {},
     async () => {
       const config = await store.read();
       return textResult({
-        hostLifecycle: {
-          allowed: hostMutationAllowed(config),
-          operations: [
-            "host_onboard and host_offboard",
-            "change hostname, port, username, identityFile, proxyJump, and tags",
-            "use standard per-host credential references",
-            "use lifecycle-safe paths under the user home, /workspace, /tmp/helix, and /opt/ros",
-            "enroll, check, and request deletion of credentials",
-          ],
-        },
-        policyMutation: {
-          allowed: policyMutationAllowed(config),
-          protectedChanges: [
-            "add remote paths outside lifecycle-safe defaults",
-            "add sudo allowlist rules",
-            "replace authentication or credential references on an existing host",
-            "increase sudo approval TTL",
-            "disable strict host-key checking or auditing",
-          ],
-        },
-        guidance: "Use host_onboard for new hosts. Safe lifecycle operations should not ask the user to edit JSON. Only request policy authorization when the exact protected change is necessary.",
+        hostMutation: hostMutationAllowed(config),
+        policyMutation: policyMutationAllowed(config),
+        sudoExecution: "direct through sudo_exec; no allowlist approval, token, confirmation, or expiry",
+        commandGuard: "blocks a small built-in set of destructive commands such as rm, filesystem formatting, block-device writes, reboot, and fork bombs",
+        credentialEnrollment: process.platform === "win32"
+          ? "host_onboard opens a local PowerShell credential window automatically"
+          : "use credential_enroll_request on non-Windows hosts",
       });
     },
   );
 
   server.tool(
     "host_onboard",
-    "Preferred host creation workflow. Normal lifecycle onboarding is enabled by default, generates standard credential references, and uses useful safe paths. Only custom policy expansion requires allowPolicyMutation.",
+    "Preferred one-stop host creation. Creates standard credentials and opens a local Windows password-entry window automatically by default.",
     {
       alias: z.string(),
       hostname: z.string(),
@@ -131,19 +153,21 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
       sudoMode: z.enum(["disabled", "reviewed-nopasswd", "reviewed-password"]).optional(),
       sudoAllow: z.array(z.string()).optional(),
       sudoApprovalTtlSeconds: z.number().int().min(30).max(3600).optional(),
+      launchCredentialWindow: z.boolean().optional(),
+      separatePasswords: z.boolean().optional(),
     },
     async (input) => {
       try {
         const current = await store.read();
         if (!hostMutationAllowed(current)) {
-          throw new Error("Host lifecycle mutation is disabled by the deployment profile");
+          throw new Error("Host mutation is disabled by the deployment profile");
         }
         if (current.hosts[input.alias]) throw new Error(`Host alias already exists: ${input.alias}`);
 
         const defaultAuthType = process.platform === "win32" ? "windows-credential" : "openssh";
         const authType = input.authType ?? defaultAuthType;
         const sudoMode = input.sudoMode
-          ?? (authType === "windows-credential" ? "reviewed-password" : "disabled");
+          ?? (authType === "windows-credential" ? "reviewed-password" : "reviewed-nopasswd");
         const loginCredentialRef = `Helix/ssh/${input.alias}/login`;
         const sudoCredentialRef = `Helix/ssh/${input.alias}/sudo`;
 
@@ -161,7 +185,7 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
           sudo: {
             mode: sudoMode,
             credentialRef: sudoMode === "reviewed-password" ? sudoCredentialRef : undefined,
-            allow: input.sudoAllow ?? [],
+            allow: input.sudoAllow ?? ["^.*$"],
             approvalTtlSeconds: input.sudoApprovalTtlSeconds ?? 300,
           },
         };
@@ -174,19 +198,29 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
         const result: Record<string, unknown> = {
           alias: input.alias,
           host: redactHost(host),
-          mutationTier: "host-lifecycle",
           credentialRefs: refs,
           credentialsStored: false,
         };
         if (scriptPath) {
-          result.nextStep = "Call credential_enroll_request, show the returned enrollmentCommand to the user, and stop until local enrollment is complete.";
-          result.enrollmentCommand = buildCredentialAdminCommand({
+          const enrollmentInput = {
             scriptPath,
             configPath: store.filePath,
-            action: "set",
+            action: "set" as const,
             host: input.alias,
-            kind: "all",
-          });
+            kind: "all" as const,
+            separatePasswords: input.separatePasswords ?? false,
+          };
+          const shouldLaunch = process.platform === "win32" && (input.launchCredentialWindow ?? true);
+          if (shouldLaunch) {
+            const launched = launchCredentialWindow(enrollmentInput);
+            result.credentialWindowLaunched = true;
+            result.windowProcessId = launched.pid;
+            result.nextStep = "Tell the user to enter the password in the opened local PowerShell window. After they confirm completion, call credential_status and ssh_check.";
+          } else {
+            result.credentialWindowLaunched = false;
+            result.enrollmentCommand = buildCredentialAdminCommand(enrollmentInput);
+            result.nextStep = "Run credential_enroll_launch on Windows, or show enrollmentCommand on a headless/non-Windows environment.";
+          }
         } else {
           result.nextStep = "Call ssh_check. OpenSSH authentication uses the configured local SSH agent or identity file.";
         }
@@ -199,16 +233,12 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
 
   server.tool(
     "host_offboard",
-    "Normal lifecycle host removal. Removes only non-secret host configuration and returns a separate local cleanup command for orphaned credentials; credentials are never deleted automatically.",
-    {
-      host: z.string(),
-    },
+    "Remove non-secret host configuration and return optional credential cleanup information.",
+    { host: z.string() },
     async ({ host }) => {
       try {
         const current = await store.read();
-        if (!hostMutationAllowed(current)) {
-          throw new Error("Host lifecycle mutation is disabled by the deployment profile");
-        }
+        if (!hostMutationAllowed(current)) throw new Error("Host mutation is disabled by the deployment profile");
         const existing = current.hosts[host];
         if (!existing) throw new Error(`Unknown host alias: ${host}`);
         const refs = Object.values(credentialRefsForHost(existing)).filter((value): value is string => Boolean(value));
@@ -217,7 +247,6 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
 
         const result: Record<string, unknown> = {
           removed: host,
-          mutationTier: "host-lifecycle",
           credentialsDeleted: false,
           orphanedCredentials: refs,
         };
@@ -228,7 +257,6 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
             action: "delete",
             credentialRefs: refs,
           });
-          result.nextStep = "Ask the user whether to run cleanupCommand locally. Do not infer permission to delete stored credentials.";
         }
         return textResult(result);
       } catch (error) {
@@ -238,8 +266,8 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
   );
 
   server.tool(
-    "credential_enroll_request",
-    "Create a local, interactive credential enrollment command. The AI must show enrollmentCommand and STOP; passwords are entered once in the local Broker terminal and never pass through MCP or chat.",
+    "credential_enroll_launch",
+    "Open a visible local PowerShell window for credential input. The password remains outside MCP and chat.",
     {
       host: z.string(),
       kind: z.enum(["all", "login", "sudo"]).optional(),
@@ -247,13 +275,42 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
     },
     async ({ host, kind, separatePasswords }) => {
       try {
-        const hostConfig = await store.getHost(host);
-        const refs = credentialRefsForHost(hostConfig);
         const selectedKind = kind ?? "all";
-        if (selectedKind === "login" && !refs.login) throw new Error(`Host ${host} does not use a managed login credential`);
-        if (selectedKind === "sudo" && !refs.sudo) throw new Error(`Host ${host} has no managed sudo credential`);
-        if (selectedKind === "all" && !refs.login && !refs.sudo) throw new Error(`Host ${host} has no managed credentials`);
-        const scriptPath = await requireAdminScript(store);
+        const { refs, scriptPath } = await enrollmentContext(store, host, selectedKind);
+        const launched = launchCredentialWindow({
+          scriptPath,
+          configPath: store.filePath,
+          action: "set",
+          host,
+          kind: selectedKind,
+          separatePasswords: separatePasswords ?? false,
+        });
+        return textResult({
+          launched: true,
+          host,
+          kind: selectedKind,
+          credentialRefs: refs,
+          windowProcessId: launched.pid,
+          nextStep: "The local password window is open. After the user confirms completion, call credential_status and ssh_check.",
+        });
+      } catch (error) {
+        throwInvalid(error);
+      }
+    },
+  );
+
+  server.tool(
+    "credential_enroll_request",
+    "Return a fallback credential enrollment command for headless or non-Windows environments.",
+    {
+      host: z.string(),
+      kind: z.enum(["all", "login", "sudo"]).optional(),
+      separatePasswords: z.boolean().optional(),
+    },
+    async ({ host, kind, separatePasswords }) => {
+      try {
+        const selectedKind = kind ?? "all";
+        const { refs, scriptPath } = await enrollmentContext(store, host, selectedKind);
         return textResult({
           host,
           kind: selectedKind,
@@ -267,7 +324,6 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
             separatePasswords: separatePasswords ?? false,
           }),
           passwordPrompts: separatePasswords ? "one prompt per selected credential" : "one prompt reused for all selected credentials",
-          nextStep: "Show enrollmentCommand to the user and STOP. After the user confirms completion, call credential_status and then ssh_check.",
         });
       } catch (error) {
         throwInvalid(error);
@@ -277,20 +333,15 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
 
   server.tool(
     "credential_delete_request",
-    "Create a local credential deletion command. The AI must show cleanupCommand and wait for explicit user approval; secret deletion is not performed through MCP.",
+    "Return a local credential deletion command. Secret values are never exposed.",
     {
       host: z.string(),
       kind: z.enum(["all", "login", "sudo"]).optional(),
     },
     async ({ host, kind }) => {
       try {
-        const hostConfig = await store.getHost(host);
-        const refs = credentialRefsForHost(hostConfig);
         const selectedKind = kind ?? "all";
-        if (selectedKind === "login" && !refs.login) throw new Error(`Host ${host} does not use a managed login credential`);
-        if (selectedKind === "sudo" && !refs.sudo) throw new Error(`Host ${host} has no managed sudo credential`);
-        if (selectedKind === "all" && !refs.login && !refs.sudo) throw new Error(`Host ${host} has no managed credentials`);
-        const scriptPath = await requireAdminScript(store);
+        const { scriptPath } = await enrollmentContext(store, host, selectedKind);
         return textResult({
           host,
           kind: selectedKind,
@@ -301,7 +352,6 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
             host,
             kind: selectedKind,
           }),
-          nextStep: "Show cleanupCommand and wait for explicit user confirmation before they run it locally.",
         });
       } catch (error) {
         throwInvalid(error);
