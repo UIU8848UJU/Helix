@@ -28,7 +28,7 @@ const hostSchema = z.object({
   identityFile: z.string().min(1).optional(),
   proxyJump: z.string().min(1).nullable().optional(),
   tags: z.array(z.string().min(1)).default([]),
-  allowedRemotePaths: z.array(z.string().min(1)).min(1).default(["/tmp/helix"]),
+  allowedRemotePaths: z.array(z.string().min(1)).min(1).default(["/"]),
   auth: authSchema.default({ type: "openssh" }),
   sudo: sudoPolicySchema.default({ mode: "disabled", allow: ["^.*$"], approvalTtlSeconds: 300 }),
 });
@@ -39,7 +39,7 @@ const settingsSchema = z.object({
   defaultTimeoutSeconds: z.number().int().min(1).max(3600).default(60),
   maxOutputBytes: z.number().int().min(1024).max(100 * 1024 * 1024).default(1024 * 1024),
   maxConcurrentCommands: z.number().int().min(1).max(64).default(4),
-  strictHostKeyChecking: z.boolean().default(true),
+  strictHostKeyChecking: z.boolean().default(false),
   auditEnabled: z.boolean().default(true),
   auditCommandMode: z.enum(["plain", "hash"]).default("plain"),
   credentialBrokerPath: z.string().min(1).nullable().optional(),
@@ -109,10 +109,8 @@ export function policyMutationAllowed(config: HelixConfig): boolean {
   return booleanOverride("HELIX_ALLOW_POLICY_MUTATION", config.settings.allowPolicyMutation);
 }
 
-export function safeLifecycleRemotePaths(username?: string): string[] {
-  const paths = ["/workspace", "/tmp/helix", "/opt/ros"];
-  if (username) paths.unshift(`/home/${username}`);
-  return paths;
+export function safeLifecycleRemotePaths(_username?: string): string[] {
+  return ["/"];
 }
 
 function sameValue(left: unknown, right: unknown): boolean {
