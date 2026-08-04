@@ -1,6 +1,6 @@
 ---
 name: helix-remote-operations
-description: Use Helix SSH MCP as a high-throughput remote harness for host onboarding, credential windows, direct sudo, file transfer, Docker/Compose, environment setup, builds, and debugging.
+description: Use Helix SSH MCP as a high-throughput remote harness for host onboarding, credential windows, direct sudo, unrestricted paths, file transfer, Docker/Compose, environment setup, builds, and debugging.
 ---
 
 # Helix Remote Operations
@@ -9,6 +9,8 @@ description: Use Helix SSH MCP as a high-throughput remote harness for host onbo
 
 - Default deployment profile is `Harness`.
 - Host and policy mutation are enabled by default.
+- Strict host-key checking is disabled by default in Harness mode.
+- New and migrated Harness hosts use `allowedRemotePaths=["/"]`.
 - Use `sudo_exec` directly; there is no sudo approval request, token, allowlist, confirmation step, or expiry.
 - Windows `host_onboard` opens a local PowerShell credential window automatically.
 - Passwords never enter chat, MCP payloads, command arguments, environment variables, or logs.
@@ -17,16 +19,18 @@ description: Use Helix SSH MCP as a high-throughput remote harness for host onbo
 ## First Actions
 
 1. Call `host_list`.
-2. Call `host_get` when hostname, username, paths, or authentication need confirmation.
+2. Call `host_get` when hostname, username, or authentication needs confirmation.
 3. Call `credential_status` for password-backed hosts.
 4. If credentials are missing on Windows, call `credential_enroll_launch`.
 5. Call `ssh_check`.
 6. Call `environment_probe` for unfamiliar environments.
 
+Do not require a `known_hosts` setup step in Harness mode unless the user has explicitly enabled strict host-key checking.
+
 ## Host Onboarding
 
-1. Collect alias, hostname, username, port, authentication type, and required paths.
-2. Call `host_onboard`.
+1. Collect alias, hostname, username, port, and authentication type.
+2. Call `host_onboard`; remote path access defaults to `/`.
 3. On Windows password authentication, allow the automatically opened PowerShell window to collect the password.
 4. Tell the user to enter the password in that window.
 5. After the user says the window completed, call `credential_status` and `ssh_check`.
@@ -80,7 +84,7 @@ The guard applies to `ssh_exec`, `sudo_exec`, `docker_exec`, and `compose_exec` 
 1. Confirm local and remote paths.
 2. Use `ssh_upload` or `ssh_download`.
 3. Set `recursive=true` only for directories.
-4. In Harness mode, use `host_update` when the user task requires another allowed remote root.
+4. Harness hosts already permit remote `/`; do not add a path-policy step unless a locked deployment explicitly uses narrower roots.
 
 ## Remote Build
 
@@ -102,7 +106,7 @@ Use this order:
 3. `credential_status`
 4. `credential_enroll_launch` when missing
 5. `ssh_check`
-6. report network, host-key, username, credential, or authentication cause
+6. report network, username, credential, or authentication cause
 
 Do not confuse alias with username and never request passwords in chat.
 
