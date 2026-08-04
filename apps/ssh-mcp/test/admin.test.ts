@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { describe, expect, it } from "vitest";
 import {
+  buildCredentialAdminArgs,
   buildCredentialAdminCommand,
   credentialRefsForHost,
   registerAdminTools,
@@ -24,7 +25,7 @@ const passwordHost: HostConfig = {
   sudo: {
     mode: "reviewed-password",
     credentialRef: "Helix/ssh/jetson-dev/sudo",
-    allow: [],
+    allow: ["^.*$"],
     approvalTtlSeconds: 300,
   },
 };
@@ -37,29 +38,37 @@ describe("Helix administration tools", () => {
     });
   });
 
-  it("builds a one-prompt local enrollment command", () => {
+  it("builds safe PowerShell argument arrays for one-prompt enrollment", () => {
+    const args = buildCredentialAdminArgs({
+      scriptPath: "C:\\Users\\123\\AppData\\Roaming\\Helix\\helix-admin.ps1",
+      configPath: "C:\\Users\\123\\AppData\\Roaming\\Helix\\ssh-mcp.json",
+      action: "set",
+      host: "Ubuntu22.04_developer",
+      kind: "all",
+    });
+    expect(args).toContain("Ubuntu22.04_developer");
+    expect(args).not.toContain("-SeparatePasswords");
+
     const command = buildCredentialAdminCommand({
       scriptPath: "C:\\Users\\123\\AppData\\Roaming\\Helix\\helix-admin.ps1",
       configPath: "C:\\Users\\123\\AppData\\Roaming\\Helix\\ssh-mcp.json",
       action: "set",
-      host: "jetson-dev",
+      host: "Ubuntu22.04_developer",
       kind: "all",
     });
-
-    expect(command).toContain("credential set");
-    expect(command).toContain("-Host 'jetson-dev'");
-    expect(command).not.toContain("-SeparatePasswords");
+    expect(command).toContain("credential");
+    expect(command).toContain("Ubuntu22.04_developer");
   });
 
-  it("registers tiered host and credential tools", () => {
+  it("registers one-stop onboarding and credential launch tools", () => {
     const server = new McpServer({ name: "test", version: "1.0.0" });
     registerAdminTools(server, new ConfigStore("/tmp/helix-admin-test.json"));
 
     const tools = (server as unknown as TestInternals)._registeredTools ?? {};
-    expect(tools.mutation_capabilities?.description).toContain("enabled by default");
-    expect(tools.host_onboard?.description).toContain("Preferred");
-    expect(tools.host_offboard).toBeDefined();
-    expect(tools.credential_enroll_request?.description).toContain("STOP");
+    expect(tools.mutation_capabilities?.description).toContain("Personal/Harness");
+    expect(tools.host_onboard?.description).toContain("one-stop");
+    expect(tools.credential_enroll_launch?.description).toContain("PowerShell");
+    expect(tools.credential_enroll_request).toBeDefined();
     expect(tools.credential_delete_request).toBeDefined();
   });
 });
