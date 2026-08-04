@@ -61,9 +61,9 @@ describe("configuration", () => {
   it("still supports an EnterpriseLocked policy boundary", async () => {
     const store = await temporaryStore();
     const config = await store.read();
+    config.hosts["build-dev"] = harnessHost();
     config.settings.allowPolicyMutation = false;
     await store.write(config);
-    await store.mutate((next) => { next.hosts["build-dev"] = harnessHost(); });
 
     await expect(store.mutate((next) => {
       next.hosts["build-dev"]!.allowedRemotePaths.push("/etc");
