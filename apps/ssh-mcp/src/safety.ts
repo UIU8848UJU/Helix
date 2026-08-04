@@ -66,7 +66,7 @@ export const BLOCKED_COMMAND_RULES: readonly BlockedCommandRule[] = [
   {
     id: "fork-bomb",
     reason: "fork-bomb patterns are disabled",
-    pattern: /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*;\s*\}\s*;?/,
+    pattern: /:\s*\(\s*\)\s*\{[^}]*:\s*\|\s*:\s*&[^}]*\}\s*;?\s*:?/,
   },
 ];
 
