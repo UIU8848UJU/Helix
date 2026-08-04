@@ -21,7 +21,7 @@ async function temporaryStore(): Promise<ConfigStore> {
   return new ConfigStore(path.join(directory, "ssh-mcp.json"));
 }
 
-function lifecycleHost(alias = "build-dev") {
+function harnessHost(alias = "build-dev") {
   return validateHost(alias, {
     hostname: "10.0.0.20",
     username: "developer",
@@ -30,82 +30,53 @@ function lifecycleHost(alias = "build-dev") {
     sudo: {
       mode: "reviewed-password",
       credentialRef: `Helix/ssh/${alias}/sudo`,
-      allow: [],
+      allow: ["^.*$"],
       approvalTtlSeconds: 300,
     },
   });
 }
 
 describe("configuration", () => {
-  it("creates a usable default config when absent", async () => {
+  it("creates a fully usable Harness config when absent", async () => {
     const store = await temporaryStore();
     expect(await store.read()).toEqual(defaultConfig);
     expect(defaultConfig.settings.allowHostMutation).toBe(true);
-    expect(defaultConfig.settings.allowPolicyMutation).toBe(false);
+    expect(defaultConfig.settings.allowPolicyMutation).toBe(true);
     expect(JSON.parse(await fs.readFile(store.filePath, "utf8"))).toEqual(defaultConfig);
   });
 
-  it("allows normal lifecycle onboarding and connection changes by default", async () => {
+  it("allows lifecycle and policy changes by default", async () => {
     const store = await temporaryStore();
-    const host = lifecycleHost();
-    await store.mutate((config) => { config.hosts["build-dev"] = host; });
+    await store.mutate((config) => { config.hosts["build-dev"] = harnessHost(); });
     await store.mutate((config) => {
       config.hosts["build-dev"]!.hostname = "10.0.0.21";
-      config.hosts["build-dev"]!.username = "developer2";
+      config.hosts["build-dev"]!.allowedRemotePaths.push("/srv/project");
       config.hosts["build-dev"]!.tags = ["updated"];
     });
-    expect((await store.getHost("build-dev")).hostname).toBe("10.0.0.21");
+    const host = await store.getHost("build-dev");
+    expect(host.hostname).toBe("10.0.0.21");
+    expect(host.allowedRemotePaths).toContain("/srv/project");
   });
 
-  it("blocks real policy expansion while lifecycle changes remain enabled", async () => {
+  it("still supports an EnterpriseLocked policy boundary", async () => {
     const store = await temporaryStore();
-    await store.mutate((config) => { config.hosts["build-dev"] = lifecycleHost(); });
-
-    await expect(store.mutate((config) => {
-      config.hosts["build-dev"]!.allowedRemotePaths.push("/etc");
-      config.hosts["build-dev"]!.sudo.allow.push("^systemctl restart production$" );
-    })).rejects.toThrow("Policy mutation is disabled");
-
-    expect((await store.getHost("build-dev")).allowedRemotePaths).not.toContain("/etc");
-  });
-
-  it("permits an explicitly enabled policy expansion", async () => {
-    const store = await temporaryStore();
-    await store.mutate((config) => { config.hosts["build-dev"] = lifecycleHost(); });
     const config = await store.read();
-    config.settings.allowPolicyMutation = true;
+    config.settings.allowPolicyMutation = false;
     await store.write(config);
+    await store.mutate((next) => { next.hosts["build-dev"] = harnessHost(); });
 
-    await store.mutate((next) => {
-      next.hosts["build-dev"]!.allowedRemotePaths.push("/srv/project");
-      next.hosts["build-dev"]!.sudo.allow.push("^systemctl status project$" );
-    });
-
-    expect((await store.getHost("build-dev")).allowedRemotePaths).toContain("/srv/project");
+    await expect(store.mutate((next) => {
+      next.hosts["build-dev"]!.allowedRemotePaths.push("/etc");
+    })).rejects.toThrow("Policy mutation is disabled");
   });
 
   it("persists a Windows credential host", async () => {
     const store = await temporaryStore();
-    const config = await store.read();
-    config.settings.allowPolicyMutation = true;
-    await store.write(config);
-    const host = validateHost("build-dev", {
-      hostname: "10.0.0.20",
-      username: "developer",
-      allowedRemotePaths: ["/workspace"],
-      auth: { type: "windows-credential", credentialRef: "Helix/ssh/build-dev/login" },
-      sudo: {
-        mode: "reviewed-password",
-        credentialRef: "Helix/ssh/build-dev/sudo",
-        allow: ["^systemctl status [a-zA-Z0-9_.@-]+$"],
-        approvalTtlSeconds: 300,
-      },
-    });
-    await store.mutate((next) => { next.hosts["build-dev"] = host; });
+    await store.mutate((next) => { next.hosts["build-dev"] = harnessHost(); });
     expect((await store.getHost("build-dev")).auth.type).toBe("windows-credential");
   });
 
-  it("rejects unanchored sudo regex", () => {
+  it("rejects unanchored legacy sudo regex", () => {
     expect(() => validateConfig({
       version: 1,
       settings: {},
@@ -128,7 +99,7 @@ describe("configuration", () => {
       sudo: {
         mode: "reviewed-password",
         credentialRef: "Helix/ssh/bad/sudo",
-        allow: ["^id$"],
+        allow: ["^.*$"],
         approvalTtlSeconds: 300,
       },
     })).toThrow("requires windows-credential");
