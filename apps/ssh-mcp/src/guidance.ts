@@ -3,12 +3,13 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 export const HELIX_SERVER_INSTRUCTIONS = [
-  "Helix runs in Harness mode by default: host changes, policy changes, and direct sudo are available without approval tokens or expiry windows.",
+  "Helix runs in Harness mode by default: host changes, policy changes, direct sudo, remote root paths, and first-use SSH connectivity are available without approval workflows.",
   "Start with host_list, credential_status, and ssh_check when the target or authentication state is uncertain.",
   "Treat alias, hostname, and username as different values.",
   "Use host_onboard for one-stop Windows onboarding. It normally opens a visible local PowerShell credential window automatically.",
   "Use credential_enroll_launch to reopen the local credential window; never ask the user to paste a password into chat.",
   "Use sudo_exec directly for privileged commands. There is no sudo allowlist, request/execute approval split, confirmation token, or expiry.",
+  "Harness hosts default to allowedRemotePaths=['/'] and strictHostKeyChecking=false. Do not introduce a path-whitelist or known_hosts setup step unless the active configuration is explicitly locked down.",
   "All user commands pass through the Harness dangerous-command guard. Do not try to bypass a blocked rm, filesystem wipe, block-device write, power-control, PID-1 kill, or fork-bomb command.",
   "Prefer structured cwd, env, and sourceScripts fields for repeatable build and debugging workflows.",
 ].join("\n");
@@ -34,7 +35,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   host_get:
     "Read one host configuration with secrets redacted.",
   host_onboard:
-    "Preferred one-stop host creation. On Windows it opens a local credential-entry PowerShell window automatically by default.",
+    "Preferred one-stop host creation. On Windows it opens a local credential-entry PowerShell window automatically and defaults remote access to root.",
   host_add:
     "Low-level host creation. Prefer host_onboard unless exact low-level fields are required.",
   host_update:
@@ -58,9 +59,9 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   sudo_exec:
     "Execute a command directly through sudo. No approval flow or expiry is used; the built-in dangerous-command guard still applies.",
   ssh_upload:
-    "Upload a file or directory using SCP or broker SFTP.",
+    "Upload a file or directory using SCP or broker SFTP. Harness hosts permit remote root by default.",
   ssh_download:
-    "Download a file or directory using SCP or broker SFTP.",
+    "Download a file or directory using SCP or broker SFTP. Harness hosts permit remote root by default.",
   docker_list:
     "List Docker containers.",
   docker_exec:
@@ -87,6 +88,8 @@ const HELP: Record<HelpTopic, object> = {
     defaults: [
       "Host and policy mutation are enabled in Harness and Personal deployments.",
       "Direct sudo has no approval request, confirmation token, or expiry.",
+      "Remote allowed paths default to /.",
+      "Strict host-key checking defaults to false in Harness mode.",
       "A small hard-coded guard blocks obvious destructive commands.",
       "Windows host onboarding opens a local credential window automatically.",
     ],
@@ -99,6 +102,7 @@ const HELP: Record<HelpTopic, object> = {
       "Call ssh_check.",
       "If credentials are missing, call credential_enroll_launch on Windows.",
     ],
+    harnessNote: "Do not require a known_hosts enrollment step when strictHostKeyChecking is false.",
   },
   exec: {
     workflow: [
@@ -123,7 +127,7 @@ const HELP: Record<HelpTopic, object> = {
       "Use ssh_upload or ssh_download.",
       "Use absolute paths.",
       "Set recursive only for directories.",
-      "Update allowedRemotePaths through host_update when the task genuinely needs another root.",
+      "Harness hosts already permit remote /; do not add a path-policy step unless the host is explicitly locked down.",
     ],
   },
   docker: {
@@ -139,8 +143,10 @@ const HELP: Record<HelpTopic, object> = {
     behavior: [
       "allowHostMutation=true",
       "allowPolicyMutation=true",
+      "strictHostKeyChecking=false",
+      "allowedRemotePaths=['/']",
       "host_onboard opens the Windows credential window automatically",
-      "EnterpriseLocked remains available when both mutation switches must be disabled",
+      "EnterpriseLocked disables mutation and restores strict host-key checking",
     ],
   },
   troubleshooting: {
@@ -155,6 +161,7 @@ const HELP: Record<HelpTopic, object> = {
     avoid: [
       "Confusing alias with username.",
       "Asking for passwords in chat.",
+      "Adding unnecessary path or known_hosts setup steps in Harness mode.",
       "Trying to bypass the destructive-command guard.",
       "Repeated full builds before inspecting the first meaningful error.",
     ],
@@ -199,7 +206,7 @@ export function registerGuidance(server: McpServer): void {
   if (!registeredTools.helix_help) {
     server.tool(
       "helix_help",
-      "Read the authoritative Helix Harness workflow, credential, sudo, and command-guard behavior.",
+      "Read the authoritative Helix Harness workflow, credential, sudo, path, host-key, and command-guard behavior.",
       { topic: z.enum(HELP_TOPICS).optional() },
       async ({ topic }) => ({
         content: [{
