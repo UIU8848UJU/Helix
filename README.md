@@ -1,6 +1,6 @@
 # Helix
 
-Helix 是面向 AI Agent 的远程操作基础设施。当前模块提供 SSH MCP、Rust Windows Credential Broker、主机管理、文件传输、Docker/Compose、环境探测和直接 sudo。
+Helix 是面向 AI Agent 的远程操作基础设施。当前模块提供 SSH MCP、Rust Windows Credential Broker、主机管理、文件传输、Docker/Compose、环境探测、直接 sudo 和远端持久作业。
 
 ## 设计目标
 
@@ -45,6 +45,7 @@ scripts/                      安装、注册、管理和卸载脚本
 - `credential_enroll_request`：无桌面环境的命令行备用方案；
 - `ssh_check` / `ssh_exec`：连接检查和普通命令；
 - `sudo_exec`：直接 sudo；
+- `job_start` / `job_status` / `job_logs` / `job_cancel`：远端持久后台作业；
 - `ssh_upload` / `ssh_download`：文件传输；
 - `docker_list` / `docker_exec`；
 - `compose_ps` / `compose_exec`；
@@ -97,9 +98,86 @@ sudo_exec
 
 OpenSSH 主机使用 `sudo -n`。
 
+## 远端持久作业
+
+预计超过约 30 秒，或者不能因为 MCP 超时、Claude 重启、SSH 短暂断开而中止的任务，不要使用长时间阻塞的 `ssh_exec`，改用：
+
+```text
+job_start
+  → job_status
+  → job_logs
+  → job_cancel（需要时）
+```
+
+`job_start` 会在远端 `/tmp/helix/jobs/<jobId>` 创建作业目录，通过 `nohup` 和 `setsid` 脱离当前 SSH 会话，然后立即返回 `jobId`。作业状态和日志位于远端，所以原 MCP 调用结束后仍可继续查询。
+
+示例：Docker Compose 镜像构建。
+
+```json
+{
+  "host": "Ubuntu22.04_developer",
+  "type": "compose-build",
+  "name": "QuantX dev image",
+  "cwd": "/home/xxx/QuantX",
+  "command": "docker compose -f docker/docker-compose.yml build dev"
+}
+```
+
+支持的任务类型：
+
+```text
+build
+测试 test
+docker-build
+compose-build
+deploy
+service
+data
+simulation
+run
+custom
+```
+
+任务类型只用于分类、日志和 AI 路由，执行机制保持统一，不为每种构建工具写一套专用接口。
+
+### 查询状态
+
+```json
+{
+  "host": "Ubuntu22.04_developer",
+  "jobId": "job-..."
+}
+```
+
+可能状态：
+
+```text
+queued / running / succeeded / failed / cancelled / lost / not_found
+```
+
+### 查询日志
+
+首次查看末尾日志：
+
+```json
+{
+  "host": "Ubuntu22.04_developer",
+  "jobId": "job-...",
+  "lines": 100
+}
+```
+
+持续增量读取时，把上次返回的 `nextCursor` 作为下一次的 `cursor`，可避免重复传输日志和消耗上下文 token。
+
+### 取消作业
+
+`job_cancel` 先向整个进程组发送 TERM，等待默认 5 秒；仍未退出时才发送 KILL。使用 `useSudo=true` 启动的作业会自动使用 sudo 取消。
+
+作业可跨 MCP/SSH 会话继续运行，但不会跨远端主机重启继续运行；`/tmp` 也可能在系统重启后被清理。
+
 ## 危险命令 guard
 
-Guard 会在 `ssh_exec`、`sudo_exec`、`docker_exec` 和 `compose_exec` 的用户命令执行前拦截明显危险的操作，包括：
+Guard 会在 `ssh_exec`、`sudo_exec`、`job_start`、`docker_exec` 和 `compose_exec` 的用户命令执行前拦截明显危险的操作，包括：
 
 - `rm`；
 - `find -delete`；
@@ -195,7 +273,8 @@ host_list
   → credential_enroll_launch（凭据缺失时）
   → ssh_check
   → environment_probe
-  → ssh_exec / sudo_exec / Docker / Compose / 传输
+  → 短任务：ssh_exec / sudo_exec / Docker / Compose / 传输
+  → 长任务：job_start → job_status / job_logs
 ```
 
 ## 开发验证
