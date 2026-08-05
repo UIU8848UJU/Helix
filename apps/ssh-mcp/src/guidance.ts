@@ -8,7 +8,10 @@ export const HELIX_SERVER_INSTRUCTIONS = [
   "Treat alias, hostname, and username as different values.",
   "Use host_onboard for one-stop Windows onboarding. It normally opens a visible local PowerShell credential window automatically.",
   "Use credential_enroll_launch to reopen the local credential window; never ask the user to paste a password into chat.",
-  "Use sudo_exec directly for privileged commands. There is no sudo allowlist, request/execute approval split, confirmation token, or expiry.",
+  "Use sudo_exec directly for short privileged commands. There is no sudo allowlist, request/execute approval split, confirmation token, or expiry.",
+  "Use job_start for work expected to exceed roughly 30 seconds, produce large logs, or survive an MCP/SSH session. Continue with job_status, job_logs, and job_cancel instead of restarting the command.",
+  "Task types such as build, test, docker-build, compose-build, deploy, data, simulation, and run are metadata for one common persistent-job mechanism.",
+  "Do not treat a client run_in_background option or a large MCP timeout as remote persistence.",
   "Harness hosts default to allowedRemotePaths=['/'] and strictHostKeyChecking=false. Do not introduce a path-whitelist or known_hosts setup step unless the active configuration is explicitly locked down.",
   "All user commands pass through the Harness dangerous-command guard. Do not try to bypass a blocked rm, filesystem wipe, block-device write, power-control, PID-1 kill, or fork-bomb command.",
   "Prefer structured cwd, env, and sourceScripts fields for repeatable build and debugging workflows.",
@@ -18,6 +21,7 @@ export const HELP_TOPICS = [
   "overview",
   "connect",
   "exec",
+  "jobs",
   "sudo",
   "transfer",
   "docker",
@@ -55,9 +59,17 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   ssh_check:
     "Check SSH connectivity using the configured authentication backend.",
   ssh_exec:
-    "Execute a remote command with structured cwd, env, and source scripts. Sudo text is not rejected, but password-backed sudo should use sudo_exec.",
+    "Execute a short remote command with structured cwd, env, and source scripts. Use job_start instead when work may exceed roughly 30 seconds or must survive the MCP call.",
   sudo_exec:
-    "Execute a command directly through sudo. No approval flow or expiry is used; the built-in dangerous-command guard still applies.",
+    "Execute a short command directly through sudo. No approval flow or expiry is used; use job_start(useSudo=true) for long privileged work.",
+  job_start:
+    "Start a detached persistent remote job for builds, tests, Docker/Compose builds, deployments, data jobs, simulations, or other long work. Save the returned jobId.",
+  job_status:
+    "Read a persistent job state after the original SSH connection or MCP session has ended.",
+  job_logs:
+    "Read recent job log lines or incremental bytes using the previous nextCursor to avoid repeating logs and wasting model context.",
+  job_cancel:
+    "Cancel a persistent job process group with TERM followed by KILL only when the grace period expires.",
   ssh_upload:
     "Upload a file or directory using SCP or broker SFTP. Harness hosts permit remote root by default.",
   ssh_download:
@@ -65,11 +77,11 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   docker_list:
     "List Docker containers.",
   docker_exec:
-    "Execute a command inside a Docker container; the dangerous-command guard applies to the inner command.",
+    "Execute a short command inside a Docker container; use job_start for long container or image-build workflows.",
   compose_ps:
     "List Docker Compose services.",
   compose_exec:
-    "Execute a command inside a Docker Compose service; the dangerous-command guard applies to the inner command.",
+    "Execute a short command inside a Docker Compose service; use job_start(type=compose-build) for long builds.",
   environment_probe:
     "Probe OS, architecture, tools, containers, and likely environment scripts.",
 };
@@ -83,7 +95,8 @@ const HELP: Record<HelpTopic, object> = {
       "credential_status for password-backed hosts",
       "ssh_check",
       "environment_probe for unfamiliar environments",
-      "ssh_exec, sudo_exec, transfer, Docker, or Compose tools",
+      "short work: ssh_exec, sudo_exec, transfer, Docker, or Compose tools",
+      "long work: job_start, then job_status and job_logs",
     ],
     defaults: [
       "Host and policy mutation are enabled in Harness and Personal deployments.",
@@ -92,6 +105,7 @@ const HELP: Record<HelpTopic, object> = {
       "Strict host-key checking defaults to false in Harness mode.",
       "A small hard-coded guard blocks obvious destructive commands.",
       "Windows host onboarding opens a local credential window automatically.",
+      "Persistent jobs remain on the remote host after the original MCP or SSH session ends.",
     ],
   },
   connect: {
@@ -107,16 +121,35 @@ const HELP: Record<HelpTopic, object> = {
   exec: {
     workflow: [
       "Use environment_probe when the remote environment is unfamiliar.",
-      "Use ssh_exec for normal commands.",
-      "Use sudo_exec when the command requires sudo password handling.",
+      "Use ssh_exec for short normal commands.",
+      "Use sudo_exec for short commands requiring sudo password handling.",
+      "Use job_start for long, high-output, or session-independent work.",
       "Pass cwd, env, and sourceScripts as structured fields.",
       "Inspect exitCode, stdout, stderr, timedOut, and truncated.",
     ],
     safety: "The guard blocks obvious destructive commands but is not a complete shell sandbox.",
   },
+  jobs: {
+    chooseWhen: [
+      "Expected duration is over roughly 30 seconds.",
+      "The task is a complete build, full test, Docker/Compose image build, deployment, data import, simulation, replay, or benchmark.",
+      "Logs are large and should be read incrementally.",
+      "The task must continue after the MCP call, SSH connection, or client session ends.",
+    ],
+    workflow: [
+      "Call job_start with type, name, command, and structured cwd/env/sourceScripts.",
+      "Save the returned jobId; do not restart the same task when the original call ends.",
+      "Call job_status for queued, running, succeeded, failed, cancelled, lost, or not_found.",
+      "Call job_logs with lines for the first view, then pass nextCursor as cursor for incremental logs.",
+      "Call job_cancel only when the task should stop.",
+    ],
+    types: ["build", "test", "docker-build", "compose-build", "deploy", "service", "data", "simulation", "run", "custom"],
+    persistence: "State and logs live under /tmp/helix/jobs/<jobId>. They survive MCP/SSH sessions but not a remote reboot, and /tmp may be cleaned.",
+  },
   sudo: {
     workflow: [
-      "Call sudo_exec with the final command.",
+      "Call sudo_exec with the final short command.",
+      "Use job_start(useSudo=true) for long privileged work.",
       "No sudo_request, local APPROVE step, token, allowlist, or expiry is used.",
       "Password-backed hosts use the stored sudo credential; OpenSSH hosts use sudo -n.",
       "A command rejected by the dangerous-command guard must not be rewritten to bypass it.",
@@ -133,9 +166,10 @@ const HELP: Record<HelpTopic, object> = {
   docker: {
     workflow: [
       "Use docker_list or compose_ps to discover names.",
-      "Use docker_exec or compose_exec with structured fields.",
-      "Use sudo_exec for privileged host-level Docker operations.",
-      "The dangerous-command guard applies to container and Compose inner commands.",
+      "Use docker_exec or compose_exec for short work.",
+      "Use job_start(type=docker-build) or job_start(type=compose-build) for long builds.",
+      "Use sudo_exec for short privileged host-level Docker operations or job_start(useSudo=true) for long ones.",
+      "The dangerous-command guard applies to container, Compose, and job commands.",
     ],
   },
   configuration: {
@@ -156,6 +190,8 @@ const HELP: Record<HelpTopic, object> = {
       "credential_enroll_launch when credentials are absent",
       "ssh_check",
       "environment_probe",
+      "job_status before restarting any previously started long task",
+      "job_logs with nextCursor for incremental output",
       "smallest useful ssh_exec or sudo_exec diagnostic",
     ],
     avoid: [
@@ -163,7 +199,9 @@ const HELP: Record<HelpTopic, object> = {
       "Asking for passwords in chat.",
       "Adding unnecessary path or known_hosts setup steps in Harness mode.",
       "Trying to bypass the destructive-command guard.",
-      "Repeated full builds before inspecting the first meaningful error.",
+      "Using client run_in_background as if it detached the remote process.",
+      "Restarting a long build because the original MCP call timed out.",
+      "Repeatedly sending the entire job log into model context.",
     ],
   },
 };
@@ -206,7 +244,7 @@ export function registerGuidance(server: McpServer): void {
   if (!registeredTools.helix_help) {
     server.tool(
       "helix_help",
-      "Read the authoritative Helix Harness workflow, credential, sudo, path, host-key, and command-guard behavior.",
+      "Read the authoritative Helix Harness workflow, persistent jobs, credentials, sudo, paths, host-key, and command-guard behavior.",
       { topic: z.enum(HELP_TOPICS).optional() },
       async ({ topic }) => ({
         content: [{
