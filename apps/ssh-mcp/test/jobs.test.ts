@@ -14,6 +14,10 @@ import type { HostConfig } from "../src/types.js";
 
 const execFileAsync = promisify(execFile);
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+// The remote job engine targets Unix SSH hosts and relies on sh, /tmp, nohup,
+// setsid, and POSIX signals. Keep its local end-to-end test on Unix runners;
+// Windows still runs all platform-independent builders and parsers above.
+const itWithUnixShell = process.platform === "win32" ? it.skip : it;
 
 const host: HostConfig = {
   hostname: "127.0.0.1",
@@ -78,7 +82,7 @@ describe("persistent remote jobs", () => {
     expect(logs.eof).toBe(true);
   });
 
-  it("executes a detached job and reads its final status and logs", async () => {
+  itWithUnixShell("executes a detached job and reads its final status and logs", async () => {
     const jobId = `job-test-${process.pid}-${Date.now()}`;
     const directory = `/tmp/helix/jobs/${jobId}`;
     try {
