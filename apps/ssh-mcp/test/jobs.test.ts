@@ -1,3 +1,6 @@
+import { execFile } from "node:child_process";
+import { rm } from "node:fs/promises";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
   buildJobCancelCommand,
@@ -8,6 +11,9 @@ import {
   parseJobStatus,
 } from "../src/jobs.js";
 import type { HostConfig } from "../src/types.js";
+
+const execFileAsync = promisify(execFile);
+const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 const host: HostConfig = {
   hostname: "127.0.0.1",
@@ -71,6 +77,44 @@ describe("persistent remote jobs", () => {
     expect(logs.nextCursor).toBe(14);
     expect(logs.eof).toBe(true);
   });
+
+  it("executes a detached job and reads its final status and logs", async () => {
+    const jobId = `job-test-${process.pid}-${Date.now()}`;
+    const directory = `/tmp/helix/jobs/${jobId}`;
+    try {
+      const startCommand = buildJobStartCommand({
+        jobId,
+        type: "test",
+        name: "job integration test",
+        command: "printf 'hello-job\\n'; sleep 0.2; printf 'done-job\\n'",
+        host,
+        cwd: "/tmp",
+        privileged: false,
+      });
+      const started = await execFileAsync("sh", ["-lc", startCommand], { maxBuffer: 1024 * 1024 });
+      expect(started.stdout).toContain("HELIX_JOB_START_V1");
+
+      let status = parseJobStatus((await execFileAsync("sh", ["-lc", buildJobStatusCommand(jobId)])).stdout);
+      for (let attempt = 0; attempt < 30 && ["queued", "running"].includes(status.state); attempt += 1) {
+        await sleep(100);
+        status = parseJobStatus((await execFileAsync("sh", ["-lc", buildJobStatusCommand(jobId)])).stdout);
+      }
+
+      expect(status.state).toBe("succeeded");
+      expect(status.exitCode).toBe(0);
+      const logsResult = await execFileAsync("sh", ["-lc", buildJobLogsCommand({
+        jobId,
+        lines: 20,
+        maxBytes: 16 * 1024,
+      })]);
+      const logs = parseJobLogs(logsResult.stdout);
+      expect(logs.content).toContain("hello-job");
+      expect(logs.content).toContain("done-job");
+      expect(logs.eof).toBe(true);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 10_000);
 
   it("rejects unsafe job ids", () => {
     expect(() => buildJobStatusCommand("../../etc/passwd")).toThrow("Invalid Helix job id");
