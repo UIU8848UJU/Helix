@@ -84,7 +84,9 @@ function parseProtocol(stdout: string, magic: string): Record<string, string> {
   const values: Record<string, string> = {};
   for (const line of lines.slice(start + 1)) {
     const match = protocolLinePattern.exec(line);
-    if (match) values[match[1]] = match[2];
+    const key = match?.[1];
+    const value = match?.[2];
+    if (key !== undefined && value !== undefined) values[key] = value;
   }
   return values;
 }
