@@ -4,6 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { registerAdminTools } from "./admin.js";
 import { ConfigStore } from "./config.js";
 import { registerGuidance } from "./guidance.js";
+import { registerJobTools } from "./jobs.js";
 import { createServer } from "./server.js";
 
 async function main(): Promise<void> {
@@ -12,6 +13,7 @@ async function main(): Promise<void> {
 
   const server = createServer(store);
   registerAdminTools(server, store);
+  registerJobTools(server, store);
   registerGuidance(server);
 
   const transport = new StdioServerTransport();
