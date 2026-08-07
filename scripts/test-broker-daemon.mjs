@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createConnection } from "node:net";
 import path from "node:path";
 
+const PROTOCOL_VERSION = 1;
 const root = process.cwd();
 const executable = path.join(
   root,
@@ -52,12 +53,21 @@ function rpc(request, timeoutMs = 2000) {
   });
 }
 
+function assertProtocol(response) {
+  if (response.protocolVersion !== PROTOCOL_VERSION) {
+    throw new Error(`expected protocolVersion=${PROTOCOL_VERSION}, got ${response.protocolVersion}`);
+  }
+}
+
 async function waitForDaemon() {
   let lastError;
   for (let attempt = 0; attempt < 50; attempt += 1) {
     try {
       const response = await rpc({ op: "ping" }, 500);
-      if (response.ok) return response;
+      if (response.ok) {
+        assertProtocol(response);
+        return response;
+      }
       lastError = new Error(response.error ?? "ping returned ok=false");
     } catch (error) {
       lastError = error;
@@ -81,6 +91,7 @@ const child = spawn(executable, [
 });
 
 let childStderr = "";
+let shutdownRequested = false;
 child.stderr.setEncoding("utf8");
 child.stderr.on("data", (chunk) => { childStderr += chunk; });
 
@@ -89,6 +100,7 @@ try {
   if (ping.workers !== 2) throw new Error(`expected workers=2, got ${ping.workers}`);
 
   const submitted = await rpc({ op: "submit", request: { op: "ping" } });
+  assertProtocol(submitted);
   if (!submitted.ok || !submitted.taskId) {
     throw new Error(`submit failed: ${JSON.stringify(submitted)}`);
   }
@@ -96,6 +108,7 @@ try {
   let status = submitted;
   for (let attempt = 0; attempt < 50; attempt += 1) {
     status = await rpc({ op: "task_status", task_id: submitted.taskId });
+    assertProtocol(status);
     if (["succeeded", "failed", "cancelled"].includes(status.state)) break;
     await sleep(50);
   }
@@ -106,14 +119,24 @@ try {
   if (!status.result?.ok) {
     throw new Error(`nested broker result was not successful: ${JSON.stringify(status)}`);
   }
-  console.log(`Broker daemon IPC smoke test passed on ${process.platform}: ${endpoint}`);
-} finally {
-  child.kill();
+
+  const shutdown = await rpc({ op: "shutdown" });
+  assertProtocol(shutdown);
+  shutdownRequested = true;
   await Promise.race([
     new Promise((resolve) => child.once("exit", resolve)),
-    sleep(1500),
+    sleep(2000),
   ]);
-  if (child.exitCode && child.exitCode !== 0) {
-    console.error(childStderr);
+  if (child.exitCode === null) throw new Error("daemon did not exit after shutdown");
+  if (child.exitCode !== 0) throw new Error(`daemon exited with ${child.exitCode}: ${childStderr}`);
+
+  console.log(`Broker daemon IPC smoke test passed on ${process.platform}: ${endpoint}`);
+} finally {
+  if (!shutdownRequested || child.exitCode === null) {
+    child.kill();
+    await Promise.race([
+      new Promise((resolve) => child.once("exit", resolve)),
+      sleep(1500),
+    ]);
   }
 }
