@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - agent/**
+      - Model_Worker_MCP
   pull_request:
 
 permissions:
@@ -105,3 +106,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/test-helix-admin.ps1
+
+      - name: Test Model Worker MCP registration
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-model-worker-registration.ps1

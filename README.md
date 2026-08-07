@@ -1,5 +1,24 @@
 # Helix
 
+## Model Worker MCP
+
+The `Model_Worker_MCP` branch adds a bidirectional local model bridge:
+
+```text
+GPT / Codex --claude_run--> Claude Code
+Claude      --gpt_run----> Codex / GPT
+```
+
+It reuses each local CLI login without reading or storing credentials. Calls are
+read-only by default; `mode=workspace` must be explicit before a worker can edit
+inside a configured root.
+
+```powershell
+.\scripts\install-model-worker-mcp.ps1 -RegisterClient All
+```
+
+See `docs/guides/MODEL_WORKER_MCP.md` for configuration and safety details.
+
 Helix 是面向 AI Agent 的远程操作基础设施。当前模块提供 SSH MCP、Rust Windows Credential Broker、主机管理、文件传输、Docker/Compose、环境探测、直接 sudo 和远端持久作业。
 
 ## 设计目标

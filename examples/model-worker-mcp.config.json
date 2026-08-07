@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "settings": {
+    "claudeCommand": "claude",
+    "gptCommand": "codex",
+    "allowedWorkingDirectories": [
+      "F:\\AI_infra"
+    ],
+    "defaultWorkingDirectory": "F:\\AI_infra",
+    "defaultTimeoutSeconds": 300,
+    "maxTimeoutSeconds": 1800,
+    "maxOutputBytes": 1048576,
+    "maxPromptChars": 200000,
+    "maxConcurrentWorkers": 2,
+    "auditEnabled": true
+  }
+}
