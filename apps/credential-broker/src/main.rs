@@ -1,21 +1,24 @@
 mod credential;
+mod daemon;
+mod engine;
+mod pool;
 mod protocol;
 mod ssh;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
+use engine::BrokerEngine;
 use protocol::{BrokerRequest, BrokerResponse};
 use std::{
     collections::HashSet,
     io::{self, Read},
-    path::PathBuf,
 };
 
 #[derive(Debug, Parser)]
 #[command(
     name = "helix-credential-broker",
     version,
-    about = "Windows credential and password SSH broker for Helix"
+    about = "Persistent credential, SSH session and task broker for Helix"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -24,6 +27,22 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Run the persistent local IPC daemon used by Helix MCP clients.
+    ServeDaemon {
+        #[arg(long, default_value = daemon::DEFAULT_ENDPOINT)]
+        endpoint: String,
+        #[arg(long, default_value_t = 4)]
+        workers: usize,
+        #[arg(long, default_value_t = 64)]
+        queue_capacity: usize,
+        #[arg(long, default_value_t = 600)]
+        task_retention_seconds: u64,
+        #[arg(long, default_value_t = 120)]
+        session_idle_seconds: u64,
+        #[arg(long, default_value_t = 2)]
+        max_idle_sessions_per_key: usize,
+    },
+    /// Compatibility/debug mode: process one JSON request on stdin and exit.
     ServeOnce,
     CredentialStore {
         #[arg(long)]
@@ -65,141 +84,13 @@ fn normalize_targets(targets: Vec<String>) -> Result<Vec<String>> {
     Ok(normalized)
 }
 
-fn connect(
-    credential_ref: &str,
-    host: &str,
-    port: u16,
-    username: Option<&str>,
-    timeout_seconds: u64,
-    strict_host_key_checking: bool,
-) -> Result<ssh2::Session> {
-    let login = credential::read(credential_ref)?;
-    ssh::connect(
-        &ssh::ConnectOptions {
-            host,
-            port,
-            username,
-            timeout_seconds,
-            strict_host_key_checking,
-        },
-        &login,
-    )
-}
-
-fn handle(request: BrokerRequest) -> Result<BrokerResponse> {
-    match request {
-        BrokerRequest::Ping => Ok(BrokerResponse::success()),
-        BrokerRequest::CredentialExists { credential_ref } => Ok(BrokerResponse {
-            exists: Some(credential::exists(&credential_ref)),
-            ..BrokerResponse::success()
-        }),
-        BrokerRequest::SshExecute {
-            credential_ref,
-            host,
-            port,
-            username,
-            command,
-            timeout_seconds,
-            max_output_bytes,
-            strict_host_key_checking,
-        } => {
-            let session = connect(
-                &credential_ref,
-                &host,
-                port,
-                username.as_deref(),
-                timeout_seconds,
-                strict_host_key_checking,
-            )?;
-            ssh::execute(&session, &command, None, max_output_bytes)
-        }
-        BrokerRequest::SudoExecute {
-            login_credential_ref,
-            sudo_credential_ref,
-            host,
-            port,
-            username,
-            command,
-            timeout_seconds,
-            max_output_bytes,
-            strict_host_key_checking,
-        } => {
-            let session = connect(
-                &login_credential_ref,
-                &host,
-                port,
-                username.as_deref(),
-                timeout_seconds,
-                strict_host_key_checking,
-            )?;
-            let sudo = credential::read(&sudo_credential_ref)?;
-            let quoted = command.replace('\'', "'\"'\"'");
-            let wrapped = format!("sudo -S -p '' -- sh -lc '{}'", quoted);
-            ssh::execute(&session, &wrapped, Some(&sudo.secret), max_output_bytes)
-        }
-        BrokerRequest::SftpUpload {
-            credential_ref,
-            host,
-            port,
-            username,
-            local_path,
-            remote_path,
-            recursive,
-            timeout_seconds,
-            strict_host_key_checking,
-        } => {
-            let session = connect(
-                &credential_ref,
-                &host,
-                port,
-                username.as_deref(),
-                timeout_seconds,
-                strict_host_key_checking,
-            )?;
-            ssh::upload(
-                &session,
-                PathBuf::from(local_path).as_path(),
-                PathBuf::from(remote_path).as_path(),
-                recursive,
-            )?;
-            Ok(BrokerResponse::success())
-        }
-        BrokerRequest::SftpDownload {
-            credential_ref,
-            host,
-            port,
-            username,
-            remote_path,
-            local_path,
-            recursive,
-            timeout_seconds,
-            strict_host_key_checking,
-        } => {
-            let session = connect(
-                &credential_ref,
-                &host,
-                port,
-                username.as_deref(),
-                timeout_seconds,
-                strict_host_key_checking,
-            )?;
-            ssh::download(
-                &session,
-                PathBuf::from(remote_path).as_path(),
-                PathBuf::from(local_path).as_path(),
-                recursive,
-            )?;
-            Ok(BrokerResponse::success())
-        }
-    }
-}
-
 fn serve_once() -> Result<()> {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
     let request: BrokerRequest =
         serde_json::from_str(input.trim()).context("invalid broker request JSON")?;
-    let response = match handle(request) {
+    let engine = BrokerEngine::new(1, 1);
+    let response = match engine.handle(request) {
         Ok(response) => response,
         Err(error) => BrokerResponse::failure(format!("{error:#}")),
     };
@@ -209,7 +100,29 @@ fn serve_once() -> Result<()> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    match cli.command.unwrap_or(Command::ServeOnce) {
+    match cli.command.unwrap_or(Command::ServeDaemon {
+        endpoint: daemon::DEFAULT_ENDPOINT.to_owned(),
+        workers: 4,
+        queue_capacity: 64,
+        task_retention_seconds: 600,
+        session_idle_seconds: 120,
+        max_idle_sessions_per_key: 2,
+    }) {
+        Command::ServeDaemon {
+            endpoint,
+            workers,
+            queue_capacity,
+            task_retention_seconds,
+            session_idle_seconds,
+            max_idle_sessions_per_key,
+        } => daemon::serve_daemon(
+            &endpoint,
+            workers,
+            queue_capacity,
+            task_retention_seconds,
+            session_idle_seconds,
+            max_idle_sessions_per_key,
+        ),
         Command::ServeOnce => serve_once(),
         Command::CredentialStore { target, username } => {
             let password = zeroize::Zeroizing::new(rpassword::prompt_password("Password: ")?);
