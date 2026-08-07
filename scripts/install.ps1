@@ -30,6 +30,46 @@ function Set-ConfigProperty($Object, [string]$Name, $Value) {
     }
 }
 
+function Stop-HelixBrokerDaemon([string]$ExistingBrokerPath) {
+    # Prefer the broker's lifecycle command when an installed daemon-aware binary is available.
+    if ($ExistingBrokerPath -and (Test-Path -LiteralPath $ExistingBrokerPath)) {
+        try {
+            & $ExistingBrokerPath daemon-stop 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "Stopped existing Helix credential broker daemon."
+                Start-Sleep -Milliseconds 150
+                return
+            }
+        } catch {
+            # Fall through to the direct Named Pipe shutdown request.
+        }
+    }
+
+    # This fallback does not depend on the location of the old executable.
+    try {
+        $Pipe = New-Object System.IO.Pipes.NamedPipeClientStream(
+            ".",
+            "helix-credential-broker-v1",
+            [System.IO.Pipes.PipeDirection]::InOut,
+            [System.IO.Pipes.PipeOptions]::None
+        )
+        try {
+            $Pipe.Connect(250)
+            $Writer = New-Object System.IO.StreamWriter($Pipe, (New-Object System.Text.UTF8Encoding($false)), 1024, $true)
+            $Writer.AutoFlush = $true
+            $Reader = New-Object System.IO.StreamReader($Pipe, [System.Text.Encoding]::UTF8, $false, 1024, $true)
+            $Writer.WriteLine('{"op":"shutdown"}')
+            [void]$Reader.ReadLine()
+            Write-Host "Requested shutdown of existing Helix credential broker daemon."
+        } finally {
+            $Pipe.Dispose()
+        }
+        Start-Sleep -Milliseconds 150
+    } catch {
+        # No running daemon, or a pre-daemon Helix version. Both are safe to continue from.
+    }
+}
+
 Require-Command node
 Require-Command npm
 Require-Command ssh
@@ -40,6 +80,21 @@ $NodeMajor = [int]((& node -p "Number(process.versions.node.split('.')[0])").Tri
 if ($NodeMajor -lt 20) {
     throw "Node.js 20 or newer is required. Current version: $(& node --version)"
 }
+
+$ExistingBrokerPath = $null
+if (Test-Path -LiteralPath $ConfigFile) {
+    try {
+        $ExistingConfig = Get-Content $ConfigFile -Raw | ConvertFrom-Json
+        if ($ExistingConfig.settings -and $ExistingConfig.settings.credentialBrokerPath) {
+            $ExistingBrokerPath = [string]$ExistingConfig.settings.credentialBrokerPath
+        }
+    } catch {
+        Write-Warning "Could not inspect the existing Helix config before upgrade: $($_.Exception.Message)"
+    }
+}
+
+# A persistent Windows process can keep its EXE locked. Stop it before rebuilding the repo target.
+Stop-HelixBrokerDaemon $ExistingBrokerPath
 
 Push-Location $RootDir
 try {
@@ -64,14 +119,26 @@ try {
     Pop-Location
 }
 
-$Broker = Join-Path $RootDir "apps\credential-broker\target\release\helix-credential-broker.exe"
-if (-not (Test-Path $Broker)) {
-    throw "Rust broker was not found: $Broker"
+$BuiltBroker = Join-Path $RootDir "apps\credential-broker\target\release\helix-credential-broker.exe"
+if (-not (Test-Path -LiteralPath $BuiltBroker)) {
+    throw "Rust broker was not found: $BuiltBroker"
 }
 
 $RuntimeDir = Split-Path $ConfigFile -Parent
+$BinDir = Join-Path $RuntimeDir "bin"
 New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
-if (-not (Test-Path $ConfigFile)) {
+New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+
+# Run the daemon from a content-addressed runtime copy, not target/release. This keeps future builds
+# from being blocked by a running Windows executable and lets upgrades switch binaries atomically.
+$BrokerHash = (Get-FileHash -LiteralPath $BuiltBroker -Algorithm SHA256).Hash.ToLowerInvariant()
+$BrokerTag = $BrokerHash.Substring(0, 16)
+$Broker = Join-Path $BinDir "helix-credential-broker-$BrokerTag.exe"
+if (-not (Test-Path -LiteralPath $Broker)) {
+    Copy-Item -LiteralPath $BuiltBroker -Destination $Broker -Force
+}
+
+if (-not (Test-Path -LiteralPath $ConfigFile)) {
     Copy-Item (Join-Path $RootDir "examples\ssh-mcp.config.json") $ConfigFile
     Write-Host "Created config: $ConfigFile"
 } else {
@@ -128,7 +195,7 @@ $Entry = Join-Path $RootDir "apps\ssh-mcp\build\index.js"
 Write-Host ""
 Write-Host "Helix SSH MCP installation completed."
 Write-Host "Entry:  $Entry"
-Write-Host "Broker: $Broker"
+Write-Host "Broker runtime: $Broker"
 Write-Host "Config: $ConfigFile"
 Write-Host "AI guide: $GuideFile"
 Write-Host "Skill:    $SkillFile"
@@ -137,6 +204,7 @@ Write-Host "Deployment mode: $DeploymentMode"
 Write-Host "Host mutation: $($Config.settings.allowHostMutation)"
 Write-Host "Policy mutation: $($Config.settings.allowPolicyMutation)"
 Write-Host "Strict host-key checking: $($Config.settings.strictHostKeyChecking)"
+Write-Host "Broker: persistent daemon; Named Pipe + bounded task pool + SSH Session pool"
 Write-Host "Direct sudo: enabled; destructive commands are blocked by the Harness guard"
 Write-Host ""
 Write-Host "MCP client configuration:"
