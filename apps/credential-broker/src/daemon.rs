@@ -104,19 +104,19 @@ impl TaskPool {
             },
         );
 
+        self.queued.fetch_add(1, Ordering::Relaxed);
         match self.sender.try_send(QueuedTask {
             task_id: task_id.clone(),
             request,
         }) {
-            Ok(()) => {
-                self.queued.fetch_add(1, Ordering::Relaxed);
-                Ok(task_id)
-            }
+            Ok(()) => Ok(task_id),
             Err(TrySendError::Full(_)) => {
+                self.queued.fetch_sub(1, Ordering::Relaxed);
                 self.tasks.lock().map_err(lock_error)?.remove(&task_id);
                 Err(anyhow!("credential broker task queue is full"))
             }
             Err(TrySendError::Disconnected(_)) => {
+                self.queued.fetch_sub(1, Ordering::Relaxed);
                 self.tasks.lock().map_err(lock_error)?.remove(&task_id);
                 Err(anyhow!("credential broker worker pool is unavailable"))
             }
@@ -283,13 +283,31 @@ pub fn serve_daemon(
 
     for connection in listener.incoming() {
         match connection {
-            Ok(stream) => {
-                if let Err(error) = handle_connection(stream, &pool) {
-                    eprintln!("broker IPC request failed: {error:#}");
-                }
-            }
+            Ok(stream) => match handle_connection(stream, &pool) {
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(error) => eprintln!("broker IPC request failed: {error:#}"),
+            },
             Err(error) => eprintln!("broker IPC accept failed: {error}"),
         }
+    }
+    Ok(())
+}
+
+pub fn stop_daemon(endpoint: &str) -> Result<()> {
+    let endpoint_name = endpoint
+        .to_fs_name::<GenericFilePath>()
+        .with_context(|| format!("invalid broker IPC endpoint: {endpoint}"))?;
+    let mut stream = interprocess::local_socket::Stream::connect(endpoint_name)
+        .with_context(|| format!("failed to connect to broker daemon: {endpoint}"))?;
+    writeln!(stream, "{{\"op\":\"shutdown\"}}")?;
+    stream.flush()?;
+    let mut reader = BufReader::new(stream);
+    let mut response = String::new();
+    reader.read_line(&mut response)?;
+    let response: DaemonResponse = serde_json::from_str(response.trim())?;
+    if !response.ok {
+        return Err(anyhow!(response.error.unwrap_or_else(|| "daemon shutdown failed".to_owned())));
     }
     Ok(())
 }
@@ -297,25 +315,28 @@ pub fn serve_daemon(
 fn handle_connection(
     stream: interprocess::local_socket::Stream,
     pool: &TaskPool,
-) -> Result<()> {
+) -> Result<bool> {
     let mut reader = BufReader::new(stream);
     let mut input = String::new();
     reader.read_line(&mut input)?;
     if input.len() > 4 * 1024 * 1024 {
         return Err(anyhow!("broker IPC request exceeds 4 MiB"));
     }
-    let response = match serde_json::from_str::<DaemonRequest>(input.trim()) {
+    let (response, shutdown) = match serde_json::from_str::<DaemonRequest>(input.trim()) {
         Ok(request) => handle_request(request, pool),
-        Err(error) => DaemonResponse::failure(format!("invalid daemon request JSON: {error}")),
+        Err(error) => (
+            DaemonResponse::failure(format!("invalid daemon request JSON: {error}")),
+            false,
+        ),
     };
     let mut stream = reader.into_inner();
     writeln!(stream, "{}", serde_json::to_string(&response)?)?;
     stream.flush()?;
-    Ok(())
+    Ok(shutdown)
 }
 
-fn handle_request(request: DaemonRequest, pool: &TaskPool) -> DaemonResponse {
-    match request {
+fn handle_request(request: DaemonRequest, pool: &TaskPool) -> (DaemonResponse, bool) {
+    let response = match request {
         DaemonRequest::Ping => pool.stats_response(),
         DaemonRequest::Submit { request } => match pool.submit(request) {
             Ok(task_id) => {
@@ -332,7 +353,9 @@ fn handle_request(request: DaemonRequest, pool: &TaskPool) -> DaemonResponse {
             Ok(task) => pool.task_response(&task_id, task),
             Err(error) => DaemonResponse::failure(format!("{error:#}")),
         },
-    }
+        DaemonRequest::Shutdown => return (pool.stats_response(), true),
+    };
+    (response, false)
 }
 
 fn now_ms() -> u128 {
