@@ -97,6 +97,44 @@ host_list
 
 凭据不存在时，在 Windows 上调用 `credential_enroll_launch`。
 
+### 4.1 Credential Broker Daemon
+
+密码认证的 SSH/SFTP 请求不再为每次调用启动一次 `serve-once` Broker。MCP 会自动连接本机常驻 Broker：
+
+```text
+MCP / Skill-Matrix subprocesses
+  → Windows Named Pipe / Unix Domain Socket
+  → submit Broker TaskID
+  → bounded queue
+  → fixed worker pool
+  → pooled SSH Session
+  → remote host
+```
+
+Agent 不需要手动管理 Broker TaskID；普通 Helix MCP 工具会自动完成 `submit → task_status` 轮询并返回最终 SSH 结果。
+
+多 Agent 并发规则：
+
+- 可以并发提交请求，由 Broker 队列统一削峰；
+- 不要因为想并发而自行启动多个 Broker Daemon；
+- 不要调用 `serve-once` 绕过队列；
+- Broker 队列满时降低 fan-out 或稍后重试；
+- SSH 命令退出码非 0 是正常执行结果，不等于 Broker 崩溃；
+- Broker 只在命令真正开始前对连接/KEX 类瞬时错误有限重试，不自动重放可能已经执行过的命令；
+- Broker Task 是本机调度状态，remote `jobId` 是远端长任务状态，两者不能混用。
+
+默认资源模型：
+
+```text
+workers = maxConcurrentCommands（默认 4）
+queueCapacity = max(32, workers * 16)
+SSH Session idle TTL = 120s
+max idle Sessions/key = 2
+handshake backoff = 200ms / 500ms / 1000ms
+```
+
+完整设计见 `docs/architecture/credential-broker-daemon.md`。
+
 ## 5. 普通短命令
 
 预计数秒到几十秒内完成、输出有限、允许当前 MCP 调用等待时，使用：
@@ -122,7 +160,7 @@ sourceScripts:
 command: git status --short
 ```
 
-不要仅靠 MCP 客户端的 `run_in_background` 把长任务交给 `ssh_exec`。它不会让远端进程脱离 Broker，仍可能触发 65 秒或其他调用超时。
+不要仅靠 MCP 客户端的 `run_in_background` 把长任务交给 `ssh_exec`。它不会让远端进程成为持久作业。
 
 ## 6. sudo 命令
 
