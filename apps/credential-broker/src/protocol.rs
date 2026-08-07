@@ -98,7 +98,7 @@ impl BrokerResponse {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum DaemonRequest {
     Ping,
