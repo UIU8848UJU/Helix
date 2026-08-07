@@ -5,6 +5,7 @@ import type { BrokerResponse, ExecutionResult, GlobalSettings, HostConfig } from
 import { getCredentialBrokerPath } from "./paths.js";
 import { newRequestId, writeAudit } from "./audit.js";
 
+const BROKER_PROTOCOL_VERSION = 1;
 const BROKER_ENDPOINT = process.platform === "win32"
   ? "\\\\.\\pipe\\helix-credential-broker-v1"
   : "/tmp/helix-credential-broker-v1.sock";
@@ -13,6 +14,7 @@ type BrokerTaskState = "queued" | "running" | "succeeded" | "failed" | "cancelle
 
 interface BrokerDaemonResponse {
   ok: boolean;
+  protocolVersion?: number;
   taskId?: string;
   state?: BrokerTaskState;
   result?: BrokerResponse;
@@ -95,6 +97,51 @@ function daemonRpc(
   });
 }
 
+function assertProtocolCompatible(response: BrokerDaemonResponse): void {
+  if (response.protocolVersion !== BROKER_PROTOCOL_VERSION) {
+    throw new Error(
+      `Credential broker protocol mismatch: expected ${BROKER_PROTOCOL_VERSION}, `
+      + `got ${String(response.protocolVersion ?? "unknown")}`,
+    );
+  }
+}
+
+async function pingDaemon(timeoutMs = 500): Promise<BrokerDaemonResponse> {
+  const response = await daemonRpc({ op: "ping" }, timeoutMs);
+  assertProtocolCompatible(response);
+  return response;
+}
+
+async function waitForDaemonExit(): Promise<boolean> {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    try {
+      await daemonRpc({ op: "ping" }, 250);
+      await sleep(100);
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function stopIncompatibleDaemon(response: BrokerDaemonResponse): Promise<void> {
+  const actual = response.protocolVersion ?? "unknown";
+  try {
+    await daemonRpc({ op: "shutdown" }, 1_000);
+  } catch (error) {
+    throw new Error(
+      `Credential broker protocol mismatch: expected ${BROKER_PROTOCOL_VERSION}, got ${String(actual)}. `
+      + `The old daemon could not be stopped automatically: ${String(error)}`,
+    );
+  }
+  if (!await waitForDaemonExit()) {
+    throw new Error(
+      `Credential broker protocol mismatch: expected ${BROKER_PROTOCOL_VERSION}, got ${String(actual)}. `
+      + "The old daemon accepted shutdown but did not exit.",
+    );
+  }
+}
+
 async function startBrokerDaemon(settings: GlobalSettings): Promise<void> {
   const executable = getCredentialBrokerPath(settings);
   await fs.access(executable).catch(() => {
@@ -123,7 +170,7 @@ async function startBrokerDaemon(settings: GlobalSettings): Promise<void> {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 40; attempt += 1) {
     try {
-      await daemonRpc({ op: "ping" }, 500);
+      await pingDaemon(500);
       return;
     } catch (error) {
       lastError = error;
@@ -134,11 +181,16 @@ async function startBrokerDaemon(settings: GlobalSettings): Promise<void> {
 }
 
 async function ensureBrokerDaemon(settings: GlobalSettings): Promise<void> {
+  let existing: BrokerDaemonResponse | null = null;
   try {
-    await daemonRpc({ op: "ping" }, 500);
-    return;
+    existing = await daemonRpc({ op: "ping" }, 500);
   } catch {
-    // Start below. Multiple MCP processes may race; only one daemon can bind the endpoint.
+    // No daemon is currently listening. Start it below.
+  }
+
+  if (existing) {
+    if (existing.protocolVersion === BROKER_PROTOCOL_VERSION) return;
+    await stopIncompatibleDaemon(existing);
   }
 
   if (!daemonStartInFlight) {
@@ -151,7 +203,7 @@ async function ensureBrokerDaemon(settings: GlobalSettings): Promise<void> {
 
 export async function brokerDaemonStatus(settings: GlobalSettings): Promise<BrokerDaemonResponse> {
   await ensureBrokerDaemon(settings);
-  return await daemonRpc({ op: "ping" });
+  return await pingDaemon();
 }
 
 export async function runBroker(
@@ -161,6 +213,7 @@ export async function runBroker(
 ): Promise<BrokerResponse> {
   await ensureBrokerDaemon(settings);
   const submitted = await daemonRpc({ op: "submit", request });
+  assertProtocolCompatible(submitted);
   const taskId = submitted.taskId;
   if (!taskId) throw new Error("Credential broker daemon did not return a taskId");
 
@@ -168,6 +221,7 @@ export async function runBroker(
   let delayMs = 50;
   while (Date.now() < deadline) {
     const status = await daemonRpc({ op: "task_status", task_id: taskId });
+    assertProtocolCompatible(status);
     switch (status.state) {
       case "succeeded":
         if (!status.result) throw new Error(`Credential broker task ${taskId} completed without a result`);
