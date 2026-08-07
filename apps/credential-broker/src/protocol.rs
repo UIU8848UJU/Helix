@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum BrokerRequest {
@@ -96,16 +98,17 @@ impl BrokerResponse {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum DaemonRequest {
     Ping,
     Submit { request: BrokerRequest },
     TaskStatus { task_id: String },
     TaskCancel { task_id: String },
+    Shutdown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
     Queued,
@@ -121,10 +124,11 @@ impl TaskState {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DaemonResponse {
     pub ok: bool,
+    pub protocol_version: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -155,6 +159,7 @@ impl DaemonResponse {
     pub fn success() -> Self {
         Self {
             ok: true,
+            protocol_version: DAEMON_PROTOCOL_VERSION,
             task_id: None,
             state: None,
             result: None,
