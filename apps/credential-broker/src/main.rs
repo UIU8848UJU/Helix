@@ -42,6 +42,11 @@ enum Command {
         #[arg(long, default_value_t = 2)]
         max_idle_sessions_per_key: usize,
     },
+    /// Ask a running daemon to exit cleanly.
+    DaemonStop {
+        #[arg(long, default_value = daemon::DEFAULT_ENDPOINT)]
+        endpoint: String,
+    },
     /// Compatibility/debug mode: process one JSON request on stdin and exit.
     ServeOnce,
     CredentialStore {
@@ -123,6 +128,7 @@ fn main() -> Result<()> {
             session_idle_seconds,
             max_idle_sessions_per_key,
         ),
+        Command::DaemonStop { endpoint } => daemon::stop_daemon(&endpoint),
         Command::ServeOnce => serve_once(),
         Command::CredentialStore { target, username } => {
             let password = zeroize::Zeroizing::new(rpassword::prompt_password("Password: ")?);
