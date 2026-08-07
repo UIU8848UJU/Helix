@@ -1,8 +1,30 @@
 import { promises as fs } from "node:fs";
 import { spawn } from "node:child_process";
+import { createConnection } from "node:net";
 import type { BrokerResponse, ExecutionResult, GlobalSettings, HostConfig } from "./types.js";
 import { getCredentialBrokerPath } from "./paths.js";
 import { newRequestId, writeAudit } from "./audit.js";
+
+const BROKER_ENDPOINT = process.platform === "win32"
+  ? "\\\\.\\pipe\\helix-credential-broker-v1"
+  : "/tmp/helix-credential-broker-v1.sock";
+
+type BrokerTaskState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+
+interface BrokerDaemonResponse {
+  ok: boolean;
+  taskId?: string;
+  state?: BrokerTaskState;
+  result?: BrokerResponse;
+  cancelRequested?: boolean;
+  workers?: number;
+  queuedTasks?: number;
+  runningTasks?: number;
+  pooledSessions?: number;
+  error?: string;
+}
+
+let daemonStartInFlight: Promise<void> | null = null;
 
 function responseToExecution(response: BrokerResponse): ExecutionResult {
   return {
@@ -17,61 +39,155 @@ function responseToExecution(response: BrokerResponse): ExecutionResult {
   };
 }
 
-export async function runBroker(
-  settings: GlobalSettings,
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function daemonRpc(
   request: Record<string, unknown>,
-  timeoutSeconds = settings.defaultTimeoutSeconds,
-): Promise<BrokerResponse> {
+  timeoutMs = 2_000,
+): Promise<BrokerDaemonResponse> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(BROKER_ENDPOINT);
+    let buffer = "";
+    let settled = false;
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      fn();
+    };
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error(`Credential broker IPC timed out after ${timeoutMs}ms`)));
+    }, timeoutMs);
+
+    socket.setEncoding("utf8");
+    socket.on("connect", () => {
+      socket.write(`${JSON.stringify(request)}\n`);
+    });
+    socket.on("data", (chunk: string) => {
+      buffer += chunk;
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) return;
+      const payload = buffer.slice(0, newline).trim();
+      finish(() => {
+        try {
+          const response = JSON.parse(payload) as BrokerDaemonResponse;
+          if (!response.ok) {
+            reject(new Error(response.error ?? "Credential broker daemon request failed"));
+            return;
+          }
+          resolve(response);
+        } catch (error) {
+          reject(new Error(`Invalid credential broker daemon response: ${String(error)}`));
+        }
+      });
+    });
+    socket.on("error", (error) => {
+      finish(() => reject(error));
+    });
+    socket.on("end", () => {
+      if (!settled && !buffer.includes("\n")) {
+        finish(() => reject(new Error("Credential broker IPC closed before a complete response")));
+      }
+    });
+  });
+}
+
+async function startBrokerDaemon(settings: GlobalSettings): Promise<void> {
   const executable = getCredentialBrokerPath(settings);
   await fs.access(executable).catch(() => {
     throw new Error(`Helix credential broker was not found: ${executable}`);
   });
 
-  return await new Promise<BrokerResponse>((resolve, reject) => {
-    const child = spawn(executable, ["serve-once"], {
-      shell: false,
-      windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (!settled) {
-        child.kill();
-        settled = true;
-        reject(new Error(`Credential broker timed out after ${timeoutSeconds}s`));
-      }
-    }, timeoutSeconds * 1000);
-
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
-    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
-    child.on("error", (error) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        reject(error);
-      }
-    });
-    child.on("close", () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try {
-        const response = JSON.parse(stdout.trim()) as BrokerResponse;
-        if (!response.ok) {
-          reject(new Error(response.error ?? (stderr.trim() || "Credential broker operation failed")));
-          return;
-        }
-        resolve(response);
-      } catch (error) {
-        reject(new Error(`Invalid credential broker response: ${String(error)}; stderr=${stderr.trim()}`));
-      }
-    });
-    child.stdin.end(`${JSON.stringify(request)}\n`);
+  const workers = Math.max(1, settings.maxConcurrentCommands);
+  const queueCapacity = Math.max(32, workers * 16);
+  const child = spawn(executable, [
+    "serve-daemon",
+    "--endpoint", BROKER_ENDPOINT,
+    "--workers", String(workers),
+    "--queue-capacity", String(queueCapacity),
+    "--task-retention-seconds", "600",
+    "--session-idle-seconds", "120",
+    "--max-idle-sessions-per-key", "2",
+  ], {
+    shell: false,
+    windowsHide: true,
+    detached: true,
+    stdio: "ignore",
   });
+  child.on("error", () => undefined);
+  child.unref();
+
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      await daemonRpc({ op: "ping" }, 500);
+      return;
+    } catch (error) {
+      lastError = error;
+      await sleep(100);
+    }
+  }
+  throw new Error(`Credential broker daemon did not become ready: ${String(lastError)}`);
+}
+
+async function ensureBrokerDaemon(settings: GlobalSettings): Promise<void> {
+  try {
+    await daemonRpc({ op: "ping" }, 500);
+    return;
+  } catch {
+    // Start below. Multiple MCP processes may race; only one daemon can bind the endpoint.
+  }
+
+  if (!daemonStartInFlight) {
+    daemonStartInFlight = startBrokerDaemon(settings).finally(() => {
+      daemonStartInFlight = null;
+    });
+  }
+  await daemonStartInFlight;
+}
+
+export async function brokerDaemonStatus(settings: GlobalSettings): Promise<BrokerDaemonResponse> {
+  await ensureBrokerDaemon(settings);
+  return await daemonRpc({ op: "ping" });
+}
+
+export async function runBroker(
+  settings: GlobalSettings,
+  request: Record<string, unknown>,
+  timeoutSeconds = settings.defaultTimeoutSeconds,
+): Promise<BrokerResponse> {
+  await ensureBrokerDaemon(settings);
+  const submitted = await daemonRpc({ op: "submit", request });
+  const taskId = submitted.taskId;
+  if (!taskId) throw new Error("Credential broker daemon did not return a taskId");
+
+  const deadline = Date.now() + timeoutSeconds * 1000;
+  let delayMs = 50;
+  while (Date.now() < deadline) {
+    const status = await daemonRpc({ op: "task_status", task_id: taskId });
+    switch (status.state) {
+      case "succeeded":
+        if (!status.result) throw new Error(`Credential broker task ${taskId} completed without a result`);
+        return status.result;
+      case "failed":
+        throw new Error(status.result?.error ?? status.error ?? `Credential broker task ${taskId} failed`);
+      case "cancelled":
+        throw new Error(`Credential broker task ${taskId} was cancelled`);
+      case "queued":
+      case "running":
+        await sleep(delayMs);
+        delayMs = Math.min(250, Math.round(delayMs * 1.5));
+        break;
+      default:
+        throw new Error(`Credential broker task ${taskId} returned invalid state: ${String(status.state)}`);
+    }
+  }
+
+  await daemonRpc({ op: "task_cancel", task_id: taskId }).catch(() => undefined);
+  throw new Error(`Credential broker task ${taskId} timed out after ${timeoutSeconds}s`);
 }
 
 function passwordAuth(host: HostConfig): { credentialRef: string } {
