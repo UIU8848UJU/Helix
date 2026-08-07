@@ -50,7 +50,7 @@ pub enum BrokerRequest {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrokerResponse {
     pub ok: bool,
@@ -83,6 +83,89 @@ impl BrokerResponse {
             timed_out: None,
             truncated: None,
             duration_ms: None,
+            error: None,
+        }
+    }
+
+    pub fn failure(error: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            error: Some(error.into()),
+            ..Self::success()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum DaemonRequest {
+    Ping,
+    Submit { request: BrokerRequest },
+    TaskStatus { task_id: String },
+    TaskCancel { task_id: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskState {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+impl TaskState {
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DaemonResponse {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<TaskState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<BrokerResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cancel_requested: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workers: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queued_tasks: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub running_tasks: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pooled_sessions: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl DaemonResponse {
+    pub fn success() -> Self {
+        Self {
+            ok: true,
+            task_id: None,
+            state: None,
+            result: None,
+            cancel_requested: None,
+            created_at_ms: None,
+            started_at_ms: None,
+            finished_at_ms: None,
+            workers: None,
+            queued_tasks: None,
+            running_tasks: None,
+            pooled_sessions: None,
             error: None,
         }
     }
