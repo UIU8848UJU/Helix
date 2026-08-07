@@ -1,6 +1,6 @@
 ---
 name: helix-remote-operations
-description: Use Helix SSH MCP as a high-throughput remote harness for host onboarding, credential windows, direct sudo, persistent jobs, unrestricted paths, file transfer, Docker/Compose, environment setup, builds, tests, deployments, and debugging.
+description: Use Helix SSH MCP as a high-throughput remote harness for host onboarding, persistent broker sessions, direct sudo, persistent jobs, unrestricted paths, file transfer, Docker/Compose, environment setup, builds, tests, deployments, and debugging.
 ---
 
 # Helix Remote Operations
@@ -12,10 +12,51 @@ description: Use Helix SSH MCP as a high-throughput remote harness for host onbo
 - Strict host-key checking is disabled by default in Harness mode.
 - New and migrated Harness hosts use `allowedRemotePaths=["/"]`.
 - Use `sudo_exec` directly; there is no sudo approval request, token, allowlist, confirmation step, or expiry.
-- Use `job_start` for long-running work instead of keeping `ssh_exec` or the Credential Broker blocked.
+- The Windows Credential Broker is a persistent local daemon, not a per-command `serve-once` process.
+- Normal password-backed SSH/SFTP operations are submitted to the daemon task queue and executed by a bounded worker pool.
+- Compatible SSH Sessions are reused from the daemon Session pool to reduce TCP/KEX/auth churn.
+- Use `job_start` for long-running remote work instead of keeping `ssh_exec` or one Broker task blocked.
 - Windows `host_onboard` opens a local PowerShell credential window automatically.
 - Passwords never enter chat, MCP payloads, command arguments, environment variables, or logs.
 - User commands pass through the built-in dangerous-command guard.
+
+## Broker Daemon and Multi-Agent Concurrency
+
+The MCP layer automatically manages the Broker daemon. Agents normally do not start, stop, or configure worker threads themselves.
+
+Internal flow:
+
+```text
+MCP / Skill-Matrix subprocesses
+  → local Named Pipe / Unix Domain Socket
+  → submit Broker TaskID
+  → bounded queue
+  → fixed worker pool
+  → pooled SSH Session
+  → remote host
+```
+
+Important rules:
+
+1. Multiple sub-agents may call Helix concurrently. Let the Broker queue provide backpressure instead of manually serializing every caller.
+2. Do not create a new Broker process for each operation and do not invoke `serve-once` in normal workflows.
+3. A Broker TaskID is an internal local scheduling ID. Normal Helix MCP tools submit and poll it automatically; do not confuse it with a remote `jobId`.
+4. A remote command returning non-zero is a normal SSH execution result (`exitCode/stdout/stderr`), not automatically a Broker transport failure.
+5. Broker connection/handshake setup may retry transient failures before a command begins, but Helix must not blindly replay a command after execution may have started.
+6. If the local Broker queue is full, reduce fan-out or retry later. Do not bypass the queue by launching extra Broker processes.
+7. Local Broker task state is in-memory and may be lost if the daemon crashes. Remote `job_*` state is independent and survives MCP/Broker restarts while the remote host stays up.
+
+Current default resource model:
+
+```text
+workers = maxConcurrentCommands (default 4)
+queueCapacity = max(32, workers * 16)
+SSH idle Session TTL = 120s
+max idle Sessions per connection key = 2
+handshake retry backoff = 200ms / 500ms / 1000ms
+```
+
+Detailed architecture: `docs/architecture/credential-broker-daemon.md`.
 
 ## First Actions
 
@@ -25,7 +66,7 @@ description: Use Helix SSH MCP as a high-throughput remote harness for host onbo
 4. If credentials are missing on Windows, call `credential_enroll_launch`.
 5. Call `ssh_check`.
 6. Call `environment_probe` for unfamiliar environments.
-7. Decide whether the work is a short command or a persistent job.
+7. Decide whether the work is a short command or a persistent remote job.
 
 Do not require a `known_hosts` setup step in Harness mode unless the user has explicitly enabled strict host-key checking.
 
@@ -49,7 +90,7 @@ Use `ssh_exec` only when the task is expected to complete in roughly 30 seconds 
 2. Inspect `ok`, `exitCode`, `stdout`, `stderr`, `timedOut`, and `truncated`.
 3. On failure, run the smallest diagnostic that tests the current hypothesis.
 
-Do not treat an MCP client's `run_in_background` option as remote process persistence. It does not detach the process from the Credential Broker.
+Do not treat an MCP client's `run_in_background` option as remote process persistence. It does not detach the process from the remote job lifecycle.
 
 ## Persistent Remote Job
 
