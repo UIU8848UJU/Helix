@@ -47,7 +47,7 @@ The TypeScript MCP process auto-starts the daemon on first use when the endpoint
 
 ## Protocol
 
-Heavy Broker operations are no longer synchronous one-shot stdin RPCs.
+Heavy Broker operations are no longer synchronous one-shot stdin RPCs. The daemon protocol has an explicit `protocolVersion`; v1 clients require daemon protocol version `1`.
 
 ### Submit
 
@@ -73,6 +73,7 @@ The daemon immediately returns a TaskID and state:
 ```json
 {
   "ok": true,
+  "protocolVersion": 1,
   "taskId": "broker-...",
   "state": "queued"
 }
@@ -109,6 +110,22 @@ A `succeeded` Broker task means the Broker operation completed normally. The nes
 ```
 
 Queued tasks are cancelled before execution. A running blocking libssh2 call is currently marked `cancelRequested` but is not force-interrupted in v1. Remote long-running work should use `job_cancel`, which controls the remote process group directly.
+
+### Shutdown and protocol upgrade
+
+The daemon supports:
+
+```json
+{"op":"shutdown"}
+```
+
+and the CLI exposes:
+
+```text
+helix-credential-broker daemon-stop
+```
+
+When MCP finds a daemon on the expected endpoint but with an incompatible `protocolVersion`, it requests a graceful shutdown and then starts the configured runtime binary. This prevents a new MCP client from silently talking to an old resident daemon.
 
 ## Worker Pool and Queue
 
@@ -154,7 +171,7 @@ max idle sessions/key     = 2
 SSH keepalive interval    = 30 seconds
 ```
 
-Before reusing an idle Session, the Broker checks authentication state and sends a keepalive. Stale Sessions are discarded.
+Before reusing an idle Session, the Broker checks authentication state and sends a keepalive. Stale Sessions are discarded. Per-operation timeout is updated on checkout; the underlying TCP socket is not pinned to the timeout of the first command that created the pooled Session.
 
 New connection establishment performs limited retry only for connection/handshake class failures:
 
@@ -179,6 +196,25 @@ The Broker has three independent concurrency boundaries:
 The SSH Session pool reduces handshakes but does not remove worker limits.
 
 A single pooled Session is checked out by one operation at a time. Parallel work can use multiple pooled Sessions for the same host up to the worker limit.
+
+## Runtime Binary and Upgrade Lifecycle
+
+On Windows, a running executable can prevent the build output from being replaced. Helix therefore does not run the long-lived daemon directly from `apps/credential-broker/target/release` after installation.
+
+The installer:
+
+```text
+1. stops an existing Broker daemon when possible
+2. builds/tests the repository binary
+3. hashes the resulting executable
+4. copies it to %APPDATA%/Helix/bin/helix-credential-broker-<hash>.exe
+5. writes that runtime path to credentialBrokerPath
+6. lets MCP auto-start the new daemon on first use
+```
+
+This content-addressed runtime copy makes upgrades atomic from the MCP configuration perspective and prevents an old daemon from locking the next repository build artifact.
+
+Old hashed binaries may be garbage-collected by a future maintenance command after they are no longer running. They are not required for task recovery.
 
 ## Remote Persistent Jobs
 
@@ -247,7 +283,7 @@ Agents should not know or manage Broker worker threads directly.
 From the MCP tool layer they continue to call normal Helix tools. The TypeScript Broker client performs:
 
 ```text
-ensure daemon
+ensure compatible daemon
   -> submit
   -> poll TaskID
   -> return nested Broker result
