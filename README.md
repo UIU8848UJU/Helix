@@ -1,6 +1,6 @@
 # Helix
 
-Helix 是面向 AI Agent 的远程操作基础设施。当前模块提供 SSH MCP、Rust Windows Credential Broker、主机管理、文件传输、Docker/Compose、环境探测、直接 sudo 和远端持久作业。
+Helix 是面向 AI Agent 的远程操作基础设施。当前模块提供 SSH MCP、Rust Credential Broker Daemon、主机管理、文件传输、Docker/Compose、环境探测、直接 sudo 和远端持久作业。
 
 ## 设计目标
 
@@ -27,7 +27,8 @@ sudo_exec 直接执行
 
 ```text
 apps/ssh-mcp/                 TypeScript MCP 控制层
-apps/credential-broker/       Rust Windows 凭据与密码 SSH 执行器
+apps/credential-broker/       Rust 常驻凭据、SSH Session 与任务 Broker
+docs/architecture/            Broker 等架构设计文档
 docs/guides/                  AI 与人工操作指南
 skills/                       Helix 远程操作 Skill
 examples/                     配置示例
@@ -50,7 +51,86 @@ scripts/                      安装、注册、管理和卸载脚本
 - `docker_list` / `docker_exec`；
 - `compose_ps` / `compose_exec`；
 - `environment_probe`：探测 OS、架构、工具链、容器和环境脚本；
+- 常驻 Broker、SSH Session 复用、有界任务队列、固定 worker 池；
 - JSONL 审计、超时、输出上限和并发控制。
+
+## Credential Broker Daemon
+
+旧架构每次密码 SSH/SFTP 调用都会：
+
+```text
+MCP
+  → spawn helix-credential-broker serve-once
+  → TCP connect
+  → SSH KEX
+  → password auth
+  → execute
+  → Broker 退出
+```
+
+这种方式在 Skill-Matrix 多子进程、多 Agent 并发时会产生大量进程启动和 SSH 握手，也容易放大 `MaxStartups`、KEX 抖动和 65 秒 Broker 超时问题。
+
+当前架构改为：
+
+```text
+MCP / Skill-Matrix subprocesses
+  → Named Pipe (Windows) / Unix Domain Socket (Unix)
+  → Credential Broker Daemon
+  → submit TaskID
+  → bounded queue
+  → fixed worker pool
+  → persistent SSH Session pool
+  → remote host
+```
+
+IPC endpoint：
+
+```text
+Windows: \\.\pipe\helix-credential-broker-v1
+Unix:    /tmp/helix-credential-broker-v1.sock
+```
+
+MCP 第一次需要密码 SSH 时会自动启动 Broker Daemon。正常调用不需要人工启动守护进程，也不会再为每条命令创建一个 Rust 进程。
+
+Broker 协议从同步 stdin RPC 改成：
+
+```text
+submit
+  → TaskID
+  → task_status 轮询
+  → succeeded / failed / cancelled
+```
+
+默认资源模型：
+
+```text
+workers = maxConcurrentCommands（默认 4）
+queueCapacity = max(32, workers * 16)（默认 64）
+SSH idle Session TTL = 120s
+max idle Sessions / connection key = 2
+握手重试 = 200ms / 500ms / 1000ms
+Broker Task 完成态保留 = 600s
+```
+
+因此即使 Skill-Matrix 同时启动 20 个子进程请求远端信息，也不会同时创建 20 个 Broker 进程和 20 个 SSH 握手。请求先进入有界队列，最多由固定数量 worker 执行。
+
+SSH Session 按凭据、host、port、username 和 host-key 策略复用。复用前会检查认证状态和 keepalive；失效 Session 会丢弃。连接/KEX 类瞬时错误会在命令真正开始前有限重试，但**不会在命令可能已经执行后自动重放命令**。
+
+注意两个 Task 概念不同：
+
+```text
+Broker TaskID
+  = 本机 Daemon 内部的短/中等 RPC 调度状态
+  = MCP 自动 submit + poll
+
+remote jobId
+  = job_start 创建的远端持久任务
+  = 用于长时间编译、测试、Docker build、部署等
+```
+
+Broker Task 当前使用内存状态；Daemon 崩溃后本地 TaskID 会丢失。远端 `job_*` 不依赖 Broker Task 内存，所以 Broker/MCP 重启不会自动杀掉已经启动的远端持久作业。
+
+详细设计：`docs/architecture/credential-broker-daemon.md`。
 
 ## Windows 一站式凭据录入
 
@@ -127,7 +207,7 @@ job_start
 
 ```text
 build
-测试 test
+test
 docker-build
 compose-build
 deploy
@@ -274,6 +354,7 @@ host_list
   → ssh_check
   → environment_probe
   → 短任务：ssh_exec / sudo_exec / Docker / Compose / 传输
+      ↳ 密码主机由 Broker Daemon 自动 submit + poll + Session 复用
   → 长任务：job_start → job_status / job_logs
 ```
 
@@ -290,5 +371,6 @@ cargo build --release --manifest-path apps/credential-broker/Cargo.toml
 
 完整 AI 操作说明：
 
+- `docs/architecture/credential-broker-daemon.md`
 - `docs/guides/HELIX_AI_GUIDE.md`
 - `skills/helix-remote-operations/SKILL.md`
