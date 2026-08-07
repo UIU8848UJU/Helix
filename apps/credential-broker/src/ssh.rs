@@ -65,9 +65,10 @@ pub fn connect(options: &ConnectOptions<'_>, credential: &StoredCredential) -> R
         Duration::from_secs(options.timeout_seconds.min(60)),
     )
     .with_context(|| format!("failed to connect to {address}"))?;
-    tcp.set_read_timeout(Some(Duration::from_secs(options.timeout_seconds)))?;
-    tcp.set_write_timeout(Some(Duration::from_secs(options.timeout_seconds)))?;
 
+    // Do not pin OS-level read/write timeouts to the first operation. The daemon may reuse this
+    // TCP/SSH Session for later commands with a different timeout; libssh2's Session timeout is
+    // updated whenever a pooled Session is checked out.
     let mut session = Session::new().context("failed to create SSH session")?;
     session.set_timeout(
         (options.timeout_seconds.saturating_mul(1000)).min(u32::MAX as u64) as u32,
