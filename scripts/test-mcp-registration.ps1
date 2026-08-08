@@ -18,6 +18,8 @@ try {
     New-Item -ItemType Directory -Force -Path $FakeBin | Out-Null
     New-Item -ItemType File -Force -Path $Entry, $Broker, $Guide, $Admin | Out-Null
     Set-Content -LiteralPath $Config -Value '{"version":1,"settings":{},"hosts":{}}' -Encoding utf8
+    Set-Content -LiteralPath (Join-Path $TempRoot "browser-mcp.json") -Value '{"version":1,"settings":{},"allowedDomains":[],"storageStates":[]}' -Encoding utf8
+    New-Item -ItemType File -Force -Path (Join-Path $TempRoot "browser-index.js") | Out-Null
 
     @'
 @echo off
@@ -43,11 +45,14 @@ exit /b 0
         -EntryPath $Entry `
         -BrokerPath $Broker `
         -GuidePath $Guide `
-        -AdminScriptPath $Admin
+        -AdminScriptPath $Admin `
+        -BrowserEntryPath (Join-Path $TempRoot "browser-index.js") `
+        -BrowserConfigPath (Join-Path $TempRoot "browser-mcp.json") `
 
     & (Join-Path $RootDir "scripts\unregister-mcp.ps1") `
         -Client All `
-        -ClaudeScope user
+        -ClaudeScope user `
+        -IncludeBrowser
 
     $Log = Get-Content -LiteralPath $LogFile -Raw
     $Expected = @(
@@ -60,7 +65,14 @@ exit /b 0
         'claude mcp get helix-ssh',
         'codex mcp remove helix-ssh',
         'codex mcp add helix-ssh --env HELIX_SSH_CONFIG=',
-        'codex mcp get helix-ssh'
+        'codex mcp get helix-ssh',
+        'claude mcp remove --scope user helix-browser',
+        'claude mcp add helix-browser --scope user',
+        '--env BROWSER_MCP_CONFIG=',
+        'claude mcp get helix-browser',
+        'codex mcp remove helix-browser',
+        'codex mcp add helix-browser --env BROWSER_MCP_CONFIG=',
+        'codex mcp get helix-browser'
     )
 
     foreach ($Pattern in $Expected) {

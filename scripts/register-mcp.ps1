@@ -12,6 +12,8 @@ param(
     [string]$BrokerPath,
     [string]$GuidePath,
     [string]$AdminScriptPath,
+    [string]$BrowserEntryPath,
+    [string]$BrowserConfigPath,
     [switch]$SkipIfUnavailable,
     [switch]$DryRun
 )
@@ -118,6 +120,25 @@ if (-not $AdminScriptPath) {
 }
 $AdminScriptPath = Resolve-FullPath $AdminScriptPath
 
+if ($BrowserEntryPath) {
+    $BrowserEntryPath = Resolve-FullPath $BrowserEntryPath
+    if (-not (Test-Path -LiteralPath $BrowserEntryPath)) {
+        throw "Missing browser MCP entry: $BrowserEntryPath. Run scripts\install.ps1 first"
+    }
+    if (-not $BrowserConfigPath) {
+        if ($env:BROWSER_MCP_CONFIG) {
+            $BrowserConfigPath = $env:BROWSER_MCP_CONFIG
+        } else {
+            $Base = if ($env:APPDATA) { $env:APPDATA } else { Join-Path $HOME "AppData\Roaming" }
+            $BrowserConfigPath = Join-Path $Base "Helix\browser-mcp.json"
+        }
+    }
+    $BrowserConfigPath = Resolve-FullPath $BrowserConfigPath
+    if (-not (Test-Path -LiteralPath $BrowserConfigPath)) {
+        throw "Missing browser MCP config: $BrowserConfigPath. Run scripts\install.ps1 first"
+    }
+}
+
 if (-not (Test-Path -LiteralPath $AdminScriptPath)) {
     $AdminSource = Join-Path $RootDir "scripts\helix-admin.ps1"
     New-Item -ItemType Directory -Force -Path (Split-Path $AdminScriptPath -Parent) | Out-Null
@@ -184,6 +205,18 @@ if ($Targets -contains "Claude") {
     )
     Invoke-External $Claude.Source @("mcp", "get", $Name)
     Write-Host "Claude Code registration completed: $Name, scope=$ClaudeScope"
+
+    if ($BrowserEntryPath) {
+        Invoke-External $Claude.Source @("mcp", "remove", "--scope", $ClaudeScope, "helix-browser") -IgnoreExitCode
+        Invoke-External $Claude.Source @(
+            "mcp", "add", "helix-browser",
+            "--scope", $ClaudeScope,
+            "--env", "BROWSER_MCP_CONFIG=$BrowserConfigPath",
+            "--", $Node.Source, $BrowserEntryPath
+        )
+        Invoke-External $Claude.Source @("mcp", "get", "helix-browser")
+        Write-Host "Claude Code registration completed: helix-browser, scope=$ClaudeScope"
+    }
 }
 
 if ($Targets -contains "Codex") {
@@ -201,7 +234,18 @@ if ($Targets -contains "Codex") {
     )
     Invoke-External $Codex.Source @("mcp", "get", $Name)
     Write-Host "Codex registration completed: $Name (user-level config)"
+
+    if ($BrowserEntryPath) {
+        Invoke-External $Codex.Source @("mcp", "remove", "helix-browser") -IgnoreExitCode
+        Invoke-External $Codex.Source @(
+            "mcp", "add", "helix-browser",
+            "--env", "BROWSER_MCP_CONFIG=$BrowserConfigPath",
+            "--", $Node.Source, $BrowserEntryPath
+        )
+        Invoke-External $Codex.Source @("mcp", "get", "helix-browser")
+        Write-Host "Codex registration completed: helix-browser (user-level config)"
+    }
 }
 
 Write-Host ""
-Write-Host "Restart the selected client and verify helix-ssh using /mcp or the MCP list."
+Write-Host "Restart the selected client and verify helix-ssh and (when installed) helix-browser using /mcp or the MCP list."
