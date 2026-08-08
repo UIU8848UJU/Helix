@@ -1,0 +1,91 @@
+schema_version: "2.1"
+gate_id: G15
+work_item_id: REPO-003
+date: "2026-08-08"
+decision: PASS
+final_decision: PASS
+
+delegation_evidence:
+  - logical_agent_id: delivery-quality-reviewer
+    runtime_agent: engineering-workflow-delivery-quality-reviewer
+    invocation_id: a5d73f2be4098a558
+    execution_context: child/subagent
+    independent_from_primary: true
+    result: CONDITIONAL_PASS
+    output_ref: development/reviews/G15-delivery-quality.yaml
+    summary: >
+      Independent reverse-review of RED/GREEN/REFACTOR evidence from raw artifacts.
+      Both REDs genuine TARGET_BEHAVIOR_MISSING (TDD-101 empty-stub signature 21/2
+      reproduced analytically; TDD-102 two toBe identity failures). Refactor behavior-
+      neutral (JobStatus jobId+privileged, HELIX_JOB_* markers/base64 untouched,
+      jobs.test.ts unchanged). Independently re-ran check=0, ssh-mcp 46/1, build=0,
+      root 23+46/1; confirmed no TaskPool rewiring (only a comment). task-pool timeout/
+      retention use injectable clock. Findings: (1) MAJOR fresh-checkout/CI build-order
+      gap — @helix/jobs main/types point to gitignored build/, no prepare hook, CI runs
+      check before build (reproduced TS2307 by removing build/); (2) MINOR evidence
+      lists non-existent packages/jobs/vitest.config.ts; (3) MINOR traceability status
+      stale + identity.test.ts missing.
+  - logical_agent_id: delivery-quality-reviewer
+    runtime_agent: engineering-workflow-delivery-quality-reviewer
+    invocation_id: a62eb5b766c6afd5b
+    execution_context: child/subagent
+    independent_from_primary: true
+    result: PASS
+    output_ref: development/reviews/G15-delivery-quality.yaml
+    summary: >
+      Re-review after fixes. Finding 1 RESOLVED: packages/jobs/package.json gains
+      "prepare": "npm run build"; reviewer independently re-ran the fresh-checkout
+      simulation (rm -rf build -> npm install regenerates build/ -> check exit 0) and
+      confirmed ci.yml installs before check/test. Finding 2 RESOLVED: vitest.config.ts
+      removed from TDD-101 cycle.yaml; test_diff documents behavior-free scaffolding.
+      Finding 3 RESOLVED: traceability.csv all VERIFIED + identity.test.ts rows added.
+      Re-ran full regression (check=0, ssh-mcp 46/1, build=0, root 23+46/1) and
+      workspace validator (status PASS). One non-blocking nit (cycle_backlog.yaml stale
+      vitest.config.ts reference) flagged and since removed.
+
+g15_checks:
+  reviewer_independent_from_primary: true
+  runtime_invocation_ids:
+    - a5d73f2be4098a558
+    - a62eb5b766c6afd5b
+  raw_evidence_spot_checked: true
+  red_green_refactor_credible: true
+  test_trustworthiness: true
+  regression_reverified: true
+  integration_nfr:
+    - "job_* output byte-identical (JobStatus jobId+privileged)"
+    - "HELIX_JOB_* markers / base64 encoding untouched"
+    - "@helix/jobs prepare hook fixes fresh-checkout build order (CI install before check)"
+  traceability_linked: true
+  release_rollback:
+    - "deferred to G16 handoff; covered in development/tdd_brief.md"
+  no_bypass_flags: true
+  no_taskpool_rewiring: true
+
+cycle_statuses_at_review:
+  TDD-101: REVIEW_PENDING
+  TDD-102: REVIEW_PENDING
+
+evidence_refs:
+  - development/cycles/TDD-101/cycle.yaml
+  - development/cycles/TDD-101/cycle-evidence.md
+  - development/cycles/TDD-101/red.log
+  - development/cycles/TDD-101/green.log
+  - development/cycles/TDD-101/regression.log
+  - development/cycles/TDD-102/cycle.yaml
+  - development/cycles/TDD-102/cycle-evidence.md
+  - development/cycles/TDD-102/red.log
+  - development/cycles/TDD-102/green.log
+  - development/cycles/TDD-102/regression.log
+  - development/traceability.csv
+  - development/tdd_brief.md
+  - packages/jobs/src/*.ts
+  - packages/jobs/test/*.test.ts
+  - apps/ssh-mcp/src/jobs.ts
+  - apps/ssh-mcp/src/process.ts
+  - apps/ssh-mcp/src/policy.ts
+  - apps/ssh-mcp/test/identity.test.ts
+  - apps/ssh-mcp/test/jobs.test.ts
+
+reviewer: engineering-workflow-delivery-quality-reviewer
+recorded_by: engineering-workflow-tdd-coordinator

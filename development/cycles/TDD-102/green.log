@@ -1,0 +1,26 @@
+TDD-102 GREEN evidence — command: npm run test --workspace @helix/ssh-mcp
+implementation_revision: 4be1d14 + working-tree
+exit_code: 0
+
+@helix/ssh-mcp@0.3.0 test
+> vitest run
+
+ RUN  v3.2.7  F:/AI_infra/Helix/apps/ssh-mcp
+
+ ✓ test/safety.test.ts   (15 tests)
+ ✓ test/config.test.ts   (6 tests)
+ ✓ test/policy.test.ts   (7 tests)
+ ✓ test/identity.test.ts (2 tests)   <-- RED driver now passes
+ ✓ test/ssh.test.ts      (1 test)
+ ✓ test/guidance.test.ts (4 tests)
+ ✓ test/jobs.test.ts     (6 tests | 1 skipped)
+ ✓ test/admin.test.ts    (3 tests)
+ ✓ test/process.test.ts  (3 tests)
+
+ Test Files  9 passed (9)
+ Tests       46 passed | 1 skipped (47)
+
+Minimal green boundary: ssh-mcp check passes; identity.test.ts passes (Semaphore via
+./process.js and shellQuote via ./policy.js are the @helix/jobs objects); full suite
+46/1 (44 prior + 2 identity); packages/jobs 23/23; root build && test pass; generic
+TaskStatus uses taskId while ssh-mcp JobStatus keeps jobId + privileged.

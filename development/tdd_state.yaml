@@ -1,0 +1,63 @@
+schema_version: "2.1"
+workflow: tdd-development
+project_id: helix-ai-infra
+task_id: REPO-003
+task_name: "Task pool refactor: extract shared Task Runtime (packages/jobs), wire SSH Runtime, regression green"
+baseline_ref:
+  requirements: requirements/baseline/approved_requirements.yaml
+  architecture: requirements/architecture_model.md
+  decisions: requirements/technology_decisions.md
+  topology_ref: .skillmatrix/engineering/environment-topology.yaml
+  topology_revision: "1"
+  environment_snapshot_ref: development/baseline/environment_snapshot.yaml
+  test_baseline_ref: development/baseline/test_baseline.yaml
+current_stage: "16_RELEASE_HANDOFF"
+gate_status:
+  G00: PASS
+  G01: PASS
+  G05: PASS
+  G10: PASS
+  G15: PASS
+verified_execution_bindings:
+  - SOURCE-EDIT-LOCAL
+  - BUILD-LOCAL
+  - UNIT-LOCAL
+blocked_execution_bindings: []
+last_environment_probe_at: "2026-08-08T08:05:00Z"
+cycles:
+  - id: TDD-101
+    status: DONE
+    behavior_id: BEH-CORE
+    evidence_ref: development/cycles/TDD-101/cycle-evidence.md
+  - id: TDD-102
+    status: DONE
+    behavior_id: BEH-SSH-ADAPTER
+    evidence_ref: development/cycles/TDD-102/cycle-evidence.md
+cycles_complete:
+  - TDD-101
+  - TDD-102
+cycles_in_progress: []
+cycles_pending: []
+checkpoints:
+  - ref: development/checkpoints/latest.md
+    note: "Initialized TDD 2.1 workspace; baseline 44 pass / 1 skip established."
+  - ref: development/checkpoints/latest.md
+    note: "G00/G01/G05 PASS via test-strategy-architect (invocations a38ea6354cf321b70, af351f859245c6671). Cycle plan TDD-101 (packages/jobs core) + TDD-102 (ssh-mcp adapter, identity-test RED) ready."
+  - ref: development/checkpoints/latest.md
+    note: "TDD-101 GREEN done: packages/jobs implemented, 23/23 tests pass, ssh-mcp regression 44/1 + root build PASS. Next: TDD-102 ssh-mcp adapter."
+  - ref: development/checkpoints/latest.md
+    note: "TDD-102 GREEN done: ssh-mcp consumes @helix/jobs (Semaphore/shellQuote/parse helpers from package, SshJobExecutor conformance adapter, no TaskPool rewiring). identity test RED→GREEN; ssh-mcp 46/1, packages 23/23, root build PASS. Next: G15 delivery-quality review (mandatory delegation) then G16 handoff."
+  - ref: development/checkpoints/latest.md
+    note: "G15 PASS via delivery-quality-reviewer (invocations a5d73f2be4098a558 CONDITIONAL_PASS -> a62eb5b766c6afd5b PASS). Major fresh-checkout build-order gap fixed with packages/jobs prepare=build. TDD-101 + TDD-102 DONE. Next: G16 release/handoff (topology revision, final snapshot, artifact flow)."
+  - ref: development/checkpoints/latest.md
+    note: "G16 release/handoff complete: REPO-003-handoff.md + release/handoff.md written, baseline snapshot/test_baseline updated, delivery-ready artifacts created (quality/flaky_register + ci_evidence + quality_report + independent_review; release/release_evidence + rollback_plan + handoff). validate_tdd_workspace.py --profile delivery-ready PASS (0 errors, 0 warnings). Remaining: commit + push (explicit user action)."
+open_blockers: []
+notes: |
+  Refactor target per REPO-003 / ARCH-006 / REPO-001 / REPO-002:
+  - packages/jobs: generic Task Runtime model (task id, state machine, submit/status/cancel,
+    bounded queue, worker limit, priority, timeout, retention, metrics) + pure wire protocol
+    (job id validation, job types/states, status/logs parsers, start/status/logs/cancel command
+    builders) shared by ssh-mcp and browser-mcp.
+  - apps/ssh-mcp: keep SSH execution (registerJobTools / broker / runSsh / config / audit) and
+    consume packages/jobs. Regression: existing 44 vitest tests must stay green.
+  - apps/browser-mcp: later phase, out of scope for this task.

@@ -1,0 +1,26 @@
+# Constraints — 浏览器 MCP
+
+## 硬约束
+| ID | 约束 | 来源 |
+|----|------|------|
+| CON-001 | 在 helix-ai-infra monorepo 内开发,新 app `apps/browser-mcp` | 用户 |
+| CON-002 | TypeScript + Node >= 20,与 ssh-mcp 同栈 | ARCH-001 |
+| CON-003 | MCP 协议 via @modelcontextprotocol/sdk,stdio transport | 与 ssh-mcp 一致 |
+| CON-004 | 一期本机 Playwright 驱动 Chromium | ARCH-001 |
+| CON-005 | 凭据/storageState 不经 AI 上下文与日志 | ARCH-002, NFR-SEC-001 |
+
+## 软约束
+| ID | 约束 | 说明 |
+|----|------|------|
+| CON-S001 | 按钮 selector 尽量稳定可复用 | 便于 Agent 连续操作 |
+| CON-S002 | 受控文件目录约定清晰 | 二期文件工具用 |
+| CON-S003 | 与 ssh-mcp 的工具命名风格一致(browser_*) | 一致性 |
+| CON-S004 | URL 授权配置:配置允许访问的域名列表(白名单);未授权域名 browser_open 拒绝(RVW-004) | 安全边界 |
+| CON-S005 | URL 域名 → storageState 文件路径的映射配置(browser_open 据此加载登录态)(RVW-003) | 登录态复用 |
+
+## 依赖
+| ID | 依赖 | 说明 |
+|----|------|------|
+| DEP-001 | Playwright 包 + Chromium 下载 | 需要网络安装 |
+| DEP-002 | Node 20+ 运行环境 | 开发机已具备 |
+| DEP-003 | MCP SDK | 仓库已有依赖模式 |

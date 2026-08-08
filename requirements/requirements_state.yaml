@@ -1,0 +1,33 @@
+schema_version: "1.0"
+workflow: requirements-engineering
+project_id: browser-mcp
+phase: "15_BASELINE_AND_HANDOFF"
+phase_status: APPROVED
+owner: user
+approver: user
+created_at: "2026-08-08T00:00:00Z"
+updated_at: "2026-08-08T00:00:00Z"
+baseline_version: "V1.0"
+baseline_frozen_at: "2026-08-08T00:00:00Z"
+baseline_approval: "user"
+baseline_review: "APPROVED (review-003.md, independent)"
+open_blockers: []
+research_required: false
+phases_completed:
+  - "00_INTAKE"
+  - "01_STAKEHOLDER_DISCOVERY"
+  - "02_PROBLEM_DISCOVERY"
+  - "03_CURRENT_STATE_ANALYSIS"
+  - "04_GOALS_AND_OUTCOMES"
+  - "05_SCOPE_AND_BOUNDARY"
+  - "06_SCENARIO_AND_DOMAIN_MODELING"
+  - "07_FUNCTIONAL_REQUIREMENTS"
+  - "08_NON_FUNCTIONAL_REQUIREMENTS"
+  - "09_CONSTRAINTS_AND_DEPENDENCIES"
+  - "10_TECHNICAL_DIRECTION_AND_RESEARCH_HANDOFF"
+  - "11_PRIORITIZATION_AND_MVP"
+  - "12_ROADMAP_AND_FUTURE_ITERATIONS"
+  - "13_ACCEPTANCE_AND_TRACEABILITY"
+  - "14_INDEPENDENT_REVIEW"
+last_checkpoint: "checkpoints/latest.md"
+handoff: "handoff.md"

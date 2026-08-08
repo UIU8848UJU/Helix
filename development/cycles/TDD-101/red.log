@@ -1,0 +1,23 @@
+TDD-101 RED evidence — command: npm run test --workspace @helix/jobs
+pre_implementation_revision: 4be1d14 (src/index.ts is an empty `export {}` stub)
+exit_code: 1  |  failure_classification: TARGET_BEHAVIOR_MISSING
+
+@helix/jobs@0.1.0 test
+> vitest run
+
+ RUN  v3.2.7  F:/AI_infra/Helix/packages/jobs
+
+ ❯ test/task-id.test.ts   (4 tests)
+ ❯ test/protocol.test.ts (6 tests)
+ ❯ test/task-pool.test.ts (9 tests)
+ ❯ test/semaphore.test.ts (4 tests)
+
+ Test Files  4 failed (4)
+ Tests       21 failed | 2 passed (23)
+
+ TypeError: TaskPool is not a constructor
+   ❯ test/task-pool.test.ts:141:18
+ TypeError: assertTaskId is not a function
+ TypeError: parseProtocol is not a function
+ TypeError: Semaphore is not a constructor
+ TypeError: shellQuote is not a function

@@ -1,0 +1,17 @@
+TDD-102 RED evidence — command: npm run test --workspace @helix/ssh-mcp
+pre_implementation_revision: 4be1d14 + working-tree (ssh-mcp still on local Semaphore/shellQuote copies)
+exit_code: 1  |  failure_classification: TARGET_BEHAVIOR_MISSING
+
+@helix/ssh-mcp@0.3.0 test
+> vitest run
+
+ RUN  v3.2.7  F:/AI_infra/Helix/apps/ssh-mcp
+
+ FAIL test/identity.test.ts > ssh-mcp re-exports @helix/jobs shared objects > process.ts re-exports the @helix/jobs Semaphore (same object)
+ AssertionError: expected [Function Semaphore] to be [Function Semaphore] // Object.is equality
+
+ FAIL test/identity.test.ts > ssh-mcp re-exports @helix/jobs shared objects > policy.ts re-exports the @helix/jobs shellQuote (same object)
+ AssertionError: expected [Function shellQuote] to be [Function shellQuote] // Object.is equality
+
+ Test Files  1 failed | 8 passed (9)
+ Tests       2 failed | 44 passed | 1 skipped (47)

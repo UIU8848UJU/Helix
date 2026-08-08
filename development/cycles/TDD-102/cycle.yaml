@@ -1,0 +1,151 @@
+schema_version: "2.1"
+cycle_id: TDD-102
+work_item_id: REPO-003
+behavior_id: BEH-SSH-ADAPTER
+source_ids: [REPO-003, ARCH-006]
+status: DONE
+risk: HIGH
+owner: engineering-workflow-tdd-coordinator
+reviewer: engineering-workflow-test-strategy-architect
+created_at: "2026-08-08"
+updated_at: "2026-08-08"
+test_level: unit
+scope:
+  behavior: "Refactor apps/ssh-mcp/src/jobs.ts to consume @helix/jobs: job types/status/logs parse via generic helpers, Semaphore/shellQuote come from the package, SSH sh-script builders + broker/runSsh execution form the SSH TaskExecutor implementing the package TaskExecutor interface. jobs.ts re-exports moved pieces. Output shapes and behavior unchanged."
+  allowed_production_files:
+    - apps/ssh-mcp/src/jobs.ts
+    - apps/ssh-mcp/src/process.ts
+    - apps/ssh-mcp/src/policy.ts
+    - apps/ssh-mcp/package.json
+    - packages/jobs/src/*
+  allowed_test_files:
+    - apps/ssh-mcp/test/jobs.test.ts
+    - apps/ssh-mcp/test/identity.test.ts
+  forbidden_changes:
+    - "HELIX_JOB_* markers, field names, base64 encoding"
+    - "job_* tool output shapes"
+    - "broker/privileged/audit/sudo logic"
+    - "Rewiring job_* tools through TaskPool.submit(); scheduling stays on inline execute() + Semaphore"
+  preserved_behaviors:
+    - "job_start/status/logs/cancel output shapes"
+    - "Unix-only e2e skipped on win32"
+planning:
+  red_expectation: "New apps/ssh-mcp/test/identity.test.ts asserts the Semaphore/shellQuote re-exported by ./process.js and ./policy.js are the SAME objects exported by @helix/jobs; it fails before the swap because process.ts/policy.ts still define local copies (TARGET_BEHAVIOR_MISSING)."
+  target_execution_binding_id: UNIT-LOCAL
+  target_execution_role: unit_test
+  regression_execution_binding_id: UNIT-LOCAL
+  regression_execution_role: unit_test
+  minimal_green_boundary:
+    - "ssh-mcp check passes"
+    - "identity.test.ts passes (Semaphore/shellQuote re-exports are @helix/jobs objects)"
+    - "full ssh-mcp suite passes (44 pass / 1 skip)"
+    - "packages/jobs suite passes"
+    - "root npm run build && npm run test pass"
+    - "generic TaskStatus uses taskId; ssh-mcp JobStatus keeps jobId + privileged (byte-identical output)"
+  regression_commands:
+    - "npm run check --workspace @helix/ssh-mcp"
+    - "npm run test --workspace @helix/ssh-mcp"
+    - "npm run build"
+    - "npm run test"
+  integration_followups:
+    - "real-host e2e on LINUX-SSH-TARGET (deferred)"
+  evidence_required:
+    - red_log
+    - green_log
+    - regression_log
+red:
+  status: PASS
+  started_at: "2026-08-08T08:17:00Z"
+  completed_at: "2026-08-08T08:18:00Z"
+  pre_implementation_revision: "4be1d14 + working-tree"
+  production_diff_present: false
+  test_diff: "apps/ssh-mcp/test/identity.test.ts added; apps/ssh-mcp/package.json adds @helix/jobs dependency (test-enabling: needed only so the identity test can resolve the workspace package; no production behavior implemented)"
+  execution_binding_id: UNIT-LOCAL
+  execution_role: unit_test
+  environment_id: DEV-WINDOWS
+  execution_context_id: host-shell
+  working_directory: F:/AI_infra/Helix
+  command: "npm run test --workspace @helix/ssh-mcp"
+  exit_code: 1
+  expected_failure: "identity.test.ts toBe assertion fails: ./process.js and ./policy.js still export distinct local Semaphore/shellQuote objects, not the @helix/jobs instances"
+  actual_failure: "Test Files 1 failed | 8 passed (9); Tests 2 failed | 44 passed | 1 skipped (47); AssertionError: expected [Function Semaphore] to be [Function Semaphore]; expected [Function shellQuote] to be [Function shellQuote]"
+  failure_classification: TARGET_BEHAVIOR_MISSING
+  repeat_count: 1
+  raw_log: "red.log"
+  control_experiment: "@helix/jobs resolvable and exports Semaphore/shellQuote; only the shared-piece swap has not happened yet — exactly the two identity assertions fail, rest of suite unchanged (44/1)"
+  gate_decision: "PASS"
+green:
+  status: PASS
+  started_at: "2026-08-08T08:19:00Z"
+  completed_at: "2026-08-08T08:20:00Z"
+  implementation_revision: "4be1d14 + working-tree"
+  implementation_summary: "ssh-mcp consumes @helix/jobs: process.ts re-exports Semaphore, policy.ts re-exports shellQuote, jobs.ts imports parseProtocol/nullableNumber/decodeOptionalBase64/knownTaskType/knownTaskState/assertTaskId/Semaphore/shellQuote/TASK_TYPES and aliases JOB_TYPES/JobType/JobState to the generic vocabulary; SshJobExecutor implements TaskExecutor (conformance only, no TaskPool rewiring); assertJobId keeps the SSH error message."
+  production_diff: "apps/ssh-mcp/src/{jobs,process,policy}.ts + apps/ssh-mcp/package.json (adds @helix/jobs dep)"
+  execution_binding_id: UNIT-LOCAL
+  execution_role: unit_test
+  environment_id: DEV-WINDOWS
+  execution_context_id: host-shell
+  working_directory: F:/AI_infra/Helix
+  command: "npm run test --workspace @helix/ssh-mcp"
+  exit_code: 0
+  target_log: "green.log"
+  regression_binding_id: UNIT-LOCAL
+  regression_role: unit_test
+  regression_environment_id: DEV-WINDOWS
+  regression_execution_context_id: host-shell
+  regression_working_directory: F:/AI_infra/Helix
+  regression_command: "npm run check --workspace @helix/ssh-mcp && npm run test --workspace @helix/ssh-mcp && npm run build && npm run test"
+  regression_exit_code: 0
+  regression_log: "regression.log"
+  assertions_weakened: false
+  skips_added: false
+  tolerances_expanded: false
+  core_boundary_mocked: false
+  gate_decision: "PASS"
+refactor:
+  status: DONE
+  started_at: "2026-08-08T08:20:30Z"
+  completed_at: "2026-08-08T08:21:00Z"
+  goal: "The GREEN IS the refactor: replace local Semaphore/shellQuote/parse helpers in ssh-mcp with @helix/jobs imports; expose SSH sh-script builders + broker/runSsh execution as SshJobExecutor implements TaskExecutor (conformance only)."
+  behavior_change: false
+  refactor_revision: "4be1d14 + working-tree"
+  diff: "process.ts 37→9 lines (Semaphore removed, re-export); policy.ts shellQuote removed, re-export; jobs.ts 129 lines changed (imports + aliases + SshJobExecutor, local helpers removed)"
+  execution_binding_id: UNIT-LOCAL
+  execution_role: unit_test
+  environment_id: DEV-WINDOWS
+  execution_context_id: host-shell
+  working_directory: F:/AI_infra/Helix
+  command: "npm run check --workspace @helix/ssh-mcp && npm run test --workspace @helix/ssh-mcp"
+  exit_code: 0
+  regression_log: "regression.log"
+  improvement: "Single source of truth for Task Runtime primitives (shared with browser-mcp); ssh-mcp kept byte-identical job_* behavior + error messages."
+  remaining_debt:
+    - "Whether job_* tools eventually route through TaskPool is deliberately deferred; TaskSpec is too generic to carry SSH host/cwd/env/sourceScripts/privileged."
+  gate_decision: "PASS"
+followups:
+  component_contract: []
+  integration_system: []
+  nfr_failure: []
+  release: []
+traceability:
+  test_ids:
+    - apps/ssh-mcp/test/jobs.test.ts
+    - apps/ssh-mcp/test/identity.test.ts
+  production_files:
+    - apps/ssh-mcp/src/jobs.ts
+    - apps/ssh-mcp/src/process.ts
+    - apps/ssh-mcp/src/policy.ts
+    - packages/jobs/src/*
+  validation_evidence:
+    - "red.log"
+    - "green.log"
+    - "regression.log"
+    - "development/reviews/G15-delivery-quality.yaml"
+  release_ref: "development/releases/REPO-003-handoff.md"
+completion:
+  cycle_review: "GREEN confirmed; ssh-mcp consumes @helix/jobs with byte-identical job_* behavior and 46/1 regression (was 44/1 + 2 identity assertions)."
+  residual_risks:
+    - "packages/jobs + ssh-mcp implementation uncommitted at evidence time (4be1d14 + working tree)"
+    - "SshJobExecutor conformance adapter not exercised by a runtime test (tools stay inline by design); conformance proven at compile time via implements TaskExecutor"
+  next_action: "G15 independent delivery-quality review (mandatory delegation) then G16 release/handoff + commit"
+  done_at: "2026-08-08"

@@ -1,0 +1,21 @@
+TDD-101 regression evidence — command: npm run check --workspace @helix/ssh-mcp && npm run test --workspace @helix/ssh-mcp && npm run build && npm run test
+exit_code: 0 (all four commands PASS)
+
+1) npm run check --workspace @helix/ssh-mcp
+   > tsc -p tsconfig.json --noEmit
+   (clean, no output)
+
+2) npm run test --workspace @helix/ssh-mcp
+   Test Files  8 passed (8)
+   Tests       44 passed | 1 skipped (45)
+
+3) npm run build
+   > @helix/jobs@0.1.0 build
+   > tsc -p tsconfig.json
+   > @helix/ssh-mcp@0.3.0 build
+   > tsc -p tsconfig.json
+   (PASS)
+
+4) npm run test
+   @helix/jobs: 23 passed (23)
+   @helix/ssh-mcp: 44 passed | 1 skipped (45)
