@@ -150,6 +150,7 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
       proxyJump: z.string().nullable().optional(),
       tags: z.array(z.string()).optional(),
       allowedRemotePaths: z.array(z.string()).min(1).optional(),
+      defaultWorkingDir: z.string().optional(),
       sudoMode: z.enum(["disabled", "reviewed-nopasswd", "reviewed-password"]).optional(),
       sudoAllow: z.array(z.string()).optional(),
       sudoApprovalTtlSeconds: z.number().int().min(30).max(3600).optional(),
@@ -179,6 +180,7 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
           proxyJump: input.proxyJump,
           tags: input.tags ?? [],
           allowedRemotePaths: input.allowedRemotePaths ?? safeLifecycleRemotePaths(input.username),
+          defaultWorkingDir: input.defaultWorkingDir,
           auth: authType === "windows-credential"
             ? { type: "windows-credential" as const, credentialRef: loginCredentialRef }
             : { type: "openssh" as const },

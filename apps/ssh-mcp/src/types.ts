@@ -18,6 +18,7 @@ export interface HostConfig {
   identityFile?: string;
   proxyJump?: string | null;
   tags?: string[];
+  defaultWorkingDir?: string;
   allowedRemotePaths: string[];
   auth: AuthConfig;
   sudo: SudoPolicy;

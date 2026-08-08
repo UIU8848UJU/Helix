@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { getConfigPath } from "./paths.js";
+import { assertRemotePathAllowed } from "./policy.js";
 import type { HelixConfig, HostConfig } from "./types.js";
 
 const aliasPattern = /^[a-zA-Z0-9._-]+$/;
@@ -28,6 +29,7 @@ const hostSchema = z.object({
   identityFile: z.string().min(1).optional(),
   proxyJump: z.string().min(1).nullable().optional(),
   tags: z.array(z.string().min(1)).default([]),
+  defaultWorkingDir: z.string().min(1).optional(),
   allowedRemotePaths: z.array(z.string().min(1)).min(1).default(["/"]),
   auth: authSchema.default({ type: "openssh" }),
   sudo: sudoPolicySchema.default({ mode: "disabled", allow: ["^.*$"], approvalTtlSeconds: 300 }),
@@ -72,11 +74,25 @@ function validateSudoPatterns(hostAlias: string, host: HostConfig): void {
   }
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function validateWorkingDir(hostAlias: string, host: HostConfig): void {
+  if (!host.defaultWorkingDir) return;
+  try {
+    assertRemotePathAllowed(host, host.defaultWorkingDir);
+  } catch (error) {
+    throw new Error(`Host ${hostAlias}: invalid defaultWorkingDir: ${errorMessage(error)}`);
+  }
+}
+
 export function validateConfig(input: unknown): HelixConfig {
   const parsed = configSchema.parse(input) as HelixConfig;
   for (const [alias, host] of Object.entries(parsed.hosts)) {
     if (!aliasPattern.test(alias)) throw new Error(`Invalid host alias: ${alias}`);
     validateSudoPatterns(alias, host);
+    validateWorkingDir(alias, host);
   }
   return parsed;
 }
@@ -91,6 +107,7 @@ export function validateHost(hostAlias: string, input: unknown): HostConfig {
   validateHostAlias(hostAlias);
   const parsed = hostSchema.parse(input) as HostConfig;
   validateSudoPatterns(hostAlias, parsed);
+  validateWorkingDir(hostAlias, parsed);
   return parsed;
 }
 
@@ -251,6 +268,7 @@ export function redactHost(host: HostConfig): Record<string, unknown> {
     proxyJump: host.proxyJump ?? null,
     tags: host.tags ?? [],
     allowedRemotePaths: host.allowedRemotePaths,
+    defaultWorkingDir: host.defaultWorkingDir ?? null,
     auth: host.auth,
     sudo: host.sudo,
   };

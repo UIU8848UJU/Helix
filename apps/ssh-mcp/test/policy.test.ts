@@ -43,6 +43,24 @@ describe("shell and path policy", () => {
     expect(script).toContain(". '/opt/ros/humble/setup.bash'");
     expect(script.endsWith("cmake --build build")).toBe(true);
   });
+
+  it("falls back to host.defaultWorkingDir when cwd is omitted", () => {
+    const script = buildRemoteScript(
+      { ...host, defaultWorkingDir: "/workspace/project" },
+      "cmake --build build",
+    );
+    expect(script).toContain("cd '/workspace/project'");
+  });
+
+  it("prefers an explicit cwd over host.defaultWorkingDir", () => {
+    const script = buildRemoteScript(
+      { ...host, defaultWorkingDir: "/workspace/project" },
+      "cmake --build build",
+      { cwd: "/workspace/other" },
+    );
+    expect(script).toContain("cd '/workspace/other'");
+    expect(script).not.toContain("cd '/workspace/project'");
+  });
 });
 
 describe("sudo policy", () => {

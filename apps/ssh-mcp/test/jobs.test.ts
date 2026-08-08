@@ -33,6 +33,12 @@ const host: HostConfig = {
   },
 };
 
+function decodeRunnerBase64(command: string): string {
+  const match = command.match(/printf '%s' '([A-Za-z0-9+/=]+)' \| base64 -d/);
+  if (!match) throw new Error("runner base64 payload not found");
+  return Buffer.from(match[1], "base64").toString("utf8");
+}
+
 describe("persistent remote jobs", () => {
   it("builds a detached start command with persistent metadata", () => {
     const command = buildJobStartCommand({
@@ -122,5 +128,32 @@ describe("persistent remote jobs", () => {
 
   it("rejects unsafe job ids", () => {
     expect(() => buildJobStatusCommand("../../etc/passwd")).toThrow("Invalid Helix job id");
+  });
+
+  it("falls back to host.defaultWorkingDir when cwd is omitted", () => {
+    const command = buildJobStartCommand({
+      jobId: "job-test-456",
+      type: "test",
+      name: "default cwd job",
+      command: "make test",
+      host: { ...host, defaultWorkingDir: "/home/tester/project" },
+      privileged: false,
+    });
+    expect(decodeRunnerBase64(command)).toContain("/home/tester/project");
+  });
+
+  it("prefers an explicit cwd over host.defaultWorkingDir", () => {
+    const command = buildJobStartCommand({
+      jobId: "job-test-789",
+      type: "test",
+      name: "explicit cwd job",
+      command: "make test",
+      host: { ...host, defaultWorkingDir: "/home/tester/project" },
+      cwd: "/home/tester/other",
+      privileged: false,
+    });
+    const runner = decodeRunnerBase64(command);
+    expect(runner).toContain("/home/tester/other");
+    expect(runner).not.toContain("/home/tester/project");
   });
 });
