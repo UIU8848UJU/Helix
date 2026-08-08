@@ -1,0 +1,10 @@
+{"name":"ASM-002 open","ok":true,"detail":{"title":"Spike Page A","url":"http://127.0.0.1:51176/"}}
+{"name":"ASM wait selector","ok":true,"detail":{}}
+{"name":"ASM-003 read text","ok":true,"detail":{"length":96}}
+{"name":"ASM buttons","ok":true,"detail":{"buttons":[{"id":"btn-alert","text":"Alert Me"},{"id":"btn-change","text":"Change Status"}]}}
+{"name":"ASM click","ok":true,"detail":{}}
+{"name":"ASM dialog","ok":true,"detail":{"dialogMessage":"hello-alert"}}
+{"name":"ASM popup","ok":true,"detail":{"popupCreated":true,"closedAfterAppHandling":true}}
+{"name":"ASM-004 storageState","ok":true,"detail":{"stored":"persisted","stateFile":"C:\\Users\\123\\AppData\\Local\\Temp\\browser-mcp-spike-icpq5c\\state.json"}}
+{"name":"ASM nav","ok":true,"detail":{"backTitle":"Spike Page A","forwardTitle":"Spike Page B"}}
+{"name":"ASM-005 crash recovery","ok":true,"detail":{"detected":true,"relaunched":true}}
