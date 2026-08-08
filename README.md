@@ -374,3 +374,9 @@ cargo build --release --manifest-path apps/credential-broker/Cargo.toml
 - `docs/architecture/credential-broker-daemon.md`
 - `docs/guides/HELIX_AI_GUIDE.md`
 - `skills/helix-remote-operations/SKILL.md`
+
+
+## 分支策略
+- `main` 只保留代码与文档；`requirements/`、`development/` 等流程产物只存在于 `develop`。
+- 禁止整支 merge develop 进 main，代码改动请按提交逐个 cherry-pick。
+- 详见 `docs/guides/branch-policy.md`。
