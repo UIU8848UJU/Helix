@@ -1,0 +1,26 @@
+{
+  "name": "@helix/browser-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Playwright/Chromium browser MCP server for AI agents: open, read, buttons, click, navigation, storageState.",
+  "type": "module",
+  "bin": { "helix-browser-mcp": "build/index.js" },
+  "files": ["build"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@helix/jobs": "^0.1.0",
+    "@modelcontextprotocol/sdk": "^1.17.5",
+    "playwright": "^1.62.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}
