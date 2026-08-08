@@ -15,6 +15,7 @@ export const HELIX_SERVER_INSTRUCTIONS = [
   "Harness hosts default to allowedRemotePaths=['/'] and strictHostKeyChecking=false. Do not introduce a path-whitelist or known_hosts setup step unless the active configuration is explicitly locked down.",
   "All user commands pass through the Harness dangerous-command guard. Do not try to bypass a blocked rm, filesystem wipe, block-device write, power-control, PID-1 kill, or fork-bomb command.",
   "Prefer structured cwd, env, and sourceScripts fields for repeatable build and debugging workflows.",
+  "Each host can carry a persistent defaultWorkingDir (absolute, inside the allowlist). When cwd is omitted, ssh_exec, job_start, docker_exec and compose_exec fall back to it. View with get_working_dir and update with set_working_dir.",
 ].join("\n");
 
 export const HELP_TOPICS = [
@@ -48,6 +49,10 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
     "Remove a host configuration while leaving stored credentials available for optional cleanup.",
   host_remove:
     "Low-level host configuration removal.",
+  get_working_dir:
+    "Read the persistent default working directory configured for a host.",
+  set_working_dir:
+    "Set or clear the persistent default working directory for a host. Paths must be absolute and inside the host allowlist.",
   credential_status:
     "Check whether login and sudo credential references exist without returning secret values.",
   credential_enroll_launch:

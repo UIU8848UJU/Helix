@@ -70,7 +70,8 @@ export function buildRemoteScript(host: HostConfig, command: string, options: Re
     throw new Error("Command cannot be empty and cannot contain NUL bytes");
   }
   const parts = ["set -e"];
-  if (options.cwd) parts.push(`cd ${shellQuote(assertRemotePathAllowed(host, options.cwd))}`);
+  const cwd = options.cwd ?? host.defaultWorkingDir;
+  if (cwd) parts.push(`cd ${shellQuote(assertRemotePathAllowed(host, cwd))}`);
   for (const [key, value] of Object.entries(options.env ?? {})) {
     if (!envNamePattern.test(key)) throw new Error(`Invalid environment variable name: ${key}`);
     parts.push(`export ${key}=${shellQuote(value)}`);

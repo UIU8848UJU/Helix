@@ -164,7 +164,8 @@ function buildPayload(host: HostConfig, input: {
   sourceScripts?: string[];
 }): string {
   const parts: string[] = [];
-  if (input.cwd) parts.push(`cd ${shellQuote(assertRemotePathAllowed(host, input.cwd))} || exit $?`);
+  const cwd = input.cwd ?? host.defaultWorkingDir;
+  if (cwd) parts.push(`cd ${shellQuote(assertRemotePathAllowed(host, cwd))} || exit $?`);
   for (const [key, value] of Object.entries(input.env ?? {})) {
     if (!envNamePattern.test(key)) throw new Error(`Invalid environment variable name: ${key}`);
     parts.push(`export ${key}=${shellQuote(value)}`);

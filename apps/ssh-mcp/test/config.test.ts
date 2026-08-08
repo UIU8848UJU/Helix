@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ConfigStore,
   defaultConfig,
+  redactHost,
   safeLifecycleRemotePaths,
   validateConfig,
   validateHost,
@@ -106,5 +107,58 @@ describe("configuration", () => {
         approvalTtlSeconds: 300,
       },
     })).toThrow("requires windows-credential");
+  });
+
+  it("accepts a defaultWorkingDir inside the host allowlist", () => {
+    const host = validateHost("dev", {
+      hostname: "10.0.0.20",
+      allowedRemotePaths: ["/srv/project", "/opt/tools"],
+      defaultWorkingDir: "/srv/project/quantx",
+      auth: { type: "openssh" },
+      sudo: { mode: "disabled" },
+    });
+    expect(host.defaultWorkingDir).toBe("/srv/project/quantx");
+  });
+
+  it("rejects a defaultWorkingDir outside the host allowlist", () => {
+    expect(() => validateHost("dev", {
+      hostname: "10.0.0.20",
+      allowedRemotePaths: ["/srv/project"],
+      defaultWorkingDir: "/etc/ssl",
+      auth: { type: "openssh" },
+      sudo: { mode: "disabled" },
+    })).toThrow("invalid defaultWorkingDir");
+  });
+
+  it("rejects a relative defaultWorkingDir", () => {
+    expect(() => validateConfig({
+      version: 1,
+      settings: {},
+      hosts: {
+        dev: {
+          hostname: "10.0.0.20",
+          allowedRemotePaths: ["/srv/project"],
+          defaultWorkingDir: "srv/project",
+          auth: { type: "openssh" },
+          sudo: { mode: "disabled" },
+        },
+      },
+    })).toThrow("invalid defaultWorkingDir");
+  });
+
+  it("persists and redacts defaultWorkingDir", async () => {
+    const store = await temporaryStore();
+    await store.mutate((config) => {
+      config.hosts["dev"] = validateHost("dev", {
+        hostname: "10.0.0.20",
+        allowedRemotePaths: ["/srv/project"],
+        defaultWorkingDir: "/srv/project/quantx",
+        auth: { type: "openssh" },
+        sudo: { mode: "disabled" },
+      });
+    });
+    const host = await store.getHost("dev");
+    expect(host.defaultWorkingDir).toBe("/srv/project/quantx");
+    expect(redactHost(host).defaultWorkingDir).toBe("/srv/project/quantx");
   });
 });

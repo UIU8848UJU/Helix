@@ -166,6 +166,7 @@ export function createServer(store = new ConfigStore()): McpServer {
     proxyJump: z.string().nullable().optional(),
     tags: z.array(z.string()).optional(),
     allowedRemotePaths: z.array(z.string()).optional(),
+    defaultWorkingDir: z.string().optional(),
     authType: z.enum(["openssh", "windows-credential"]).optional(),
     authCredentialRef: z.string().optional(),
     sudoMode: z.enum(["disabled", "reviewed-nopasswd", "reviewed-password"]).optional(),
@@ -197,6 +198,7 @@ export function createServer(store = new ConfigStore()): McpServer {
         username: input.username,
         identityFile: input.identityFile,
         proxyJump: input.proxyJump,
+        defaultWorkingDir: input.defaultWorkingDir,
       });
       const host = validateHost(input.alias, candidate);
       await store.mutate((config) => { config.hosts[input.alias] = host; });
@@ -213,6 +215,7 @@ export function createServer(store = new ConfigStore()): McpServer {
     proxyJump: z.string().nullable().optional(),
     tags: z.array(z.string()).optional(),
     allowedRemotePaths: z.array(z.string()).optional(),
+    defaultWorkingDir: z.string().nullable().optional(),
     authType: z.enum(["openssh", "windows-credential"]).optional(),
     authCredentialRef: z.string().nullable().optional(),
     sudoMode: z.enum(["disabled", "reviewed-nopasswd", "reviewed-password"]).optional(),
@@ -232,7 +235,7 @@ export function createServer(store = new ConfigStore()): McpServer {
         tags: input.tags,
         allowedRemotePaths: input.allowedRemotePaths,
       });
-      for (const field of ["username", "identityFile", "proxyJump"] as const) {
+      for (const field of ["username", "identityFile", "proxyJump", "defaultWorkingDir"] as const) {
         const value = input[field];
         if (value === null) delete candidate[field];
         else if (value !== undefined) candidate[field] = value;
@@ -253,6 +256,32 @@ export function createServer(store = new ConfigStore()): McpServer {
       const host = validateHost(input.alias, candidate);
       await store.mutate((config) => { config.hosts[input.alias] = host; });
       return textResult({ alias: input.alias, host: redactHost(host) });
+    } catch (error) { throwInvalid(error); }
+  });
+
+  server.tool("get_working_dir", "Read the persistent default working directory configured for a host.", {
+    host: z.string(),
+  }, async ({ host }) => {
+    try {
+      const hostConfig = await store.getHost(host);
+      return textResult({ host, defaultWorkingDir: hostConfig.defaultWorkingDir ?? null });
+    } catch (error) { throwInvalid(error); }
+  });
+
+  server.tool("set_working_dir", "Set or clear the persistent default working directory for a host. Paths must be absolute and inside the host allowlist; ssh_exec, job_start, docker_exec and compose_exec use it when cwd is omitted.", {
+    host: z.string(),
+    path: z.string().min(1).nullable(),
+  }, async ({ host, path }) => {
+    try {
+      const hostConfig = await store.getHost(host);
+      if (path !== null) assertRemotePathAllowed(hostConfig, path);
+      await store.mutate((config) => {
+        const target = config.hosts[host];
+        if (!target) throw new Error(`Unknown host alias: ${host}`);
+        if (path === null) delete target.defaultWorkingDir;
+        else target.defaultWorkingDir = path;
+      });
+      return textResult({ host, defaultWorkingDir: path });
     } catch (error) { throwInvalid(error); }
   });
 
