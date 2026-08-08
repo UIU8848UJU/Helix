@@ -1,0 +1,2 @@
+npm test --workspace @helix/browser-mcp
+test/audit.test.ts 8 passed (total 46)

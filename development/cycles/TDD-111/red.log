@@ -1,0 +1,3 @@
+npm test --workspace @helix/browser-mcp
+Cannot find module '../src/audit.js' imported from test/audit.test.ts
+1 failed / no tests collected
