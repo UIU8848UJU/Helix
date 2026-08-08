@@ -1,0 +1,33 @@
+schema_version: "2.1"
+cycle_id: TDD-104
+work_item_id: BRW-TDD-001
+behavior_id: tdd104
+source_ids: [REQ-BRW-001, CON-S004, NFR-SEC-002, ADR-002]
+status: DONE
+risk: HIGH
+owner: engineering-workflow-tdd-coordinator
+created_at: "2026-08-08"
+test_level: unit
+scope:
+  behavior: "browser-mcp 配置: ConfigStore JSON+zod schema/默认值/校验/持久化"
+  allowed_production_files:
+    - apps/browser-mcp/src/*
+  allowed_test_files:
+    - apps/browser-mcp/test/*
+planning:
+  red_expectation: import ../src/config.js 失败(Cannot find module), 7 个测试未收集
+  target_execution_binding_id: UNIT-LOCAL
+  target_execution_role: unit_test
+  minimal_green_boundary:
+    - "npm run test --workspace @helix/browser-mcp passes"
+    - "npm run check --workspace @helix/browser-mcp passes"
+    - "npm run build --workspace @helix/browser-mcp passes"
+red:
+  status: PASS
+  evidence: development/cycles/TDD-103/red.log
+green:
+  status: PASS
+  evidence: development/cycles/TDD-103/green.log
+regression:
+  status: PASS
+  evidence: development/cycles/TDD-103/regression.log

@@ -1,0 +1,2 @@
+npm run check --workspace @helix/browser-mcp: PASS
+npm run build --workspace @helix/browser-mcp: PASS

@@ -1,0 +1,3 @@
+npm test --workspace @helix/browser-mcp
+Cannot find module '../src/policy.js' imported from test/policy.test.ts
+1 failed / no tests collected

@@ -1,0 +1,2 @@
+npm test --workspace @helix/browser-mcp
+test/policy.test.ts 8 passed
