@@ -1,0 +1,3 @@
+npm test --workspace @helix/browser-mcp
+Cannot find module '../src/server.js' imported from test/server.test.ts
+1 failed / no tests collected

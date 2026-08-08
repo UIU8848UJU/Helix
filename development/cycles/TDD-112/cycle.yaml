@@ -1,0 +1,33 @@
+schema_version: "2.1"
+cycle_id: TDD-112
+work_item_id: BRW-TDD-001
+behavior_id: tdd112
+source_ids: [REQ-BRW-001, REQ-BRW-002, REQ-BRW-003, REQ-BRW-004, REQ-BRW-005, REQ-BRW-006, NFR-AUD-001, ADR-005]
+status: DONE
+risk: HIGH
+owner: engineering-workflow-tdd-coordinator
+created_at: "2026-08-08"
+test_level: unit
+scope:
+  behavior: "browser-mcp MCP server (ADR-005): createServer registers browser_open/read/buttons/click/back/forward/reload/wait/save_state/load_state over the MCP SDK; index.ts stdio entry with beforeExit/SIGINT browser close; registerGuidance sets server instructions, tool descriptions and browser_help; every call audited with host/path only, failures mapped to isError text results"
+  allowed_production_files:
+    - apps/browser-mcp/src/*
+  allowed_test_files:
+    - apps/browser-mcp/test/*
+planning:
+  red_expectation: "test/server.test.ts cannot import ../src/server.js (module missing); 7 tests fail at collection"
+  target_execution_binding_id: UNIT-LOCAL
+  target_execution_role: unit_test
+  minimal_green_boundary:
+    - "npm run test --workspace @helix/browser-mcp passes"
+    - "npm run check --workspace @helix/browser-mcp passes"
+    - "npm run build --workspace @helix/browser-mcp passes"
+red:
+  status: PASS
+  evidence: development/cycles/TDD-112/red.log
+green:
+  status: PASS
+  evidence: development/cycles/TDD-112/green.log
+regression:
+  status: PASS
+  evidence: development/cycles/TDD-112/regression.log
