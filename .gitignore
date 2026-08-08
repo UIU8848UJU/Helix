@@ -11,3 +11,8 @@ target/
 .vscode/
 .idea/
 .claude
+*.ndjson
+.skillmatrix/
+requirements/
+development/
+.codex/
