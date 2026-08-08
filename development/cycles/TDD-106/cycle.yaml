@@ -1,0 +1,33 @@
+schema_version: "2.1"
+cycle_id: TDD-106
+work_item_id: BRW-TDD-001
+behavior_id: tdd-106
+source_ids: [REQ-BRW-001, NFR-REL-001, NFR-REL-002, NFR-REL-003, ADR-001, ADR-004]
+status: DONE
+risk: HIGH
+owner: engineering-workflow-tdd-coordinator
+created_at: "2026-08-08"
+test_level: integration
+scope:
+  behavior: "BrowserManager singleton session (ADR-001/004, NFR-REL-001/002/003): lazy launch, single page reuse, Semaphore(1) serialization, disconnected crash recovery with lazy relaunch, close()"
+  allowed_production_files:
+    - apps/browser-mcp/src/*
+  allowed_test_files:
+    - apps/browser-mcp/test/*
+planning:
+  red_expectation: test/session.test.ts cannot import ../src/session.js (module missing); 4 tests fail at collection
+  target_execution_binding_id: UNIT-LOCAL
+  target_execution_role: unit_test
+  minimal_green_boundary:
+    - "npm run test --workspace @helix/browser-mcp passes"
+    - "npm run check --workspace @helix/browser-mcp passes"
+    - "npm run build --workspace @helix/browser-mcp passes"
+red:
+  status: PASS
+  evidence: development/cycles/TDD-106/red.log
+green:
+  status: PASS
+  evidence: development/cycles/TDD-106/green.log
+regression:
+  status: PASS
+  evidence: development/cycles/TDD-106/regression.log

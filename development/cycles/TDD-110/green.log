@@ -1,0 +1,2 @@
+npm test --workspace @helix/browser-mcp
+test/tools.test.ts storage state block 4 passed (total 38)

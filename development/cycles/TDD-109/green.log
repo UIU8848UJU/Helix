@@ -1,0 +1,2 @@
+npm test --workspace @helix/browser-mcp
+test/tools.test.ts navigation block 3 passed (total 34)

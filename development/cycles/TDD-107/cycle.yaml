@@ -1,0 +1,33 @@
+schema_version: "2.1"
+cycle_id: TDD-107
+work_item_id: BRW-TDD-001
+behavior_id: tdd-107
+source_ids: [REQ-BRW-001, REQ-BRW-002, CON-S004, ADR-002]
+status: DONE
+risk: HIGH
+owner: engineering-workflow-tdd-coordinator
+created_at: "2026-08-08"
+test_level: integration
+scope:
+  behavior: "browser open/read tools (REQ-BRW-001/002): openPage validates URL against allowlist, navigates, reports title/url/loadingState/storageState; readPage extracts visible text with maxBytes truncation flag"
+  allowed_production_files:
+    - apps/browser-mcp/src/*
+  allowed_test_files:
+    - apps/browser-mcp/test/*
+planning:
+  red_expectation: test/tools.test.ts cannot import ../src/tools.js (module missing); openPage/readPage not exported
+  target_execution_binding_id: UNIT-LOCAL
+  target_execution_role: unit_test
+  minimal_green_boundary:
+    - "npm run test --workspace @helix/browser-mcp passes"
+    - "npm run check --workspace @helix/browser-mcp passes"
+    - "npm run build --workspace @helix/browser-mcp passes"
+red:
+  status: PASS
+  evidence: development/cycles/TDD-107/red.log
+green:
+  status: PASS
+  evidence: development/cycles/TDD-107/green.log
+regression:
+  status: PASS
+  evidence: development/cycles/TDD-107/regression.log

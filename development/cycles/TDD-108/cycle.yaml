@@ -1,0 +1,33 @@
+schema_version: "2.1"
+cycle_id: TDD-108
+work_item_id: BRW-TDD-001
+behavior_id: tdd-108
+source_ids: [REQ-BRW-003, REQ-BRW-004, ADR-001]
+status: DONE
+risk: HIGH
+owner: engineering-workflow-tdd-coordinator
+created_at: "2026-08-08"
+test_level: integration
+scope:
+  behavior: "buttons/click tools (REQ-BRW-003/004): listButtons enumerates buttons with stable selector/text/visibility; clickSelector clicks, auto-dismisses dialogs, closes target=_blank popups, returns locator errors"
+  allowed_production_files:
+    - apps/browser-mcp/src/*
+  allowed_test_files:
+    - apps/browser-mcp/test/*
+planning:
+  red_expectation: listButtons/clickSelector not exported from ../src/tools.js; 5 tests fail at collection
+  target_execution_binding_id: UNIT-LOCAL
+  target_execution_role: unit_test
+  minimal_green_boundary:
+    - "npm run test --workspace @helix/browser-mcp passes"
+    - "npm run check --workspace @helix/browser-mcp passes"
+    - "npm run build --workspace @helix/browser-mcp passes"
+red:
+  status: PASS
+  evidence: development/cycles/TDD-108/red.log
+green:
+  status: PASS
+  evidence: development/cycles/TDD-108/green.log
+regression:
+  status: PASS
+  evidence: development/cycles/TDD-108/regression.log

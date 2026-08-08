@@ -1,0 +1,4 @@
+npm test --workspace @helix/browser-mcp
+browser storage state tools (TDD-110) > loads a saved state file into a fresh context
+SecurityError: Access is denied for this document (localStorage read on storageState context)
+1 failed / 34 passed

@@ -1,0 +1,2 @@
+npm test --workspace @helix/browser-mcp
+test/session.test.ts 4 passed (total 23)
