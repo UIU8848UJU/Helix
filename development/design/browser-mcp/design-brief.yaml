@@ -1,0 +1,43 @@
+schema_version: "2.1"
+work_item_id: BRW-DES-001
+task_name: "Browser MCP V1 engineering design"
+date: "2026-08-08"
+status: DESIGN_INTAKE
+
+inputs:
+  requirements_baseline: requirements/baseline/approved_requirements.yaml (V1: 6 REQ / 18 AC)
+  nfr_catalog: requirements/nfr_catalog.yaml (11 NFR)
+  constraints: requirements/constraints.yaml (CON-001..005)
+  tech_decisions: requirements/technology_decisions.md (ARCH-001..007, SESS-001, MVP-001)
+  pre_research: development/research/browser-mcp-poc/evidence.md (10/10 spike PASS, GO with conditions)
+
+scope:
+  app: apps/browser-mcp
+  tools_v1:
+    - browser_open
+    - browser_read
+    - browser_buttons
+    - browser_click
+    - browser_back
+    - browser_forward
+    - browser_reload
+    - browser_wait
+    - browser_save_state
+    - browser_load_state
+  out_of_scope_v1:
+    - 表单填写/上传/下载 (V2, ARCH-003)
+    - 远端 CDP driver (V2, ARCH-001/004 escape hatch)
+    - 多标签/多会话 (SESS-001 一期单浏览器单标签)
+
+constraints_used:
+  - CON-001: monorepo apps/browser-mcp
+  - CON-002: TypeScript + Node >= 20, 与 ssh-mcp 同栈
+  - CON-003: MCP stdio via @modelcontextprotocol/sdk
+  - CON-004: 本机 Playwright 驱动 Chromium
+  - CON-005: 凭据/storageState 不经 AI 上下文与日志
+  - CON-S004: URL 域名白名单授权
+  - CON-S005: 域名 -> storageState 映射
+
+gates:
+  - DESIGN_BASELINE 冻结后才可进入 TDD
+  - 冻结后变更必须走 CHANGE_CONTROL

@@ -1,0 +1,64 @@
+schema_version: "2.1"
+work_item_id: BRW-DES-001
+design_baseline: v1
+frozen_at: "2026-08-08"
+status: FROZEN
+refs:
+  requirements: requirements/baseline/approved_requirements.yaml
+  pre_research: development/research/browser-mcp-poc/evidence.md
+  adrs: development/design/browser-mcp/decisions/adr-{001..005}-*.md
+
+app:
+  path: apps/browser-mcp
+  stack: TypeScript ESM + Node >= 20 + MCP SDK stdio + zod + vitest
+  deps: [playwright, @modelcontextprotocol/sdk, zod, @helix/jobs]
+
+modules:
+  config.ts: ConfigStore(JSON+zod) + schema + validate + redact; 默认 headless=true, defaultTimeoutSeconds=20, maxReadBytes=204800, auditEnabled=true
+  policy.ts: validateOpenUrl(url) -> { scheme, host } 或分类错误; 域名白名单后缀匹配; storageState 映射解析(最长后缀匹配); 受控状态目录校验
+  session.ts: BrowserManager 单例(惰性 launch, disconnected 懒重启, Semaphore(1) 串行, 超时看门狗)
+  driver.ts: Driver 抽象(LocalPlaywrightDriver); 二期 RemoteCdpDriver 预留
+  tools.ts: browser_* 工具注册(契约见下)
+  audit.ts: JSONL 审计 + URL 去 query + storageState 内容零记录
+  guidance.ts: 指令/帮助(镜像 ssh-mcp)
+  index.ts: stdio 入口
+
+tool_contracts:
+  browser_open: { url, timeoutSeconds? } -> { ok, title, url, loadingState }
+  browser_read: { maxBytes? } -> { ok, title, url, text, byteLength, truncated }
+  browser_buttons: {} -> { ok, title, url, buttons: [{ id?, selector, text?, visible }] }
+  browser_click: { selector } -> { ok, title, url, dialog?, popupClosed?, statusText? }
+  browser_back: {} -> { ok, title, url }
+  browser_forward: {} -> { ok, title, url }
+  browser_reload: {} -> { ok, title, url }
+  browser_wait: { selector, timeoutSeconds? } -> { ok, title, url, visible }
+  browser_save_state: { domain } -> { ok, path }
+  browser_load_state: { path } -> { ok, url? }
+
+config_schema:
+  version: 1
+  settings:
+    headless: boolean (默认 true; bootstrap 保存状态时临时 false)
+    defaultTimeoutSeconds: int 1..60 (默认 20)
+    maxReadBytes: int 1024..10485760 (默认 204800)
+    auditEnabled: boolean (默认 true)
+  allowedDomains: string[] (空 = 默认拒绝一切, CON-S004)
+  storageStates: [{ domain: string, path: string }] (受控目录内绝对路径)
+
+nfr_mapping:
+  NFR-PERF-001/002: 单例复用 + 本机 Chromium; 验收需真实站点 P95 测量
+  NFR-SEC-001/002/003: storageState 零输出 + scheme/域名白名单 + 默认拒绝
+  NFR-REL-001/002/003: 单例不销毁 + disconnected 懒重启 + Semaphore 串行
+  NFR-OPS-001: process exit / beforeExit 关闭浏览器
+  NFR-COM-001: Windows 11 全量验收; Linux 不在范围
+  NFR-AUD-001: JSONL 审计 + 脱敏; 审计失败不阻塞(警告)
+
+test_strategy:
+  unit: URL/scheme 授权、config 校验、storageState 映射、审计脱敏 (CI 必跑)
+  integration: 真实 Chromium 会话/工具/存储态/崩溃恢复 (本地默认, CI skip 守卫 + playwright install)
+  skip_guard: 检测 ms-playwright 浏览器存在与否; 不存在则 skip
+
+open_items:
+  - bootstrap headed 登录流程的 UX 细节(状态文件首次生成)
+  - 登录过期启发式(/login 跳转/401/403)的误报率, 由集成测试校准
+  - CI 新增 browser-mcp job 安装 chromium 的耗时评估
