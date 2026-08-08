@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/helix"
 CONFIG_FILE="${HELIX_SSH_CONFIG:-$CONFIG_DIR/ssh-mcp.json}"
+BROWSER_CONFIG_FILE="${BROWSER_MCP_CONFIG:-$CONFIG_DIR/browser-mcp.json}"
 RUNTIME_DIR="$(dirname "$CONFIG_FILE")"
 GUIDE_FILE="$RUNTIME_DIR/HELIX_AI_GUIDE.md"
 SKILL_DIR="$RUNTIME_DIR/skills/helix-remote-operations"
@@ -69,17 +70,32 @@ if (mode === "EnterpriseLocked") {
 fs.writeFileSync(file, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
 NODE
 
+if [[ ! -f "$BROWSER_CONFIG_FILE" ]]; then
+  cp "$ROOT_DIR/examples/browser-mcp.config.json" "$BROWSER_CONFIG_FILE"
+  chmod 600 "$BROWSER_CONFIG_FILE" 2>/dev/null || true
+  echo "Created browser config: $BROWSER_CONFIG_FILE"
+else
+  echo "Keeping existing browser config: $BROWSER_CONFIG_FILE"
+fi
+
+npx playwright install chromium || {
+  echo "Warning: Playwright Chromium install failed; browser integration tests will be skipped." >&2
+}
+
 cp "$ROOT_DIR/docs/guides/HELIX_AI_GUIDE.md" "$GUIDE_FILE"
 mkdir -p "$SKILL_DIR"
 cp "$ROOT_DIR/skills/helix-remote-operations/SKILL.md" "$SKILL_FILE"
 
 ENTRY="$ROOT_DIR/apps/ssh-mcp/build/index.js"
+BROWSER_ENTRY="$ROOT_DIR/apps/browser-mcp/build/index.js"
 echo
 echo "Helix SSH MCP installation completed."
 echo "Entry:    $ENTRY"
 echo "Config:   $CONFIG_FILE"
 echo "AI guide: $GUIDE_FILE"
 echo "Skill:    $SKILL_FILE"
+echo "Browser entry: $BROWSER_ENTRY"
+echo "Browser config: $BROWSER_CONFIG_FILE"
 echo "Deployment mode: $DEPLOYMENT_MODE"
 echo "Direct sudo: enabled; destructive commands are blocked by the Harness guard"
 echo
@@ -93,6 +109,13 @@ cat <<JSON
       "env": {
         "HELIX_SSH_CONFIG": "$CONFIG_FILE",
         "HELIX_AI_GUIDE": "$GUIDE_FILE"
+      }
+    },
+    "helix-browser": {
+      "command": "node",
+      "args": ["$BROWSER_ENTRY"],
+      "env": {
+        "BROWSER_MCP_CONFIG": "$BROWSER_CONFIG_FILE"
       }
     }
   }

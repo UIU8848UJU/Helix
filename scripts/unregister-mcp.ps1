@@ -8,7 +8,8 @@ param(
 
     [string]$Name = "helix-ssh",
     [switch]$SkipIfUnavailable,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$IncludeBrowser
 )
 
 $ErrorActionPreference = "Stop"
@@ -88,6 +89,9 @@ if ($Targets -contains "Claude") {
     }
     Backup-File $ClaudeConfigPath
     Invoke-External $Claude.Source @("mcp", "remove", "--scope", $ClaudeScope, $Name)
+    if ($IncludeBrowser) {
+        Invoke-External $Claude.Source @("mcp", "remove", "--scope", $ClaudeScope, "helix-browser")
+    }
     Write-Host "Claude Code 已注销：$Name，scope=$ClaudeScope"
 }
 
@@ -95,5 +99,8 @@ if ($Targets -contains "Codex") {
     $CodexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME ".codex" }
     Backup-File (Join-Path $CodexHome "config.toml")
     Invoke-External $Codex.Source @("mcp", "remove", $Name)
+    if ($IncludeBrowser) {
+        Invoke-External $Codex.Source @("mcp", "remove", "helix-browser")
+    }
     Write-Host "Codex 已注销：$Name"
 }

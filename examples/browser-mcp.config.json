@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "settings": {
+    "headless": true,
+    "defaultTimeoutSeconds": 20,
+    "maxReadBytes": 204800,
+    "auditEnabled": true
+  },
+  "allowedDomains": [],
+  "storageStates": []
+}
