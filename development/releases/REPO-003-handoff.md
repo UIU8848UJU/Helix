@@ -74,4 +74,4 @@
 - [x] approved topology change declared (none)
 - [x] G15 independent reviewer delegation evidence recorded
 - [x] delivery-ready artifacts complete (quality/ + release/ + traceability; delivery-ready validator PASS)
-- [ ] commit + push (explicit user action, not performed)
+- [x] commit + push: `2d1f497` → origin/main (2026-08-08)
