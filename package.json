@@ -5,6 +5,7 @@
   "description": "AI infrastructure monorepo for secure agent tools and MCP servers.",
   "type": "module",
   "workspaces": [
+    "packages/*",
     "apps/*"
   ],
   "engines": {

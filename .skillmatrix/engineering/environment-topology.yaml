@@ -1,0 +1,154 @@
+schema_version: "2.1"
+topology_id: PROJECT-ENV-001
+project:
+  name: helix-ai-infra
+  repository: https://github.com/helix/helix-ai-infra
+owner: user
+last_reviewed_at: "2026-08-08"
+
+policy:
+  unknown_required_role_is_blocking: true
+  auto_mutate_environment_during_discovery: false
+  store_plaintext_secrets: false
+  default_topology_path: .skillmatrix/engineering/environment-topology.yaml
+
+required_bindings:
+  - SOURCE-EDIT-LOCAL
+  - BUILD-LOCAL
+  - UNIT-LOCAL
+
+environments:
+  - id: DEV-WINDOWS
+    name: Local Windows dev workstation
+    kind: local
+    host:
+      address: localhost
+      os: Windows 11 Pro (win32)
+      architecture: x86_64
+    access:
+      method: local
+      entrypoint: bash shell (Git Bash)
+      credential_ref: ""
+      proxy_jump: ""
+    workspace:
+      source_root: F:/AI_infra/Helix
+      build_root: F:/AI_infra/Helix
+      artifact_root: F:/AI_infra/Helix/apps/*/build
+    execution_contexts:
+      - id: host-shell
+        type: host
+        enter: []
+        bootstrap: []
+        working_directory: F:/AI_infra/Helix
+        toolchain:
+          compiler: ""
+          runtime: node v24.18.1
+          build_tool: npm 11.16.0 (workspaces)
+          sdk: ""
+          container_image: ""
+        commands:
+          configure: []
+          build:
+            - npm run build --workspace @helix/ssh-mcp
+            - npm run check --workspace @helix/ssh-mcp
+          unit_test:
+            - npm run test --workspace @helix/ssh-mcp
+          component_test: []
+          contract_test: []
+          integration_test: []
+          system_test: []
+          performance_test: []
+          compatibility_test: []
+          packaging: []
+    external_services: []
+    notes: |
+      Monorepo: apps/* (ssh-mcp, credential-broker) + packages/* (target for shared
+      Task Runtime). npm workspaces root package.json lists apps/* only; packages/*
+      will be added during this refactor. Windows host: the remote job engine e2e
+      test (executes sh /tmp/helix/jobs) is skipped on win32; it runs on Unix SSH
+      targets. Protocol builders/parsers are platform-independent and tested locally.
+
+  - id: LINUX-SSH-TARGET
+    name: Generic Unix SSH target (remote job engine)
+    kind: ssh-host
+    host:
+      address: "<varies per host config>"
+      os: Linux
+      architecture: "<varies>"
+    access:
+      method: mcp-ssh
+      entrypoint: ssh-mcp job_* tools / runSsh
+      credential_ref: "per-host credential store"
+      proxy_jump: ""
+    workspace:
+      source_root: ""
+      build_root: ""
+      artifact_root: /tmp/helix/jobs
+    execution_contexts:
+      - id: remote-shell
+        type: host
+        enter: []
+        bootstrap: []
+        working_directory: /tmp/helix/jobs
+        toolchain:
+          compiler: ""
+          runtime: sh + coreutils (nohup, setsid, base64, tail, kill)
+          build_tool: ""
+          sdk: ""
+          container_image: ""
+        commands: {}
+    external_services: []
+    notes: |
+      The remote job engine protocol (start/status/logs/cancel) executes real sh scripts
+      on Unix SSH hosts. Local Windows dev box is NOT equivalent for shell execution,
+      signals, setsid, or /tmp/helix/jobs. Protocol builders/parsers are pure string
+      logic and are equivalent on both.
+
+role_bindings:
+  - id: SOURCE-EDIT-LOCAL
+    role: source_edit
+    required: true
+    environment_id: DEV-WINDOWS
+    execution_context_id: host-shell
+    working_directory: F:/AI_infra/Helix
+    command_refs: []
+    evidence_level: L1
+    notes: Edit source on local Windows workstation via Claude Code.
+  - id: BUILD-LOCAL
+    role: build
+    required: true
+    environment_id: DEV-WINDOWS
+    execution_context_id: host-shell
+    working_directory: F:/AI_infra/Helix
+    command_refs: [build]
+    evidence_level: L2
+    notes: tsc build for ssh-mcp app and new packages; root npm run build --workspaces covers packages/jobs once added to workspaces.
+  - id: UNIT-LOCAL
+    role: unit_test
+    required: true
+    environment_id: DEV-WINDOWS
+    execution_context_id: host-shell
+    working_directory: F:/AI_infra/Helix
+    command_refs: [unit_test]
+    evidence_level: L2
+    notes: vitest per workspace/package.
+
+artifact_flows:
+  - id: BUILD-TO-BROKER-RUNTIME
+    from_binding_id: BUILD-LOCAL
+    to_binding_id: BUILD-LOCAL
+    artifact: apps/credential-broker/target/release/helix-credential-broker*
+    transport: controlled-copy
+    destination: ~/.helix/runtime/broker
+    integrity: sha256
+    cleanup: ""
+
+environment_equivalence:
+  - source_environment_id: DEV-WINDOWS
+    target_environment_id: LINUX-SSH-TARGET
+    equivalent_for: [pure-protocol-logic]
+    not_equivalent_for: [unix-shell-job-execution, signals, setsid, process-groups]
+    evidence: |
+      jobs.ts protocol builders/parsers are pure string logic tested on Windows;
+      the remote job engine (sh script, nohup, setsid, /tmp/helix/jobs) targets
+      Unix SSH hosts and its local e2e is skipped on win32.

@@ -1,0 +1,10 @@
+schema_version: "2.1"
+captured_at: "2026-08-08T10:26:30Z"
+captured_by: engineering-workflow-tdd-coordinator
+work_item_id: REPO-003
+release_ref: development/releases/REPO-003-handoff.md
+flaky_tests: []
+notes:
+  - "No flaky tests observed in REPO-003. Baseline test_baseline.yaml records flaky_tests: [] and the release regression (69 passed / 1 skipped) showed zero flakes across repeated runs."
+  - "The single skipped test is the Unix-only remote job local e2e (itWithUnixShell), skipped deliberately on win32 (not flaky) and deferred to LINUX-SSH-TARGET integration."
+  - "Flaky test process: any future flaky test MUST be registered here with disposition/release_blocking/quarantine per the TDD validator contract before G16 release."

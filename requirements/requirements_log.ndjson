@@ -1,0 +1,56 @@
+{"ts":"2026-08-08T00:00:00Z","op":"phase_enter","phase":"00_INTAKE","detail":"初始化需求运行时目录"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"requirements_state.yaml","detail":"IN_PROGRESS"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"requirements_plan.md"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"progress.md"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"requirement_brief.md"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"checkpoints/latest.md"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"stakeholder_map.md"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"open_questions.yaml"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"current_state.md","detail":"确认仓库无现成浏览器工具链"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"architecture_analysis.md","detail":"推荐本机Playwright起步+driver抽象"}
+{"ts":"2026-08-08T00:00:00Z","op":"decision","decision":"ARCH-001","detail":"一期本机Playwright起步,driver抽象留二期远端CDP"}
+{"ts":"2026-08-08T00:00:00Z","op":"decision","decision":"ARCH-002","detail":"内部系统登录态用storageState,不经AI/日志"}
+{"ts":"2026-08-08T00:00:00Z","op":"decision","decision":"ARCH-003","detail":"上传/下载用受控目录+文件工具与Agent衔接"}
+{"ts":"2026-08-08T00:00:00Z","op":"decision","decision":"REQ-ORG-001","detail":"页面读取与按钮提取分工具"}
+{"ts":"2026-08-08T00:00:00Z","op":"decision","decision":"SESS-001","detail":"一期单标签,单浏览器实例"}
+{"ts":"2026-08-08T00:00:00Z","op":"conflict","detail":"Q2回答'读+点击交互'vs表单交互选'交互二期',需澄清影响MVP"}
+{"ts":"2026-08-08T00:00:00Z","op":"decision","decision":"MVP-001","detail":"一期=读页面+列按钮+点击;二期=表单/上传/下载"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"requirements.yaml"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"future_requirements.yaml"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"nfr_catalog.yaml"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"constraints.yaml"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"assumptions.yaml"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"dependencies.yaml"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"priority_matrix.md"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"mvp_scope.md"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"roadmap.md"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"traceability_matrix.csv"}
+{"ts":"2026-08-08T00:00:00Z","op":"phase_enter","phase":"14_INDEPENDENT_REVIEW","detail":"进入独立评审Gate"}
+{"ts":"2026-08-08T00:00:00Z","op":"review","agent":"engineering-workflow-requirements-review-coordinator","result":"BLOCKED","detail":"2 blockers + 10 major/issues,详见reviews/review-001.md"}
+{"ts":"2026-08-08T00:00:00Z","op":"decision","decision":"RVW-001-RESOLVED","detail":"用户确认上传/下载推迟二期"}
+{"ts":"2026-08-08T00:00:00Z","op":"decision","decision":"RVW-007-RESOLVED","detail":"用户确认导航控制REQ-BRW-006纳入V1"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_update","artifact":"requirements.yaml","detail":"修RVW-003登录态bootstrap/RVW-004 URL授权/RVW-005并发/RVW-008判据/RVW-009弹窗新标签"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_update","artifact":"nfr_catalog.yaml","detail":"补NFR-SEC-003/REL-002/REL-003,修'尽力'措辞"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"nfr_traceability.yaml","detail":"修RVW-006 MUST级NFR补AC"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_update","artifact":"traceability_matrix.csv","detail":"补AC-BRW-001-04"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_update","artifact":"open_questions.yaml","detail":"核销全部OQ"}
+{"ts":"2026-08-08T00:00:00Z","op":"phase_enter","phase":"14_INDEPENDENT_REVIEW","detail":"修订完成,待重开评审Gate"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_update","artifact":"traceability_matrix.csv","detail":"补AC-BRW-003-03/004-03/004-04/005-03,现在18行=requirements.yaml 18AC"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_update","artifact":"technology_decisions.md","detail":"MVP-001定案,架构草图标V1/V2"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_update","artifact":"requirements.yaml","detail":"AC-BRW-003-01措辞,REQ-BRW-005 known_limitations"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_update","artifact":"checkpoints/latest.md","detail":"刷新决议状态与AC计数18"}
+{"ts":"2026-08-08T00:00:00Z","op":"phase_enter","phase":"14_INDEPENDENT_REVIEW","detail":"REVISE项处理完成,待终审"}
+{"ts":"2026-08-08T00:00:00Z","op":"review","agent":"engineering-workflow-requirements-review-coordinator","result":"APPROVED","detail":"终审通过,见reviews/review-003.md"}
+{"ts":"2026-08-08T00:00:00Z","op":"baseline_freeze","version":"V1.0","detail":"冻结基线,approved_requirements.yaml快照"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"handoff.md"}
+{"ts":"2026-08-08T00:00:00Z","op":"phase_enter","phase":"15_BASELINE_AND_HANDOFF","status":"APPROVED"}
+{"ts":"2026-08-08T00:00:00Z","op":"decision","decision":"ARCH-004","detail":"主路径Playwright,底层保留CDP escape hatch(二期远端直接连)"}
+{"ts":"2026-08-08T00:00:00Z","op":"decision","decision":"ARCH-005","detail":"浏览器引擎Chromium"}
+{"ts":"2026-08-08T00:00:00Z","op":"decision","decision":"REPO-001","detail":"任务池(jobs.ts)抽离为共享库,ssh-mcp与browser-mcp复用"}
+{"ts":"2026-08-08T00:00:00Z","op":"decision","decision":"REPO-002","detail":"引入browser-mcp后整理monorepo结构"}
+{"ts":"2026-08-08T00:00:00Z","op":"decision","decision":"ARCH-006","detail":"抽离通用Task Runtime模型(状态机/队列/worker/priority/timeout/retention/metrics),SSH与Browser两个Runtime实现"}
+{"ts":"2026-08-08T00:00:00Z","op":"decision","decision":"ARCH-007","detail":"Browser Runtime在Task Pool上再加Session Scheduler层(Browser/Context/Page Pool),因浏览器非简单worker"}
+{"ts":"2026-08-08T00:00:00Z","op":"decision","decision":"REPO-003","detail":"仓库结构apps+packages共享,先重构共享库,回归测试ssh-mcp后再开发browser-mcp一期"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_create","artifact":"architecture_model.md","detail":"通用Task Runtime分层模型(用户定案)"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_update","artifact":"technology_decisions.md","detail":"补ARCH-004~007/REPO-001~003"}
+{"ts":"2026-08-08T00:00:00Z","op":"artifact_update","artifact":"handoff.md","detail":"开发顺序改为先重构→回归→browser-mcp"}

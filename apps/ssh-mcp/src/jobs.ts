@@ -1,30 +1,31 @@
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import {
+  assertTaskId,
+  decodeOptionalBase64,
+  knownTaskState,
+  knownTaskType,
+  nullableNumber,
+  parseProtocol,
+  Semaphore,
+  shellQuote,
+  TASK_TYPES,
+} from "@helix/jobs";
+import type { TaskExecutor, TaskSpec, TaskState, TaskType } from "@helix/jobs";
 import { newRequestId, writeAudit } from "./audit.js";
 import { brokerSshExecute, brokerSudoExecute } from "./broker.js";
 import type { ConfigStore } from "./config.js";
-import { assertRemotePathAllowed, shellQuote } from "./policy.js";
-import { Semaphore } from "./process.js";
+import { assertRemotePathAllowed } from "./policy.js";
 import { assertCommandSafe } from "./safety.js";
 import { runSsh } from "./ssh.js";
 import type { ExecutionResult, GlobalSettings, HostConfig } from "./types.js";
 
-export const JOB_TYPES = [
-  "build",
-  "test",
-  "docker-build",
-  "compose-build",
-  "deploy",
-  "service",
-  "data",
-  "simulation",
-  "run",
-  "custom",
-] as const;
-
-export type JobType = (typeof JOB_TYPES)[number];
-export type JobState = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "lost" | "not_found" | "unknown";
+// ssh-mcp keeps its SSH-flavored job names; the values and types come from the
+// shared @helix/jobs Task Runtime package (identical vocabulary).
+export const JOB_TYPES = TASK_TYPES;
+export type JobType = TaskType;
+export type JobState = TaskState;
 
 export interface JobStatus {
   jobId: string;
@@ -52,8 +53,6 @@ export interface JobLogs {
 
 const JOB_ROOT = "/tmp/helix/jobs";
 const envNamePattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const jobIdPattern = /^job-[A-Za-z0-9._-]+$/;
-const protocolLinePattern = /^([^=]+)=(.*)$/;
 
 function textResult(value: unknown): { content: Array<{ type: "text"; text: string }> } {
   return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
@@ -68,47 +67,18 @@ function throwInvalid(error: unknown): never {
   throw new McpError(ErrorCode.InvalidParams, errorMessage(error));
 }
 
+// Validates via the shared @helix/jobs task-id contract but keeps the
+// SSH-flavored error message so job_* clients see byte-identical behavior.
 function assertJobId(jobId: string): string {
-  if (!jobIdPattern.test(jobId)) throw new Error(`Invalid Helix job id: ${jobId}`);
-  return jobId;
+  try {
+    return assertTaskId(jobId);
+  } catch {
+    throw new Error(`Invalid Helix job id: ${jobId}`);
+  }
 }
 
 function jobDirectory(jobId: string): string {
   return `${JOB_ROOT}/${assertJobId(jobId)}`;
-}
-
-function parseProtocol(stdout: string, magic: string): Record<string, string> {
-  const lines = stdout.split(/\r?\n/);
-  const start = lines.findIndex((line) => line.trim() === magic);
-  if (start < 0) throw new Error(`Invalid Helix job response: missing ${magic}`);
-  const values: Record<string, string> = {};
-  for (const line of lines.slice(start + 1)) {
-    const match = protocolLinePattern.exec(line);
-    const key = match?.[1];
-    const value = match?.[2];
-    if (key !== undefined && value !== undefined) values[key] = value;
-  }
-  return values;
-}
-
-function nullableNumber(value: string | undefined): number | null {
-  if (!value) return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function decodeOptionalBase64(value: string | undefined): string | null {
-  if (!value) return null;
-  return Buffer.from(value, "base64").toString("utf8");
-}
-
-function knownJobType(value: string | undefined): JobType | "unknown" {
-  return JOB_TYPES.includes(value as JobType) ? value as JobType : "unknown";
-}
-
-function knownJobState(value: string | undefined): JobState {
-  const states: JobState[] = ["queued", "running", "succeeded", "failed", "cancelled", "lost", "not_found", "unknown"];
-  return states.includes(value as JobState) ? value as JobState : "unknown";
 }
 
 export function parseJobStatus(stdout: string): JobStatus {
@@ -116,10 +86,10 @@ export function parseJobStatus(stdout: string): JobStatus {
   const jobId = values.job_id ?? "unknown";
   return {
     jobId,
-    type: knownJobType(values.type),
+    type: knownTaskType(values.type),
     name: decodeOptionalBase64(values.name_b64),
     command: decodeOptionalBase64(values.command_b64),
-    state: knownJobState(values.state),
+    state: knownTaskState(values.state),
     pid: nullableNumber(values.pid),
     exitCode: nullableNumber(values.exit_code),
     privileged: values.privileged === "1",
@@ -140,6 +110,51 @@ export function parseJobLogs(stdout: string): JobLogs {
     sizeBytes: nullableNumber(values.size) ?? 0,
     eof: values.eof === "1",
   };
+}
+
+/**
+ * SSH TaskExecutor adapter (interface conformance for the generic Task Pool).
+ *
+ * This binds the SSH sh-script builders + a transport runner onto the shared
+ * @helix/jobs TaskExecutor interface, proving the SSH job engine can power the
+ * generic Task Runtime (reused later by browser-mcp). REPO-003 keeps the live
+ * job_* tools on the inline execute() + Semaphore scheduling path by design:
+ * TaskSpec is deliberately too generic to carry SSH host/cwd/env/sourceScripts
+ * /privileged, so tools must not be routed through TaskPool.submit() this cycle.
+ */
+export interface SshJobExecutorContext {
+  host: HostConfig;
+  /** Transport runner (broker/runSsh + audit); command is a prebuilt SSH sh-script. */
+  run: (command: string, privileged: boolean) => Promise<ExecutionResult>;
+}
+
+export class SshJobExecutor implements TaskExecutor {
+  constructor(private readonly context: SshJobExecutorContext) {}
+
+  async start(task: TaskSpec): Promise<Record<string, unknown>> {
+    const result = await this.context.run(
+      buildJobStartCommand({
+        jobId: assertJobId(task.taskId),
+        type: task.type,
+        name: task.name,
+        command: task.command,
+        host: this.context.host,
+        privileged: false,
+      }),
+      false,
+    );
+    return { ...parseJobStatus(result.stdout) };
+  }
+
+  async status(taskId: string): Promise<Record<string, unknown>> {
+    const result = await this.context.run(buildJobStatusCommand(taskId), false);
+    return { ...parseJobStatus(result.stdout) };
+  }
+
+  async cancel(taskId: string, graceSeconds?: number): Promise<Record<string, unknown>> {
+    const result = await this.context.run(buildJobCancelCommand(taskId, graceSeconds ?? 5), false);
+    return { ...parseJobStatus(result.stdout) };
+  }
 }
 
 function buildPayload(host: HostConfig, input: {

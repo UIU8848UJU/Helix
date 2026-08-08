@@ -13,6 +13,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@helix/jobs": "^0.1.0",
     "@modelcontextprotocol/sdk": "^1.17.5",
     "zod": "^3.23.8"
   },

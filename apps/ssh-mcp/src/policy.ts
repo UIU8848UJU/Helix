@@ -1,14 +1,14 @@
 import path from "node:path";
 import type { HostConfig, RemoteExecutionOptions } from "./types.js";
 
+// shellQuote lives in the shared @helix/jobs Task Runtime package. ssh-mcp
+// re-exports it so existing importers (server, ssh, jobs) keep their surface.
+import { shellQuote } from "@helix/jobs";
+export { shellQuote };
+
 const envNamePattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const containerNamePattern = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const composeServicePattern = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
-
-export function shellQuote(value: string): string {
-  if (value.includes("\0")) throw new Error("NUL bytes are not allowed");
-  return `'${value.replace(/'/g, `'"'"'`)}'`;
-}
 
 export function normalizeRemotePath(input: string): string {
   if (input.includes("\0") || input.includes("\n") || input.includes("\r")) {

@@ -1,0 +1,18 @@
+# Dependencies — 浏览器 MCP
+
+## 外部依赖
+| ID | 依赖 | 类型 | 版本/来源 | 状态 |
+|----|------|------|-----------|------|
+| DEP-001 | @playwright/test 或 playwright | npm | latest stable | 待安装 |
+| DEP-002 | @modelcontextprotocol/sdk | npm | ^1.17.5 (与 ssh-mcp 一致) | 仓库已有 |
+| DEP-003 | typescript / vitest | npm | 同 ssh-mcp | 仓库已有 |
+| DEP-004 | Chromium browser | Playwright install | 通过 playwright install | 待安装 |
+
+## 内部依赖
+| ID | 依赖 | 说明 |
+|----|------|------|
+| DEP-010 | 无(独立新 app,不依赖 ssh-mcp 代码) | 可独立构建测试 |
+
+## 依赖风险
+- Chromium 下载需网络;内网环境可能需要配置镜像
+- 无运行时依赖 ssh-mcp / credential-broker(一期)
