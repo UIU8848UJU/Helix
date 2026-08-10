@@ -7,7 +7,12 @@ param(
     [string]$ClaudeScope = "user",
 
     [ValidateSet("Harness", "Personal", "EnterpriseLocked")]
-    [string]$DeploymentMode = "Harness"
+    [string]$DeploymentMode = "Harness",
+
+    # Path to a pre-built release broker binary (e.g. dist\helix-credential-broker.exe).
+    # When provided, the Rust toolchain is not required: cargo test/build are skipped
+    # and the given binary is installed into the runtime bin directory as-is.
+    [string]$BrokerBinary = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -75,7 +80,7 @@ Require-Command node
 Require-Command npm
 Require-Command ssh
 Require-Command scp
-Require-Command cargo
+if (-not $BrokerBinary) { Require-Command cargo }
 
 $NodeMajor = [int]((& node -p "Number(process.versions.node.split('.')[0])").Trim())
 if ($NodeMajor -lt 20) {
@@ -114,16 +119,26 @@ try {
     & npx playwright install chromium
     if ($LASTEXITCODE -ne 0) { Write-Warning "Playwright Chromium install failed; browser integration tests will be skipped" }
 
-    & cargo test --release --manifest-path "apps/credential-broker/Cargo.toml"
-    if ($LASTEXITCODE -ne 0) { throw "Rust broker tests failed" }
+    if ($BrokerBinary) {
+        if (-not (Test-Path -LiteralPath $BrokerBinary)) {
+            throw "Pre-built broker binary was not found: $BrokerBinary"
+        }
+    } else {
+        & cargo test --release --manifest-path "apps/credential-broker/Cargo.toml"
+        if ($LASTEXITCODE -ne 0) { throw "Rust broker tests failed" }
 
-    & cargo build --release --manifest-path "apps/credential-broker/Cargo.toml"
-    if ($LASTEXITCODE -ne 0) { throw "Rust broker build failed" }
+        & cargo build --release --manifest-path "apps/credential-broker/Cargo.toml"
+        if ($LASTEXITCODE -ne 0) { throw "Rust broker build failed" }
+    }
 } finally {
     Pop-Location
 }
 
-$BuiltBroker = Join-Path $RootDir "apps\credential-broker\target\release\helix-credential-broker.exe"
+$BuiltBroker = if ($BrokerBinary) {
+    (Resolve-Path -LiteralPath $BrokerBinary).Path
+} else {
+    Join-Path $RootDir "apps\credential-broker\target\release\helix-credential-broker.exe"
+}
 if (-not (Test-Path -LiteralPath $BuiltBroker)) {
     throw "Rust broker was not found: $BuiltBroker"
 }
