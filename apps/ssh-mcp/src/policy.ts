@@ -18,12 +18,41 @@ export function normalizeRemotePath(input: string): string {
   return path.posix.normalize(input);
 }
 
+const windowsDrivePattern = /^[A-Za-z]:[\\/]/;
+const windowsUncPattern = /^\\\\[^\\]+\\[^\\]+/;
+
+export function normalizeWindowsRemotePath(input: string): string {
+  if (input.includes("\0") || input.includes("\n") || input.includes("\r")) {
+    throw new Error("Remote path contains invalid control characters");
+  }
+  const normalized = path.win32.normalize(input);
+  if (!windowsDrivePattern.test(normalized) && !windowsUncPattern.test(normalized)) {
+    throw new Error("Remote path must be absolute (drive or UNC): " + input);
+  }
+  return normalized;
+}
+
+function isWindowsPathWithin(candidate: string, root: string): boolean {
+  const candidateLower = candidate.toLowerCase();
+  const rootLower = root.toLowerCase();
+  if (rootLower.endsWith("\\")) return candidateLower.startsWith(rootLower);
+  return candidateLower === rootLower || candidateLower.startsWith(rootLower + "\\");
+}
+
 function isPathWithin(candidate: string, root: string): boolean {
   if (root === "/") return true;
   return candidate === root || candidate.startsWith(`${root}/`);
 }
 
 export function assertRemotePathAllowed(host: HostConfig, input: string): string {
+  if (host.os === "windows") {
+    const candidate = normalizeWindowsRemotePath(input);
+    const roots = host.allowedRemotePaths.map(normalizeWindowsRemotePath);
+    if (!roots.some((root) => isWindowsPathWithin(candidate, root))) {
+      throw new Error("Remote path is outside the configured allowlist: " + candidate);
+    }
+    return candidate;
+  }
   const candidate = normalizeRemotePath(input);
   const roots = host.allowedRemotePaths.map(normalizeRemotePath);
   if (!roots.some((root) => isPathWithin(candidate, root))) {
@@ -81,6 +110,40 @@ export function buildRemoteScript(host: HostConfig, command: string, options: Re
   }
   parts.push(command);
   return parts.join("\n");
+}
+
+export function quotePowerShell(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+export function buildWindowsRemoteScript(host: HostConfig, command: string, options: RemoteExecutionOptions = {}): string {
+  if (!command.trim() || command.includes("\0")) {
+    throw new Error("Command cannot be empty and cannot contain NUL bytes");
+  }
+  const parts: string[] = ["$ProgressPreference = 'SilentlyContinue'", "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8"];
+  const cwd = options.cwd ?? host.defaultWorkingDir;
+  if (cwd) parts.push(`Set-Location -LiteralPath ${quotePowerShell(assertRemotePathAllowed(host, cwd))}`);
+  for (const [key, value] of Object.entries(options.env ?? {})) {
+    if (!envNamePattern.test(key)) throw new Error(`Invalid environment variable name: ${key}`);
+    parts.push(`$env:${key} = ${quotePowerShell(value)}`);
+  }
+  for (const script of options.sourceScripts ?? []) {
+    parts.push(`. ${quotePowerShell(assertRemotePathAllowed(host, script))}`);
+  }
+  parts.push(command);
+  parts.push("if ($LASTEXITCODE) { exit $LASTEXITCODE }");
+  parts.push("if (-not $?) { exit 1 }");
+  parts.push("exit 0");
+  return parts.join("; ");
+}
+
+export function encodePowerShellCommand(script: string): string {
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`;
+}
+
+export function buildWindowsCommand(host: HostConfig, command: string, options: RemoteExecutionOptions = {}): string {
+  return encodePowerShellCommand(buildWindowsRemoteScript(host, command, options));
 }
 
 export function buildDockerExecCommand(input: {

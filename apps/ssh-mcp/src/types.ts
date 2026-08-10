@@ -13,6 +13,7 @@ export interface SudoPolicy {
 
 export interface HostConfig {
   hostname: string;
+  os?: "unix" | "windows";
   port?: number;
   username?: string;
   identityFile?: string;

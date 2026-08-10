@@ -127,6 +127,7 @@ const HELP: Record<HelpTopic, object> = {
     workflow: [
       "Use environment_probe when the remote environment is unfamiliar.",
       "Use ssh_exec for short normal commands.",
+      "On os=windows hosts, ssh_exec and ssh_check run PowerShell via -EncodedCommand; sudo_exec and job_* are unix-only.",
       "Use sudo_exec for short commands requiring sudo password handling.",
       "Use job_start for long, high-output, or session-independent work.",
       "Pass cwd, env, and sourceScripts as structured fields.",

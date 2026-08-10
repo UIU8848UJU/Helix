@@ -1,6 +1,6 @@
 import { expandHome } from "./paths.js";
 import { runProcess, type Semaphore } from "./process.js";
-import { shellQuote } from "./policy.js";
+import { encodePowerShellCommand, quotePowerShell, shellQuote } from "./policy.js";
 import { newRequestId, writeAudit } from "./audit.js";
 import type { EnvironmentProbe, ExecutionResult, GlobalSettings, HostConfig } from "./types.js";
 
@@ -126,6 +126,44 @@ for root in ${roots}; do
   fi
 done | head -n 100 | while IFS= read -r file; do printf 'HELIX_SOURCE\\t%s\\n' "$file"; done
 `;
+}
+
+export function buildWindowsEnvironmentProbeScript(host: HostConfig): string {
+  const roots = Array.from(new Set(host.allowedRemotePaths)).map(quotePowerShell).join(", ");
+  const script = [
+    "$ErrorActionPreference = 'SilentlyContinue'",
+    "$ProgressPreference = 'SilentlyContinue'",
+    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+    "function meta($key, $value) { if ($null -ne $value) { Write-Output (('HELIX_META' + [char]9 + '{0}' + [char]9 + '{1}') -f $key, $value) } }",
+    "meta 'os.name' $env:OS",
+    "meta 'os.version' ([System.Environment]::OSVersion.VersionString)",
+    "meta 'os.prettyName' $null",
+    "meta 'os.kernel' ([System.Environment]::OSVersion.VersionString)",
+    "meta 'arch' $env:PROCESSOR_ARCHITECTURE",
+    "meta 'shell' ('PowerShell ' + $PSVersionTable.PSVersion.ToString())",
+    "meta 'cwd' (Get-Location).Path",
+    "foreach ($name in 'git','docker','gcc','g++','cmake','make','ninja','python3','node','rustc','cargo') {",
+    "  $cmd = Get-Command $name -ErrorAction SilentlyContinue",
+    "  if ($cmd) {",
+    "    $version = ''",
+    "    try { $version = (& $cmd.Source --version 2>&1 | Select-Object -First 1) } catch { $version = '' }",
+    "    Write-Output (('HELIX_TOOL' + [char]9 + '{0}' + [char]9 + '{1}') -f $name, $version)",
+    "  } else {",
+    "    Write-Output (('HELIX_TOOL' + [char]9 + '{0}' + [char]9) -f $name)",
+    "  }",
+    "}",
+    "if (Get-Command docker -ErrorAction SilentlyContinue) {",
+    "  docker ps --format ('HELIX_CONTAINER' + [char]9 + '{{.ID}}' + [char]9 + '{{.Names}}' + [char]9 + '{{.Image}}' + [char]9 + '{{.Status}}') 2>$null",
+    "}",
+    "foreach ($root in @(PLACEHOLDER_ROOTS)) {",
+    "  if (Test-Path -LiteralPath $root) {",
+    "    Get-ChildItem -LiteralPath $root -Recurse -Depth 5 -Include setup.bash,setup.sh,env.sh,activate -File -ErrorAction SilentlyContinue |",
+    "      Select-Object -First 100 |",
+    "      ForEach-Object { Write-Output (('HELIX_SOURCE' + [char]9 + '{0}') -f $_.FullName) }",
+    "  }",
+    "}",
+  ].join("\n");
+  return encodePowerShellCommand(script.replace("PLACEHOLDER_ROOTS", roots));
 }
 
 export function parseEnvironmentProbe(output: string): EnvironmentProbe {

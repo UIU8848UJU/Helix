@@ -18,12 +18,14 @@ import {
   buildComposeExecCommand,
   buildDockerExecCommand,
   buildRemoteScript,
+  buildWindowsCommand,
   shellQuote,
 } from "./policy.js";
 import { Semaphore } from "./process.js";
 import { assertCommandSafe } from "./safety.js";
 import {
   buildEnvironmentProbeScript,
+  buildWindowsEnvironmentProbeScript,
   parseEnvironmentProbe,
   runScp,
   runSsh,
@@ -167,6 +169,7 @@ export function createServer(store = new ConfigStore()): McpServer {
     tags: z.array(z.string()).optional(),
     allowedRemotePaths: z.array(z.string()).optional(),
     defaultWorkingDir: z.string().optional(),
+    os: z.enum(["unix", "windows"]).optional(),
     authType: z.enum(["openssh", "windows-credential"]).optional(),
     authCredentialRef: z.string().optional(),
     sudoMode: z.enum(["disabled", "reviewed-nopasswd", "reviewed-password"]).optional(),
@@ -183,9 +186,10 @@ export function createServer(store = new ConfigStore()): McpServer {
         : { type: "openssh" };
       const candidate: Record<string, unknown> = {
         hostname: input.hostname,
+        os: input.os ?? "unix",
         port: input.port ?? 22,
         tags: input.tags ?? [],
-        allowedRemotePaths: input.allowedRemotePaths ?? ["/tmp/helix"],
+        allowedRemotePaths: input.allowedRemotePaths ?? (input.os === "windows" ? ["C:\\helix"] : ["/tmp/helix"]),
         auth,
         sudo: {
           mode: input.sudoMode ?? (input.authType === "windows-credential" ? "reviewed-password" : "reviewed-nopasswd"),
@@ -216,6 +220,7 @@ export function createServer(store = new ConfigStore()): McpServer {
     tags: z.array(z.string()).optional(),
     allowedRemotePaths: z.array(z.string()).optional(),
     defaultWorkingDir: z.string().nullable().optional(),
+    os: z.enum(["unix", "windows"]).optional(),
     authType: z.enum(["openssh", "windows-credential"]).optional(),
     authCredentialRef: z.string().nullable().optional(),
     sudoMode: z.enum(["disabled", "reviewed-nopasswd", "reviewed-password"]).optional(),
@@ -231,6 +236,7 @@ export function createServer(store = new ConfigStore()): McpServer {
       const candidate = structuredClone(existing) as unknown as Record<string, unknown>;
       mergeOptional(candidate, {
         hostname: input.hostname,
+        os: input.os,
         port: input.port,
         tags: input.tags,
         allowedRemotePaths: input.allowedRemotePaths,
@@ -317,10 +323,13 @@ export function createServer(store = new ConfigStore()): McpServer {
     timeoutSeconds: z.number().int().min(1).max(120).optional(),
   }, async ({ host, timeoutSeconds }) => {
     try {
+      const hostConfig = await store.getHost(host);
       return textResult(await executeRemote({
         tool: "ssh_check",
         hostAlias: host,
-        command: "printf 'helix-ssh-ok\\n'",
+        command: hostConfig.os === "windows"
+          ? buildWindowsCommand(hostConfig, "Write-Output 'helix-ssh-ok'")
+          : "printf 'helix-ssh-ok\\n'",
         timeoutSeconds,
         operation: "connectivity check",
       }));
@@ -337,7 +346,10 @@ export function createServer(store = new ConfigStore()): McpServer {
   }, async ({ host, command, cwd, env, sourceScripts, timeoutSeconds }) => {
     try {
       assertCommandSafe(command);
-      const wrapped = buildRemoteScript(await store.getHost(host), command, { cwd, env, sourceScripts });
+      const hostConfig = await store.getHost(host);
+      const wrapped = hostConfig.os === "windows"
+        ? buildWindowsCommand(hostConfig, command, { cwd, env, sourceScripts })
+        : buildRemoteScript(hostConfig, command, { cwd, env, sourceScripts });
       return textResult(await executeRemote({
         tool: "ssh_exec",
         hostAlias: host,
@@ -361,6 +373,9 @@ export function createServer(store = new ConfigStore()): McpServer {
       const config = await store.read();
       const hostConfig = config.hosts[host];
       if (!hostConfig) throw new Error(`Unknown host alias: ${host}`);
+      if (hostConfig.os === "windows") {
+        throw new Error("sudo_exec is not supported on Windows hosts");
+      }
       const wrapped = buildRemoteScript(hostConfig, command, { cwd, env, sourceScripts });
       if (hostConfig.auth.type === "windows-credential") {
         return textResult(await brokerSudoExecute({
@@ -540,7 +555,9 @@ export function createServer(store = new ConfigStore()): McpServer {
       const result = await executeRemote({
         tool: "environment_probe",
         hostAlias: host,
-        command: buildEnvironmentProbeScript(hostConfig),
+        command: hostConfig.os === "windows"
+          ? buildWindowsEnvironmentProbeScript(hostConfig)
+          : buildEnvironmentProbeScript(hostConfig),
         timeoutSeconds,
         operation: "read-only environment discovery",
       });
