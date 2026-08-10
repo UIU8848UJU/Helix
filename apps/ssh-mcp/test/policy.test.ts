@@ -4,6 +4,11 @@ import {
   assertSudoAllowed,
   buildDockerExecCommand,
   buildRemoteScript,
+  buildWindowsCommand,
+  buildWindowsRemoteScript,
+  encodePowerShellCommand,
+  normalizeWindowsRemotePath,
+  quotePowerShell,
   shellQuote,
 } from "../src/policy.js";
 import type { HostConfig } from "../src/types.js";
@@ -87,5 +92,80 @@ describe("Docker command builder", () => {
     expect(command).toContain("docker exec");
     expect(command).toContain("bash -lc");
     expect(command).toContain("ninja -C build");
+  });
+});
+
+const windowsHost: HostConfig = {
+  hostname: "192.168.1.50",
+  os: "windows",
+  port: 22,
+  username: "admin",
+  tags: [],
+  allowedRemotePaths: ["C:\\helix", "\\\\server\\share"],
+  auth: { type: "openssh" },
+  sudo: { mode: "disabled", allow: [], approvalTtlSeconds: 300 },
+};
+
+function decodeEncodedCommand(command: string): string {
+  const match = command.match(/-EncodedCommand ([A-Za-z0-9+/=]+)$/);
+  if (!match?.[1]) throw new Error("no EncodedCommand found");
+  return Buffer.from(match[1], "base64").toString("utf16le");
+}
+
+describe("Windows path policy", () => {
+  it("normalizes forward slashes to backslashes", () => {
+    expect(normalizeWindowsRemotePath("C:/helix/project")).toBe("C:\\helix\\project");
+  });
+
+  it("accepts drive and UNC absolute paths", () => {
+    expect(normalizeWindowsRemotePath("C:\\helix")).toBe("C:\\helix");
+    expect(normalizeWindowsRemotePath("\\\\server\\share\\dir")).toBe("\\\\server\\share\\dir");
+  });
+
+  it("rejects relative Windows paths", () => {
+    expect(() => normalizeWindowsRemotePath("helix\\project")).toThrow("absolute");
+    expect(() => normalizeWindowsRemotePath("C:helix")).toThrow("absolute");
+  });
+
+  it("accepts paths inside the allowlist case-insensitively", () => {
+    expect(assertRemotePathAllowed(windowsHost, "c:\\HELIX\\project")).toBe("c:\\HELIX\\project");
+    expect(assertRemotePathAllowed(windowsHost, "C:\\helix\\..\\helix\\ok")).toBe("C:\\helix\\ok");
+    expect(assertRemotePathAllowed(windowsHost, "\\\\server\\share\\file.txt")).toBe("\\\\server\\share\\file.txt");
+  });
+
+  it("rejects Windows path escape through dot-dot", () => {
+    expect(() => assertRemotePathAllowed(windowsHost, "C:\\helix\\..\\Windows")).toThrow("outside the configured allowlist");
+  });
+});
+
+describe("Windows command builder", () => {
+  it("quotes PowerShell strings with doubled single quotes", () => {
+    expect(quotePowerShell("C:\\helix\\project")).toBe("'C:\\helix\\project'");
+    expect(quotePowerShell("it's")).toBe("'it''s'");
+  });
+
+  it("builds a PowerShell script with cwd, env and source in order", () => {
+    const script = buildWindowsRemoteScript(windowsHost, "npm run build", {
+      cwd: "C:/helix/project",
+      env: { CI: "true" },
+      sourceScripts: ["C:/helix/scripts/env.ps1"],
+    });
+    expect(script).toContain("Set-Location -LiteralPath 'C:\\helix\\project'");
+    expect(script).toContain("$env:CI = 'true'");
+    expect(script).toContain(". 'C:\\helix\\scripts\\env.ps1'");
+    expect(script).toContain("npm run build");
+    expect(script).toContain("if ($LASTEXITCODE) { exit $LASTEXITCODE }");
+  });
+
+  it("round-trips through a UTF-16LE EncodedCommand", () => {
+    const script = buildWindowsRemoteScript(windowsHost, "Write-Output \"hello '$HOME'\"");
+    const command = encodePowerShellCommand(script);
+    expect(command).toMatch(/^powershell\.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand /);
+    expect(decodeEncodedCommand(command)).toBe(script);
+  });
+
+  it("passes user commands verbatim inside the encoded script", () => {
+    const command = buildWindowsCommand(windowsHost, "echo \"a b\" & echo 'c d'");
+    expect(decodeEncodedCommand(command)).toContain("echo \"a b\" & echo 'c d'");
   });
 });

@@ -24,6 +24,7 @@ const sudoPolicySchema = z.object({
 
 const hostSchema = z.object({
   hostname: z.string().min(1),
+  os: z.enum(["unix", "windows"]).optional(),
   port: z.number().int().min(1).max(65535).default(22),
   username: z.string().min(1).optional(),
   identityFile: z.string().min(1).optional(),
@@ -262,6 +263,7 @@ export class ConfigStore {
 export function redactHost(host: HostConfig): Record<string, unknown> {
   return {
     hostname: host.hostname,
+    os: host.os ?? "unix",
     port: host.port ?? 22,
     username: host.username ?? null,
     identityFile: host.identityFile ? "configured" : null,
