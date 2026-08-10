@@ -2,6 +2,24 @@
 
 Helix 是面向 AI Agent 的远程操作基础设施。当前模块提供 SSH MCP、Rust Credential Broker Daemon、主机管理、文件传输、Docker/Compose、环境探测、直接 sudo 和远端持久作业。
 
+## 快速安装
+
+Windows：
+
+```powershell
+.\scripts\install.ps1
+.\scripts\build-broker-release.ps1
+.\scripts\install.ps1 -BrokerBinary .\dist\helix-credential-broker.exe
+```
+
+Linux/macOS：
+
+```bash
+./scripts/install.sh
+```
+
+完整安装指南见 [docs/guides/installation.md](docs/guides/installation.md)。
+
 ## 设计目标
 
 Helix 默认运行在 **Harness 模式**：优先保证 AI 可以连续完成远程编译、调试、部署和环境维护，不使用会频繁打断工作流的权限审批链。
@@ -44,7 +62,7 @@ scripts/                      安装、注册、管理和卸载脚本
 - `credential_status`：检查凭据是否存在；
 - `credential_enroll_launch`：由 MCP 直接弹出本地 PowerShell 密码窗口；
 - `credential_enroll_request`：无桌面环境的命令行备用方案；
-- `ssh_check` / `ssh_exec`：连接检查和普通命令；
+- `ssh_check` / `ssh_exec`：连接检查和普通命令（Windows 主机自动走 PowerShell `-EncodedCommand`，支持 win→win 命令执行）；
 - `sudo_exec`：直接 sudo；
 - `job_start` / `job_status` / `job_logs` / `job_cancel`：远端持久后台作业；
 - `ssh_upload` / `ssh_download`：文件传输；
