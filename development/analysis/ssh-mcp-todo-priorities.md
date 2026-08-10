@@ -40,6 +40,12 @@ docker_exec / compose_exec 时省略 cwd 自动落到该目录，避免每次输
 - 命令行挂起：是否可做成 CLI 挂起，需要操作时输入挂起负载
 - sudo 保持现状；rm 等危险命令必须谨慎（p1-2 加固）
 
+## 待办补充：超时时限可配置（PLANNED）
+
+- 需求：各远端工具的超时上限目前写死在工具定义里（`ssh_check` 120s、`docker_list` / `compose_ps` 300s、`environment_probe` 600s、其余 3600s），希望超时时限可配置，便于高延迟网络与大文件传输场景调整。
+- 方案方向：settings 增加统一超时上限配置（如 `maxTimeoutSeconds`），各工具校验 `timeoutSeconds ≤ 上限`；或允许按 host 覆盖默认超时。
+- 状态：PLANNED，本次 win→win 修复不实施。
+
 ## 后续
 
 P0-1 完成并合并到 main 后，启动 mcp-browser 技术预研。
