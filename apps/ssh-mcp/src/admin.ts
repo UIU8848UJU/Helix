@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import type { Readable } from "node:stream";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -12,6 +13,7 @@ import {
   safeLifecycleRemotePaths,
   validateHost,
 } from "./config.js";
+import { getCredentialBrokerPath } from "./paths.js";
 import type { HostConfig } from "./types.js";
 
 function textResult(value: unknown): { content: Array<{ type: "text"; text: string }> } {
@@ -78,25 +80,67 @@ export function buildCredentialAdminCommand(input: Parameters<typeof buildCreden
   })].join(" ");
 }
 
-export function launchCredentialWindow(input: Parameters<typeof buildCredentialAdminArgs>[0]): { pid: number | null } {
+export function buildBrokerCredentialUiArgs(input: {
+  username: string;
+  credentialRefs: string[];
+  separatePasswords?: boolean;
+}): string[] {
+  const args = ["credential-ui", "--username", input.username];
+  for (const ref of input.credentialRefs) args.push("--target", ref);
+  if (input.separatePasswords) args.push("--separate-passwords");
+  return args;
+}
+
+function waitForMarker(
+  stream: Readable | null,
+  marker: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  if (!stream) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    let buffer = "";
+    const timer = setTimeout(() => {
+      stream.destroy();
+      resolve(false);
+    }, timeoutMs);
+    const finish = (value: boolean): void => {
+      clearTimeout(timer);
+      resolve(value);
+    };
+    stream.on("data", (chunk: Buffer | string) => {
+      buffer += chunk.toString("utf8");
+      if (buffer.includes(marker)) finish(true);
+    });
+    stream.on("end", () => finish(buffer.includes(marker)));
+    stream.on("error", () => finish(false));
+  });
+}
+
+export async function launchCredentialWindow(
+  input: Parameters<typeof buildBrokerCredentialUiArgs>[0],
+  brokerPath: string,
+): Promise<{ pid: number | null; confirmed: boolean }> {
   if (process.platform !== "win32") {
     throw new Error("Interactive credential windows are only available on Windows");
   }
-  const executable = path.join(
-    process.env.SystemRoot ?? "C:\\Windows",
-    "System32",
-    "WindowsPowerShell",
-    "v1.0",
-    "powershell.exe",
-  );
-  const child = spawn(executable, buildCredentialAdminArgs(input), {
+  await fs.access(brokerPath).catch(() => {
+    throw new Error(
+      `Helix credential broker was not found: ${brokerPath}. Re-run scripts\\install.ps1 or build apps\\credential-broker.`,
+    );
+  });
+  const child = spawn(brokerPath, buildBrokerCredentialUiArgs(input), {
     shell: false,
     detached: true,
-    stdio: "ignore",
-    windowsHide: false,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
   });
+  child.on("error", () => {
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+  });
+  const confirmed = await waitForMarker(child.stdout, "HELIX_CREDENTIAL_UI_STARTED", 8000);
   child.unref();
-  return { pid: child.pid ?? null };
+  return { pid: child.pid ?? null, confirmed };
 }
 
 async function requireAdminScript(store: ConfigStore): Promise<string> {
@@ -111,11 +155,15 @@ async function requireAdminScript(store: ConfigStore): Promise<string> {
 
 async function enrollmentContext(store: ConfigStore, host: string, kind: "all" | "login" | "sudo") {
   const hostConfig = await store.getHost(host);
+  const username = hostConfig.username;
+  if (!username || username.trim().length === 0) {
+    throw new Error(`Host ${host} has no username configured`);
+  }
   const refs = credentialRefsForHost(hostConfig);
   if (kind === "login" && !refs.login) throw new Error(`Host ${host} does not use a managed login credential`);
   if (kind === "sudo" && !refs.sudo) throw new Error(`Host ${host} has no managed sudo credential`);
   if (kind === "all" && !refs.login && !refs.sudo) throw new Error(`Host ${host} has no managed credentials`);
-  return { refs, scriptPath: await requireAdminScript(store) };
+  return { refs, username };
 }
 
 export function registerAdminTools(server: McpServer, store: ConfigStore): void {
@@ -131,7 +179,7 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
         sudoExecution: "direct through sudo_exec; no allowlist approval, token, confirmation, or expiry",
         commandGuard: "blocks a small built-in set of destructive commands such as rm, filesystem formatting, block-device writes, reboot, and fork bombs",
         credentialEnrollment: process.platform === "win32"
-          ? "host_onboard opens a local PowerShell credential window automatically"
+          ? "host_onboard opens the native Windows credential dialog automatically"
           : "use credential_enroll_request on non-Windows hosts",
       });
     },
@@ -139,7 +187,7 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
 
   server.tool(
     "host_onboard",
-    "Preferred one-stop host creation. Creates standard credentials and opens a local Windows password-entry window automatically by default.",
+    "Preferred one-stop host creation. Creates standard credentials and opens the native Windows credential dialog automatically by default.",
     {
       alias: z.string(),
       hostname: z.string(),
@@ -194,7 +242,6 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
 
         const host = validateHost(input.alias, candidate);
         const refs = credentialRefsForHost(host);
-        const scriptPath = refs.login || refs.sudo ? await requireAdminScript(store) : null;
         await store.mutate((config) => { config.hosts[input.alias] = host; });
 
         const result: Record<string, unknown> = {
@@ -203,24 +250,34 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
           credentialRefs: refs,
           credentialsStored: false,
         };
-        if (scriptPath) {
-          const enrollmentInput = {
-            scriptPath,
-            configPath: store.filePath,
-            action: "set" as const,
-            host: input.alias,
-            kind: "all" as const,
-            separatePasswords: input.separatePasswords ?? false,
-          };
+        const credentialRefs = [refs.login, refs.sudo].filter((value): value is string => Boolean(value));
+        if (credentialRefs.length > 0) {
           const shouldLaunch = process.platform === "win32" && (input.launchCredentialWindow ?? true);
           if (shouldLaunch) {
-            const launched = launchCredentialWindow(enrollmentInput);
-            result.credentialWindowLaunched = true;
+            const launched = await launchCredentialWindow(
+              {
+                username: host.username ?? input.username,
+                credentialRefs,
+                separatePasswords: input.separatePasswords ?? false,
+              },
+              getCredentialBrokerPath(current.settings),
+            );
+            result.credentialWindowLaunched = launched.confirmed;
             result.windowProcessId = launched.pid;
-            result.nextStep = "Tell the user to enter the password in the opened local PowerShell window. After they confirm completion, call credential_status and ssh_check.";
+            result.nextStep = launched.confirmed
+              ? "The native Windows credential dialog is open. Tell the user to enter the password there, then call credential_status and ssh_check."
+              : "The broker did not confirm that the credential dialog started. Run credential_enroll_launch to reopen it.";
           } else {
             result.credentialWindowLaunched = false;
-            result.enrollmentCommand = buildCredentialAdminCommand(enrollmentInput);
+            const scriptPath = await requireAdminScript(store);
+            result.enrollmentCommand = buildCredentialAdminCommand({
+              scriptPath,
+              configPath: store.filePath,
+              action: "set" as const,
+              host: input.alias,
+              kind: "all" as const,
+              separatePasswords: input.separatePasswords ?? false,
+            });
             result.nextStep = "Run credential_enroll_launch on Windows, or show enrollmentCommand on a headless/non-Windows environment.";
           }
         } else {
@@ -269,7 +326,7 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
 
   server.tool(
     "credential_enroll_launch",
-    "Open a visible local PowerShell window for credential input. The password remains outside MCP and chat.",
+    "Open the native Windows credential dialog for password input. The password stays outside MCP and chat.",
     {
       host: z.string(),
       kind: z.enum(["all", "login", "sudo"]).optional(),
@@ -278,22 +335,26 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
     async ({ host, kind, separatePasswords }) => {
       try {
         const selectedKind = kind ?? "all";
-        const { refs, scriptPath } = await enrollmentContext(store, host, selectedKind);
-        const launched = launchCredentialWindow({
-          scriptPath,
-          configPath: store.filePath,
-          action: "set",
-          host,
-          kind: selectedKind,
-          separatePasswords: separatePasswords ?? false,
-        });
+        const { refs, username } = await enrollmentContext(store, host, selectedKind);
+        const credentialRefs = [refs.login, refs.sudo].filter((value): value is string => Boolean(value));
+        const config = await store.read();
+        const launched = await launchCredentialWindow(
+          {
+            username,
+            credentialRefs,
+            separatePasswords: separatePasswords ?? false,
+          },
+          getCredentialBrokerPath(config.settings),
+        );
         return textResult({
-          launched: true,
+          launched: launched.confirmed,
           host,
           kind: selectedKind,
-          credentialRefs: refs,
+          credentialRefs,
           windowProcessId: launched.pid,
-          nextStep: "The local password window is open. After the user confirms completion, call credential_status and ssh_check.",
+          nextStep: launched.confirmed
+            ? "The native Windows credential dialog is open. After the user confirms completion, call credential_status and ssh_check."
+            : "The broker did not confirm that the credential dialog started. Re-run credential_enroll_launch and check the credential broker binary.",
         });
       } catch (error) {
         throwInvalid(error);
@@ -312,7 +373,8 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
     async ({ host, kind, separatePasswords }) => {
       try {
         const selectedKind = kind ?? "all";
-        const { refs, scriptPath } = await enrollmentContext(store, host, selectedKind);
+        const { refs } = await enrollmentContext(store, host, selectedKind);
+        const scriptPath = await requireAdminScript(store);
         return textResult({
           host,
           kind: selectedKind,
@@ -343,7 +405,8 @@ export function registerAdminTools(server: McpServer, store: ConfigStore): void 
     async ({ host, kind }) => {
       try {
         const selectedKind = kind ?? "all";
-        const { scriptPath } = await enrollmentContext(store, host, selectedKind);
+        await enrollmentContext(store, host, selectedKind);
+        const scriptPath = await requireAdminScript(store);
         return textResult({
           host,
           kind: selectedKind,

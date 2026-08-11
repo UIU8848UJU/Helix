@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { describe, expect, it } from "vitest";
 import {
+  buildBrokerCredentialUiArgs,
   buildCredentialAdminArgs,
   buildCredentialAdminCommand,
   credentialRefsForHost,
@@ -60,6 +61,36 @@ describe("Helix administration tools", () => {
     expect(command).toContain("test-host");
   });
 
+  it("builds broker credential UI argument arrays", () => {
+    const args = buildBrokerCredentialUiArgs({
+      username: "developer",
+      credentialRefs: ["Helix/ssh/test-dev/login", "Helix/ssh/test-dev/sudo"],
+      separatePasswords: true,
+    });
+    expect(args).toEqual([
+      "credential-ui",
+      "--username",
+      "developer",
+      "--target",
+      "Helix/ssh/test-dev/login",
+      "--target",
+      "Helix/ssh/test-dev/sudo",
+      "--separate-passwords",
+    ]);
+
+    const single = buildBrokerCredentialUiArgs({
+      username: "developer",
+      credentialRefs: ["Helix/ssh/test-dev/login"],
+    });
+    expect(single).toEqual([
+      "credential-ui",
+      "--username",
+      "developer",
+      "--target",
+      "Helix/ssh/test-dev/login",
+    ]);
+  });
+
   it("registers one-stop onboarding and credential launch tools", () => {
     const server = new McpServer({ name: "test", version: "1.0.0" });
     registerAdminTools(server, new ConfigStore("/tmp/helix-admin-test.json"));
@@ -67,7 +98,7 @@ describe("Helix administration tools", () => {
     const tools = (server as unknown as TestInternals)._registeredTools ?? {};
     expect(tools.mutation_capabilities?.description).toContain("Personal/Harness");
     expect(tools.host_onboard?.description).toContain("one-stop");
-    expect(tools.credential_enroll_launch?.description).toContain("PowerShell");
+    expect(tools.credential_enroll_launch?.description).toContain("credential dialog");
     expect(tools.credential_enroll_request).toBeDefined();
     expect(tools.credential_delete_request).toBeDefined();
   });

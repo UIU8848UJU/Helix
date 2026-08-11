@@ -60,7 +60,7 @@ scripts/                      安装、注册、管理和卸载脚本
 - `host_update`：修改连接、路径和认证配置；
 - `host_offboard`：删除主机配置；
 - `credential_status`：检查凭据是否存在；
-- `credential_enroll_launch`：由 MCP 直接弹出本地 PowerShell 密码窗口；
+- `credential_enroll_launch`：由 credential broker 弹出 Windows 原生凭据对话框；
 - `credential_enroll_request`：无桌面环境的命令行备用方案；
 - `ssh_check` / `ssh_exec`：连接检查和普通命令（Windows 主机自动走 PowerShell `-EncodedCommand`，支持 win→win 命令执行）；
 - `sudo_exec`：直接 sudo；
@@ -159,7 +159,7 @@ Helix/ssh/<alias>/login
 Helix/ssh/<alias>/sudo
 ```
 
-随后 MCP 自动启动一个独立的本地 PowerShell 窗口。用户只需在窗口中输入密码，不需要把命令复制到终端，也不需要把密码提供给 AI。
+随后 MCP 启动 credential broker 并弹出 Windows 原生凭据对话框。用户只需在对话框中输入密码，不需要把命令复制到终端，也不需要把密码提供给 AI。
 
 默认一次输入同时保存 login 和 sudo 密码。两者不同时设置：
 

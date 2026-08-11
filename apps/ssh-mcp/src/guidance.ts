@@ -6,7 +6,7 @@ export const HELIX_SERVER_INSTRUCTIONS = [
   "Helix runs in Harness mode by default: host changes, policy changes, direct sudo, remote root paths, and first-use SSH connectivity are available without approval workflows.",
   "Start with host_list, credential_status, and ssh_check when the target or authentication state is uncertain.",
   "Treat alias, hostname, and username as different values.",
-  "Use host_onboard for one-stop Windows onboarding. It normally opens a visible local PowerShell credential window automatically.",
+  "Use host_onboard for one-stop Windows onboarding. It normally opens the native Windows credential dialog automatically.",
   "Use credential_enroll_launch to reopen the local credential window; never ask the user to paste a password into chat.",
   "Use sudo_exec directly for short privileged commands. There is no sudo allowlist, request/execute approval split, confirmation token, or expiry.",
   "Use job_start for work expected to exceed roughly 30 seconds, produce large logs, or survive an MCP/SSH session. Continue with job_status, job_logs, and job_cancel instead of restarting the command.",
@@ -40,7 +40,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   host_get:
     "Read one host configuration with secrets redacted.",
   host_onboard:
-    "Preferred one-stop host creation. On Windows it opens a local credential-entry PowerShell window automatically and defaults remote access to root.",
+    "Preferred one-stop host creation. On Windows it opens the native credential dialog automatically and defaults remote access to root.",
   host_add:
     "Low-level host creation. Prefer host_onboard unless exact low-level fields are required.",
   host_update:
@@ -56,7 +56,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   credential_status:
     "Check whether login and sudo credential references exist without returning secret values.",
   credential_enroll_launch:
-    "Open a visible local Windows PowerShell window for password input. The password stays outside MCP and chat.",
+    "Open the native Windows credential dialog for password input. The password stays outside MCP and chat.",
   credential_enroll_request:
     "Return a fallback enrollment command for headless or non-Windows environments.",
   credential_delete_request:

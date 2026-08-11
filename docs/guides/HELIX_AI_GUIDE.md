@@ -60,7 +60,7 @@ Helix/ssh/<alias>/login
 Helix/ssh/<alias>/sudo
 ```
 
-`host_onboard` 成功后会直接启动一个独立、可见的本地 PowerShell 窗口。用户只需在窗口中输入密码，不需要从聊天复制命令。
+`host_onboard` 成功后会启动 credential broker 并弹出 Windows 原生凭据对话框。用户只需在对话框中输入密码，不需要从聊天复制命令。
 
 默认一次输入同时保存登录和 sudo 密码。两者不同时设置：
 

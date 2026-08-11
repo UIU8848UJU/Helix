@@ -1,4 +1,5 @@
 mod credential;
+mod ui;
 mod daemon;
 mod engine;
 mod pool;
@@ -60,6 +61,14 @@ enum Command {
         username: String,
         #[arg(long = "target", required = true)]
         targets: Vec<String>,
+    },
+    CredentialUi {
+        #[arg(long)]
+        username: String,
+        #[arg(long = "target", required = true)]
+        targets: Vec<String>,
+        #[arg(long)]
+        separate_passwords: bool,
     },
     CredentialDelete {
         #[arg(long)]
@@ -144,6 +153,13 @@ fn main() -> Result<()> {
             }
             eprintln!("Stored {} credential target(s)", targets.len());
             Ok(())
+        }
+        Command::CredentialUi { username, targets, separate_passwords } => {
+            let targets = normalize_targets(targets)?;
+            if username.trim().is_empty() {
+                return Err(anyhow!("credential username must not be empty"));
+            }
+            ui::enroll(&username, &targets, separate_passwords)
         }
         Command::CredentialDelete { target } => credential::delete(&target),
         Command::CredentialExists { target } => {

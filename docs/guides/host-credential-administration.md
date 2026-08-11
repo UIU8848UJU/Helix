@@ -21,13 +21,13 @@ Helix/ssh/ubuntu22-developer/login
 Helix/ssh/ubuntu22-developer/sudo
 ```
 
-`host_onboard` then starts a visible local PowerShell process that runs the installed `helix-admin.ps1` credential flow. The user enters the password in that window; no command copying is required.
+`host_onboard` then launches the Rust credential broker, which opens the native Windows credential dialog (`CredUIPromptForWindowsCredentialsW`). The user enters the password directly in that dialog; no command copying is required. The broker waits for the dialog to actually start before reporting success, so a detached process that silently failed is detected instead of assumed.
 
 The password never enters MCP, chat, JSON configuration, command-line password arguments, environment variables, or logs.
 
 Default behavior uses one password prompt for both login and sudo targets. Use `separatePasswords=true` when they differ.
 
-To reopen the window:
+To reopen the dialog:
 
 ```text
 credential_enroll_launch
@@ -70,7 +70,7 @@ It remains available for manual fallback:
   -Kind all
 ```
 
-Normal GUI use should prefer `host_onboard` or `credential_enroll_launch` so MCP opens the local window automatically.
+Normal GUI use should prefer `host_onboard` or `credential_enroll_launch` so MCP opens the native dialog automatically. The installed `helix-admin.ps1` remains as a manual fallback for headless or scripted environments.
 
 ## Offboarding
 
