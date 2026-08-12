@@ -148,6 +148,116 @@ pub fn execute(
     })
 }
 
+pub fn pty_dimensions(cols: Option<u16>, rows: Option<u16>) -> (u16, u16) {
+    let cols = cols.filter(|value| *value > 0).unwrap_or(80);
+    let rows = rows.filter(|value| *value > 0).unwrap_or(24);
+    (cols, rows)
+}
+
+/// Run a command under an allocated PTY (xterm). stdout and stderr are merged
+/// by the PTY and returned as combined output. A bounded read loop enforces the
+/// deadline; on timeout the response reports timed_out=true instead of failing
+/// the transport.
+pub fn execute_pty(
+    session: &Session,
+    command: &str,
+    cols: Option<u16>,
+    rows: Option<u16>,
+    input: Option<&str>,
+    max_output_bytes: usize,
+    timeout: Duration,
+) -> Result<BrokerResponse> {
+    let started = Instant::now();
+    let mut channel = session.channel_session()?;
+    let (cols, rows) = pty_dimensions(cols, rows);
+    channel.request_pty("xterm", None, Some((cols as u32, rows as u32, 0, 0)))?;
+    channel
+        .exec(command)
+        .context("failed to execute remote command under PTY")?;
+    if let Some(input) = input {
+        channel.write_all(input.as_bytes())?;
+        channel.write_all(b"\n")?;
+        channel.flush()?;
+    }
+    channel.send_eof()?;
+
+    let (stdout, timed_out, truncated) = if timeout.as_secs() > 0 {
+        // libssh2 non-blocking mode is session-scoped; restore blocking before
+        // returning so the pooled session keeps its default behavior.
+        let _ = session.set_blocking(false);
+        let deadline = Instant::now() + timeout;
+        let mut stdout = Vec::new();
+        let mut truncated = false;
+        let mut timed_out = false;
+        let mut buffer = [0u8; 8192];
+        loop {
+            match channel.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => {
+                    // Bound memory during the read loop and keep draining so the
+                    // remote channel window never fills and the command can exit.
+                    let remaining = max_output_bytes.saturating_sub(stdout.len());
+                    let take = n.min(remaining);
+                    if take > 0 {
+                        stdout.extend_from_slice(&buffer[..take]);
+                    }
+                    if take < n {
+                        truncated = true;
+                    }
+                }
+                Err(error) => {
+                    if error.kind() != std::io::ErrorKind::WouldBlock {
+                        let _ = session.set_blocking(true);
+                        return Err(error).context("failed to read PTY output");
+                    }
+                    if Instant::now() >= deadline {
+                        timed_out = true;
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        }
+        let _ = session.set_blocking(true);
+        (stdout, timed_out, truncated)
+    } else {
+        let mut stdout = Vec::new();
+        channel.read_to_end(&mut stdout)?;
+        let overflowed = stdout.len() > max_output_bytes;
+        (stdout, false, overflowed)
+    };
+
+    if timed_out {
+        let (out, truncated) = bounded_text(stdout, max_output_bytes);
+        return Ok(BrokerResponse {
+            ok: false,
+            exists: None,
+            exit_code: None,
+            stdout: Some(out),
+            stderr: Some(String::new()),
+            timed_out: Some(true),
+            truncated: Some(truncated),
+            duration_ms: Some(started.elapsed().as_millis()),
+            error: Some("PTY command timed out".to_string()),
+        });
+    }
+
+    channel.wait_close()?;
+    let exit_code = channel.exit_status().unwrap_or(-1);
+    let (out, post_truncated) = bounded_text(stdout, max_output_bytes);
+    Ok(BrokerResponse {
+        ok: exit_code == 0,
+        exists: None,
+        exit_code: Some(exit_code),
+        stdout: Some(out),
+        stderr: Some(String::new()),
+        timed_out: Some(false),
+        truncated: Some(truncated || post_truncated),
+        duration_ms: Some(started.elapsed().as_millis()),
+        error: None,
+    })
+}
+
 fn ensure_remote_dir(sftp: &Sftp, path: &Path) -> Result<()> {
     if path.as_os_str().is_empty() || path == Path::new("/") {
         return Ok(());

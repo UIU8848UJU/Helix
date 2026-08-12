@@ -51,6 +51,41 @@ impl BrokerEngine {
                 }
                 result
             }
+            BrokerRequest::SshPty {
+                credential_ref,
+                host,
+                port,
+                username,
+                command,
+                timeout_seconds,
+                max_output_bytes,
+                strict_host_key_checking,
+                cols,
+                rows,
+                input,
+            } => {
+                let (key, session) = self.sessions.acquire(
+                    &credential_ref,
+                    &host,
+                    port,
+                    username.as_deref(),
+                    timeout_seconds,
+                    strict_host_key_checking,
+                )?;
+                let result = ssh::execute_pty(
+                    &session,
+                    &command,
+                    cols,
+                    rows,
+                    input.as_deref(),
+                    max_output_bytes,
+                    Duration::from_secs(timeout_seconds.max(1)),
+                );
+                if result.is_ok() {
+                    self.sessions.release(key, session);
+                }
+                result
+            }
             BrokerRequest::SudoExecute {
                 login_credential_ref,
                 sudo_credential_ref,
