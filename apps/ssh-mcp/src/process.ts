@@ -13,8 +13,9 @@ export async function runProcess(
   const startedAt = Date.now();
 
   return await new Promise<ExecutionResult>((resolve) => {
+    const useStdinPipe = options.input !== undefined;
     const spawnOptions: Parameters<typeof spawn>[2] = {
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: useStdinPipe ? ["pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
       windowsHide: true,
     };
     if (options.cwd) {
@@ -25,6 +26,9 @@ export async function runProcess(
     }
 
     const child = spawn(executable, args, spawnOptions);
+    if (useStdinPipe && child.stdin) {
+      child.stdin.end(options.input);
+    }
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     let capturedBytes = 0;

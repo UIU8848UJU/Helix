@@ -66,6 +66,8 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
     "Check SSH connectivity using the configured authentication backend.",
   ssh_exec:
     "Execute a short remote command with structured cwd, env, and source scripts. Use job_start instead when work may exceed roughly 30 seconds or must survive the MCP call.",
+  ssh_pty:
+    "Execute a remote command under an allocated PTY (xterm) for interactive flows; stdin input is passed through and the merged output is returned with a deadline.",
   sudo_exec:
     "Execute a short command directly through sudo. No approval flow or expiry is used; use job_start(useSudo=true) for long privileged work.",
   job_start:

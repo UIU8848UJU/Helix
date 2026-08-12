@@ -440,6 +440,65 @@ export async function brokerSshExecute(input: {
   });
 }
 
+export function buildBrokerSshPtyRequest(input: {
+  credentialRef: string;
+  host: HostConfig;
+  command: string;
+  timeoutSeconds?: number;
+  cols?: number;
+  rows?: number;
+  input?: string;
+  settings: GlobalSettings;
+}): Record<string, unknown> {
+  const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
+  const request: Record<string, unknown> = {
+    op: "ssh_pty",
+    credential_ref: input.credentialRef,
+    host: input.host.hostname,
+    port: input.host.port ?? 22,
+    username: input.host.username,
+    command: input.command,
+    timeout_seconds: timeout,
+    max_output_bytes: input.settings.maxOutputBytes,
+    strict_host_key_checking: input.settings.strictHostKeyChecking,
+  };
+  if (input.cols !== undefined) request.cols = input.cols;
+  if (input.rows !== undefined) request.rows = input.rows;
+  if (input.input !== undefined) request.input = input.input;
+  return request;
+}
+
+export async function brokerSshPty(input: {
+  settings: GlobalSettings;
+  hostAlias: string;
+  host: HostConfig;
+  command: string;
+  timeoutSeconds?: number;
+  cols?: number;
+  rows?: number;
+  input?: string;
+}): Promise<ExecutionResult> {
+  return withCredentialAutoEnroll(input, async () => {
+    const auth = passwordAuth(input.host);
+    const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
+    const response = await runBroker(
+      input.settings,
+      buildBrokerSshPtyRequest({
+        credentialRef: auth.credentialRef,
+        host: input.host,
+        command: input.command,
+        timeoutSeconds: timeout,
+        cols: input.cols,
+        rows: input.rows,
+        input: input.input,
+        settings: input.settings,
+      }),
+      timeout + 5,
+    );
+    return responseToExecution(response);
+  });
+}
+
 export async function brokerSudoExecute(input: {
   settings: GlobalSettings;
   hostAlias: string;

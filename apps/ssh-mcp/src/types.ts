@@ -66,6 +66,7 @@ export interface ProcessOptions {
   maxOutputBytes: number;
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  input?: string;
 }
 
 export interface AuditEvent {

@@ -49,6 +49,28 @@ export async function runSsh(input: {
   }));
 }
 
+export function buildSshPtyArgs(host: HostConfig, settings: GlobalSettings, command: string): string[] {
+  return [...commonSshOptions(host, settings), "-tt", sshTarget(host), command];
+}
+
+export async function runSshPty(input: {
+  host: HostConfig;
+  settings: GlobalSettings;
+  command: string;
+  timeoutSeconds?: number;
+  input?: string;
+  limiter: Semaphore;
+}): Promise<ExecutionResult> {
+  const timeoutSeconds = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
+  const args = buildSshPtyArgs(input.host, input.settings, input.command);
+  const stdin = input.input !== undefined ? input.input + "\n" : undefined;
+  return await input.limiter.use(async () => await runProcess("ssh", args, {
+    timeoutMs: timeoutSeconds * 1000,
+    maxOutputBytes: input.settings.maxOutputBytes,
+    input: stdin,
+  }));
+}
+
 export async function runScp(input: {
   direction: "upload" | "download";
   host: HostConfig;

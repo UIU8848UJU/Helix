@@ -5,6 +5,7 @@ import { newRequestId, writeAudit } from "./audit.js";
 import {
   brokerCredentialExists,
   brokerSshExecute,
+  brokerSshPty,
   brokerSudoExecute,
   brokerTransfer,
 } from "./broker.js";
@@ -29,6 +30,7 @@ import {
   parseEnvironmentProbe,
   runScp,
   runSsh,
+  runSshPty,
 } from "./ssh.js";
 import type { ExecutionResult, GlobalSettings, HelixConfig, HostConfig } from "./types.js";
 
@@ -98,6 +100,7 @@ export function createServer(store = new ConfigStore()): McpServer {
     command: string;
     timeoutSeconds?: number;
     operation?: string;
+    pty?: { input?: string; cols?: number; rows?: number };
   }): Promise<ExecutionResult> => {
     const config = await store.read();
     const host = config.hosts[input.hostAlias];
@@ -105,20 +108,40 @@ export function createServer(store = new ConfigStore()): McpServer {
     const requestId = newRequestId();
     try {
       const result = host.auth.type === "windows-credential"
-        ? await brokerSshExecute({
-            settings: config.settings,
-            hostAlias: input.hostAlias,
-            host,
-            command: input.command,
-            timeoutSeconds: input.timeoutSeconds,
-          })
-        : await runSsh({
-            host,
-            settings: config.settings,
-            command: input.command,
-            timeoutSeconds: input.timeoutSeconds,
-            limiter: getLimiter(config.settings),
-          });
+        ? input.pty
+          ? await brokerSshPty({
+              settings: config.settings,
+              hostAlias: input.hostAlias,
+              host,
+              command: input.command,
+              timeoutSeconds: input.timeoutSeconds,
+              cols: input.pty.cols,
+              rows: input.pty.rows,
+              input: input.pty.input,
+            })
+          : await brokerSshExecute({
+              settings: config.settings,
+              hostAlias: input.hostAlias,
+              host,
+              command: input.command,
+              timeoutSeconds: input.timeoutSeconds,
+            })
+        : input.pty
+          ? await runSshPty({
+              host,
+              settings: config.settings,
+              command: input.command,
+              timeoutSeconds: input.timeoutSeconds,
+              input: input.pty.input,
+              limiter: getLimiter(config.settings),
+            })
+          : await runSsh({
+              host,
+              settings: config.settings,
+              command: input.command,
+              timeoutSeconds: input.timeoutSeconds,
+              limiter: getLimiter(config.settings),
+            });
       await auditExecution({
         config,
         requestId,
@@ -356,6 +379,27 @@ export function createServer(store = new ConfigStore()): McpServer {
         command: wrapped,
         timeoutSeconds,
         operation: command,
+      }));
+    } catch (error) { throwInvalid(error); }
+  });
+
+  server.tool("ssh_pty", "Execute a remote command under an allocated PTY (xterm). Use for TTY-dependent commands such as top, htop, bash -i, or interactive prompts; optional one-shot input is written to the PTY stdin. Note: PTY input is echoed back in the output, so never pass passwords or secrets via input; use sudo_exec or the credential flow for password-backed sudo.", {
+    host: z.string(),
+    command: z.string(),
+    input: z.string().optional(),
+    cols: z.number().int().min(1).max(1000).optional(),
+    rows: z.number().int().min(1).max(1000).optional(),
+    timeoutSeconds: z.number().int().min(1).max(3600).optional(),
+  }, async ({ host, command, input, cols, rows, timeoutSeconds }) => {
+    try {
+      assertCommandSafe(command);
+      return textResult(await executeRemote({
+        tool: "ssh_pty",
+        hostAlias: host,
+        command,
+        timeoutSeconds,
+        operation: command,
+        pty: { input, cols, rows },
       }));
     } catch (error) { throwInvalid(error); }
   });
