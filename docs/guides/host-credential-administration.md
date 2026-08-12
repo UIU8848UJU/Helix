@@ -27,6 +27,8 @@ The password never enters MCP, chat, JSON configuration, command-line password a
 
 Default behavior uses one password prompt for both login and sudo targets. Use `separatePasswords=true` when they differ.
 
+When an operation such as `ssh_exec`, `sudo_exec`, or a transfer fails with a missing credential or a failed SSH password authentication, the broker automatically reopens the dialog, waits for the user to finish, and retries the operation once. Cancelling the dialog aborts the operation with a clear error instead of hanging.
+
 To reopen the dialog:
 
 ```text
@@ -45,6 +47,17 @@ After enrollment:
 credential_status
   → ssh_check
 ```
+
+### Dialog behavior and platform support
+
+The broker is spawned by the MCP process, so Windows does not grant the credential dialog foreground activation on its own. The broker owns the dialog to the active window (`GetForegroundWindow`) and raises it to the topmost z-order from a helper thread once it appears, so it pops in front of the user's current window instead of flashing in the background.
+
+Platform support:
+
+- The dialog uses `CredUIPromptForWindowsCredentialsW`, which requires Windows Vista or newer. Windows 7, Windows 10, and Windows 11 are all supported.
+- Credential storage uses `CredWriteW`/`CredReadW`/`CredDeleteW` (Windows XP+).
+- The shipped binary targets x86_64, so 64-bit Windows is required; 32-bit Windows needs an i686 build.
+- Non-Windows hosts fall back to the headless `credential_enroll_request` flow.
 
 ## Direct sudo
 
