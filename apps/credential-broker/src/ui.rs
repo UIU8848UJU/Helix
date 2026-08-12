@@ -72,6 +72,10 @@ mod windows {
         CredUIPromptForWindowsCredentialsW, CREDUI_INFOW, CREDUIWIN_GENERIC,
         CRED_PACK_GENERIC_CREDENTIALS,
     };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, GetForegroundWindow, SetForegroundWindow, SetWindowPos, ShowWindow,
+        HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE,
+    };
 
     const ERROR_CANCELLED: u32 = 1223;
     const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
@@ -85,6 +89,37 @@ mod windows {
         String::from_utf16_lossy(&value[..len])
     }
 
+    /// Wait for the CredUI dialog to appear (matched by caption), then force it
+    /// to the foreground and topmost z-order. CredUI runs its own modal loop on
+    /// the calling thread, so this must run on a separate thread.
+    fn raise_dialog_to_front(caption: Vec<u16>) {
+        std::thread::spawn(move || {
+            let mut hwnd = ptr::null_mut();
+            for _ in 0..50 {
+                hwnd = unsafe { FindWindowW(ptr::null(), caption.as_ptr()) };
+                if !hwnd.is_null() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            if hwnd.is_null() {
+                return;
+            }
+            unsafe {
+                ShowWindow(hwnd, SW_RESTORE);
+                SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                );
+                SetForegroundWindow(hwnd);
+            }
+        });
+    }
     pub fn prompt(username: &str, caption: &str, message: &str) -> Result<(String, String)> {
         let caption_wide = wide(caption);
         let message_wide = wide(message);
@@ -129,9 +164,15 @@ mod windows {
         }
         in_auth.truncate(in_size as usize);
 
+        // The broker runs as a background MCP child, so an ownerless dialog is
+        // not granted foreground activation and appears behind the user's
+        // windows. Own it to the active window and raise it from a helper
+        // thread once it exists.
+        let parent = unsafe { GetForegroundWindow() };
+        raise_dialog_to_front(caption_wide.clone());
         let info = CREDUI_INFOW {
             cbSize: std::mem::size_of::<CREDUI_INFOW>() as u32,
-            hwndParent: ptr::null_mut(),
+            hwndParent: parent,
             pszMessageText: message_wide.as_ptr(),
             pszCaptionText: caption_wide.as_ptr(),
             hbmBanner: ptr::null_mut(),
@@ -166,7 +207,13 @@ mod windows {
             return Err(anyhow!("CredUIPromptForWindowsCredentialsW returned no auth buffer"));
         }
 
-        // Unpack the marshaled credential returned by the dialog.
+        let unpacked = unpack_auth_buffer(out_auth, out_size);
+        unsafe { CredFree(out_auth) };
+        let (entered, secret) = unpacked?;
+        Ok((entered, secret))
+    }
+
+    fn unpack_auth_buffer(out_auth: *mut c_void, out_size: u32) -> Result<(String, String)> {
         let mut user_len = 0u32;
         let mut domain_len = 0u32;
         let mut password_len = 0u32;
@@ -185,18 +232,21 @@ mod windows {
         };
         if ok == 0 {
             let error = std::io::Error::last_os_error();
-            unsafe { CredFree(out_auth) };
             if error.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32) {
                 return Err(error).context("CredUnPackAuthenticationBufferW sizing failed");
             }
         }
 
-        let mut unpacked_user = vec![0u16; user_len as usize];
-        let mut unpacked_domain = vec![0u16; domain_len as usize];
-        let mut unpacked_password = vec![0u16; password_len as usize];
-        let mut user_max = user_len;
-        let mut domain_max = domain_len;
-        let mut password_max = password_len;
+        // The sizing lengths include the terminating null, but an empty field
+        // (e.g. no domain) can still receive a null terminator from the fill
+        // call. Give every buffer at least one element so a zero-length Vec's
+        // dangling pointer is never handed to the Win32 API.
+        let mut unpacked_user = vec![0u16; (user_len as usize).max(1)];
+        let mut unpacked_domain = vec![0u16; (domain_len as usize).max(1)];
+        let mut unpacked_password = vec![0u16; (password_len as usize).max(1)];
+        let mut user_max = unpacked_user.len() as u32;
+        let mut domain_max = unpacked_domain.len() as u32;
+        let mut password_max = unpacked_password.len() as u32;
         let ok = unsafe {
             CredUnPackAuthenticationBufferW(
                 CRED_PACK_GENERIC_CREDENTIALS,
@@ -210,8 +260,6 @@ mod windows {
                 &mut password_max,
             )
         };
-        unsafe { CredFree(out_auth) };
-
         if ok == 0 {
             unpacked_user.zeroize();
             unpacked_domain.zeroize();
@@ -234,7 +282,12 @@ mod windows {
 
     #[cfg(test)]
     mod tests {
-        use super::{wide, wide_vec_to_string};
+        use super::{unpack_auth_buffer, wide, wide_vec_to_string};
+        use std::ffi::c_void;
+        use std::ptr;
+        use windows_sys::Win32::Security::Credentials::{
+            CredPackAuthenticationBufferW, CRED_PACK_GENERIC_CREDENTIALS,
+        };
 
         #[test]
         fn wide_encodes_with_null_terminator() {
@@ -251,6 +304,45 @@ mod windows {
         fn wide_vec_to_string_handles_missing_null() {
             let value = [104u16, 105];
             assert_eq!(wide_vec_to_string(&value), "hi");
+        }
+
+        #[test]
+        fn pack_and_unpack_round_trip_without_domain() {
+            let user = wide("developer");
+            let password = wide("s3cret");
+            let mut size = 0u32;
+            let ok = unsafe {
+                CredPackAuthenticationBufferW(
+                    CRED_PACK_GENERIC_CREDENTIALS,
+                    user.as_ptr(),
+                    password.as_ptr(),
+                    ptr::null_mut(),
+                    &mut size,
+                )
+            };
+            assert_eq!(ok, 0, "sizing pack should report ERROR_INSUFFICIENT_BUFFER");
+            assert!(size > 0);
+
+            let mut packed = vec![0u8; size as usize];
+            let ok = unsafe {
+                CredPackAuthenticationBufferW(
+                    CRED_PACK_GENERIC_CREDENTIALS,
+                    user.as_ptr(),
+                    password.as_ptr(),
+                    packed.as_mut_ptr(),
+                    &mut size,
+                )
+            };
+            assert_eq!(ok, 1, "pack should succeed");
+            packed.truncate(size as usize);
+
+            let (entered, secret) = unpack_auth_buffer(
+                packed.as_mut_ptr().cast::<c_void>(),
+                size,
+            )
+            .expect("unpack must not crash on an empty domain field");
+            assert_eq!(entered, "developer");
+            assert_eq!(secret, "s3cret");
         }
     }
 }
