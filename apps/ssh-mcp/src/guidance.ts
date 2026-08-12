@@ -8,6 +8,7 @@ export const HELIX_SERVER_INSTRUCTIONS = [
   "Treat alias, hostname, and username as different values.",
   "Use host_onboard for one-stop Windows onboarding. It normally opens the native Windows credential dialog automatically.",
   "Use credential_enroll_launch to reopen the local credential window; never ask the user to paste a password into chat.",
+  "On Windows, ssh_check/ssh_exec/sudo_exec/ssh_upload/ssh_download automatically open the native credential dialog once when credentials are missing or the stored password is rejected, then retry the command.",
   "Use sudo_exec directly for short privileged commands. There is no sudo allowlist, request/execute approval split, confirmation token, or expiry.",
   "Use job_start for work expected to exceed roughly 30 seconds, produce large logs, or survive an MCP/SSH session. Continue with job_status, job_logs, and job_cancel instead of restarting the command.",
   "Task types such as build, test, docker-build, compose-build, deploy, data, simulation, and run are metadata for one common persistent-job mechanism.",

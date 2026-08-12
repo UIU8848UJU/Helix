@@ -1,12 +1,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { describe, expect, it } from "vitest";
 import {
-  buildBrokerCredentialUiArgs,
   buildCredentialAdminArgs,
   buildCredentialAdminCommand,
   credentialRefsForHost,
   registerAdminTools,
 } from "../src/admin.js";
+import { buildBrokerCredentialUiArgs } from "../src/broker.js";
 import { ConfigStore, safeLifecycleRemotePaths } from "../src/config.js";
 import type { HostConfig } from "../src/types.js";
 

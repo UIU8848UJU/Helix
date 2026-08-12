@@ -1,5 +1,5 @@
 import { promises as fs } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createConnection } from "node:net";
 import type { BrokerResponse, ExecutionResult, GlobalSettings, HostConfig } from "./types.js";
 import { getCredentialBrokerPath } from "./paths.js";
@@ -27,6 +27,170 @@ interface BrokerDaemonResponse {
 }
 
 let daemonStartInFlight: Promise<void> | null = null;
+let autoEnrollInFlight: Promise<boolean> | null = null;
+
+const AUTO_ENROLL_WAIT_MS = 120_000;
+
+const CREDENTIAL_ERROR_MARKERS = [
+  "credential not found",
+  "ssh password authentication failed",
+  "ssh server rejected the credential",
+] as const;
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function isCredentialError(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+  return CREDENTIAL_ERROR_MARKERS.some((marker) => message.includes(marker));
+}
+
+function credentialRefFromError(error: unknown): string | null {
+  const ref = /credential not found:\s*(\S+)/i.exec(errorMessage(error))?.[1];
+  return ref ? ref.replace(/[:\s]+$/, "") : null;
+}
+
+export function buildBrokerCredentialUiArgs(input: {
+  username: string;
+  credentialRefs: string[];
+  separatePasswords?: boolean;
+}): string[] {
+  const args = ["credential-ui", "--username", input.username];
+  for (const ref of input.credentialRefs) args.push("--target", ref);
+  if (input.separatePasswords) args.push("--separate-passwords");
+  return args;
+}
+
+function credentialRefsList(host: HostConfig): string[] {
+  const refs: string[] = [];
+  if (host.auth.type === "windows-credential" && host.auth.credentialRef) {
+    refs.push(host.auth.credentialRef);
+  }
+  if (host.sudo.credentialRef) {
+    refs.push(host.sudo.credentialRef);
+  }
+  return [...new Set(refs)];
+}
+
+function credentialRefsForEnrollment(host: HostConfig, error: unknown): string[] {
+  const all = credentialRefsList(host);
+  const missing = credentialRefFromError(error);
+  if (missing) {
+    return all.filter((ref) => ref === missing);
+  }
+  // Authentication failures happen while opening the SSH session, so the login
+  // credential is the one that needs to be re-entered. Never clobber a
+  // separate sudo password that was not involved in the failure.
+  const login = host.auth.type === "windows-credential" ? host.auth.credentialRef : null;
+  return login ? all.filter((ref) => ref === login) : all;
+}
+
+async function credentialExists(settings: GlobalSettings, credentialRef: string): Promise<boolean> {
+  const response = await runBroker(
+    settings,
+    { op: "credential_exists", credential_ref: credentialRef },
+    10,
+  );
+  return response.exists === true;
+}
+
+function waitForExit(child: ChildProcess, timeoutMs: number): Promise<number | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      child.kill();
+      resolve(null);
+    }, timeoutMs);
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      resolve(code ?? -1);
+    });
+    child.once("error", () => {
+      clearTimeout(timer);
+      resolve(null);
+    });
+  });
+}
+
+export interface AutoEnrollOptions {
+  settings: GlobalSettings;
+  host: HostConfig;
+  hostAlias: string;
+  waitMs?: number;
+}
+
+export async function autoEnrollHost(options: AutoEnrollOptions, credentialRefs: string[]): Promise<boolean> {
+  const username = options.host.username;
+  if (!username || username.trim().length === 0 || credentialRefs.length === 0) {
+    return false;
+  }
+  const brokerPath = getCredentialBrokerPath(options.settings);
+  try {
+    await fs.access(brokerPath);
+  } catch {
+    return false;
+  }
+  const child = spawn(
+    brokerPath,
+    buildBrokerCredentialUiArgs({
+      username,
+      credentialRefs,
+      separatePasswords: false,
+    }),
+    {
+      shell: false,
+      windowsHide: true,
+      stdio: "ignore",
+    },
+  );
+  const exitCode = await waitForExit(child, options.waitMs ?? AUTO_ENROLL_WAIT_MS);
+  if (exitCode === null || exitCode !== 0) {
+    return false;
+  }
+  try {
+    const results = await Promise.all(
+      credentialRefs.map((ref) => credentialExists(options.settings, ref)),
+    );
+    return results.every(Boolean);
+  } catch {
+    return false;
+  }
+}
+
+export async function withCredentialAutoEnroll<T>(
+  options: AutoEnrollOptions & { enroll?: (credentialRefs: string[]) => Promise<boolean> },
+  run: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (process.platform !== "win32" || !isCredentialError(error)) {
+      throw error;
+    }
+    if (options.host.auth.type !== "windows-credential") {
+      throw error;
+    }
+    const refs = credentialRefsForEnrollment(options.host, error);
+    if (refs.length === 0) {
+      throw error;
+    }
+    const enroll = options.enroll ?? ((enrollRefs: string[]) => {
+      if (!autoEnrollInFlight) {
+        autoEnrollInFlight = autoEnrollHost(options, enrollRefs).finally(() => {
+          autoEnrollInFlight = null;
+        });
+      }
+      return autoEnrollInFlight;
+    });
+    const enrolled = await enroll(refs);
+    if (!enrolled) {
+      throw new Error(
+        `Credential auto-enrollment did not complete for ${options.hostAlias}: ${errorMessage(error)}`,
+      );
+    }
+    return await run();
+  }
+}
 
 function responseToExecution(response: BrokerResponse): ExecutionResult {
   return {
@@ -258,20 +422,22 @@ export async function brokerSshExecute(input: {
   command: string;
   timeoutSeconds?: number;
 }): Promise<ExecutionResult> {
-  const auth = passwordAuth(input.host);
-  const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
-  const response = await runBroker(input.settings, {
-    op: "ssh_execute",
-    credential_ref: auth.credentialRef,
-    host: input.host.hostname,
-    port: input.host.port ?? 22,
-    username: input.host.username,
-    command: input.command,
-    timeout_seconds: timeout,
-    max_output_bytes: input.settings.maxOutputBytes,
-    strict_host_key_checking: input.settings.strictHostKeyChecking,
-  }, timeout + 5);
-  return responseToExecution(response);
+  return withCredentialAutoEnroll(input, async () => {
+    const auth = passwordAuth(input.host);
+    const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
+    const response = await runBroker(input.settings, {
+      op: "ssh_execute",
+      credential_ref: auth.credentialRef,
+      host: input.host.hostname,
+      port: input.host.port ?? 22,
+      username: input.host.username,
+      command: input.command,
+      timeout_seconds: timeout,
+      max_output_bytes: input.settings.maxOutputBytes,
+      strict_host_key_checking: input.settings.strictHostKeyChecking,
+    }, timeout + 5);
+    return responseToExecution(response);
+  });
 }
 
 export async function brokerSudoExecute(input: {
@@ -281,14 +447,14 @@ export async function brokerSudoExecute(input: {
   command: string;
   timeoutSeconds?: number;
 }): Promise<ExecutionResult> {
-  const auth = passwordAuth(input.host);
-  if (!input.host.sudo.credentialRef) {
-    throw new Error("Password-backed sudo requires sudo.credentialRef");
-  }
-  const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
-  const requestId = newRequestId();
-  const startedAt = Date.now();
-  try {
+  return withCredentialAutoEnroll(input, async () => {
+    const auth = passwordAuth(input.host);
+    if (!input.host.sudo.credentialRef) {
+      throw new Error("Password-backed sudo requires sudo.credentialRef");
+    }
+    const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
+    const requestId = newRequestId();
+    const startedAt = Date.now();
     const response = await runBroker(input.settings, {
       op: "sudo_execute",
       login_credential_ref: auth.credentialRef,
@@ -316,20 +482,7 @@ export async function brokerSudoExecute(input: {
       success: result.ok,
     });
     return result;
-  } catch (error) {
-    await writeAudit(input.settings, {
-      timestamp: new Date().toISOString(),
-      requestId,
-      tool: "sudo_exec",
-      host: input.hostAlias,
-      command: input.command,
-      operation: "direct sudo",
-      durationMs: Date.now() - startedAt,
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    throw error;
-  }
+  });
 }
 
 export async function brokerTransfer(input: {
@@ -341,11 +494,13 @@ export async function brokerTransfer(input: {
   recursive: boolean;
   timeoutSeconds?: number;
 }): Promise<ExecutionResult> {
-  const auth = passwordAuth(input.host);
-  const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
-  const requestId = newRequestId();
-  const startedAt = Date.now();
-  try {
+  return withCredentialAutoEnroll(
+    { settings: input.settings, host: input.host, hostAlias: input.host.hostname },
+    async () => {
+      const auth = passwordAuth(input.host);
+      const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
+      const requestId = newRequestId();
+      const startedAt = Date.now();
     const response = await runBroker(input.settings, {
       op: input.direction === "upload" ? "sftp_upload" : "sftp_download",
       credential_ref: auth.credentialRef,
@@ -372,19 +527,8 @@ export async function brokerTransfer(input: {
       success: result.ok,
     });
     return result;
-  } catch (error) {
-    await writeAudit(input.settings, {
-      timestamp: new Date().toISOString(),
-      requestId,
-      tool: input.direction === "upload" ? "ssh_upload" : "ssh_download",
-      host: input.host.hostname,
-      operation: `${input.localPath} ${input.direction === "upload" ? "->" : "<-"} ${input.remotePath}`,
-      durationMs: Date.now() - startedAt,
-      success: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    throw error;
-  }
+    },
+  );
 }
 
 export async function brokerCredentialExists(

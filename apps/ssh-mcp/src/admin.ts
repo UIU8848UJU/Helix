@@ -13,6 +13,7 @@ import {
   safeLifecycleRemotePaths,
   validateHost,
 } from "./config.js";
+import { buildBrokerCredentialUiArgs } from "./broker.js";
 import { getCredentialBrokerPath } from "./paths.js";
 import type { HostConfig } from "./types.js";
 
@@ -78,17 +79,6 @@ export function buildCredentialAdminCommand(input: Parameters<typeof buildCreden
     const previous = args[index - 1];
     return previous?.startsWith("-") && !value.includes(" ") ? value : powershellQuote(value);
   })].join(" ");
-}
-
-export function buildBrokerCredentialUiArgs(input: {
-  username: string;
-  credentialRefs: string[];
-  separatePasswords?: boolean;
-}): string[] {
-  const args = ["credential-ui", "--username", input.username];
-  for (const ref of input.credentialRefs) args.push("--target", ref);
-  if (input.separatePasswords) args.push("--separate-passwords");
-  return args;
 }
 
 function waitForMarker(
