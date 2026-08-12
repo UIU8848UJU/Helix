@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { isCredentialError, withCredentialAutoEnroll } from "../src/broker.js";
+import { buildBrokerSshPtyRequest, isCredentialError, withCredentialAutoEnroll } from "../src/broker.js";
 import type { GlobalSettings, HostConfig } from "../src/types.js";
 
 const settings: GlobalSettings = {
@@ -197,5 +197,47 @@ describe("broker credential auto-enrollment", () => {
     } finally {
       restore();
     }
+  });
+});
+
+describe("broker ssh_pty request builder (TDD PTY-001)", () => {
+  it("builds the ssh_pty request with defaults from settings", () => {
+    const request = buildBrokerSshPtyRequest({
+      credentialRef: "Helix/ssh/test/login",
+      host: passwordHost,
+      command: "top",
+      settings,
+    });
+    expect(request).toMatchObject({
+      op: "ssh_pty",
+      credential_ref: "Helix/ssh/test/login",
+      host: "192.0.2.10",
+      port: 22,
+      username: "developer",
+      command: "top",
+      timeout_seconds: 60,
+      max_output_bytes: 1024 * 1024,
+      strict_host_key_checking: false,
+    });
+    expect(request.cols).toBeUndefined();
+    expect(request.rows).toBeUndefined();
+    expect(request.input).toBeUndefined();
+  });
+
+  it("honors overrides and optional fields", () => {
+    const request = buildBrokerSshPtyRequest({
+      credentialRef: "Helix/ssh/test/login",
+      host: passwordHost,
+      command: "read x; echo got:$x",
+      timeoutSeconds: 15,
+      cols: 120,
+      rows: 40,
+      input: "hello",
+      settings,
+    });
+    expect(request.timeout_seconds).toBe(15);
+    expect(request.cols).toBe(120);
+    expect(request.rows).toBe(40);
+    expect(request.input).toBe("hello");
   });
 });

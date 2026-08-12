@@ -29,4 +29,15 @@ describe("bounded process execution", () => {
     expect(result.timedOut).toBe(true);
     expect(result.ok).toBe(false);
   });
+
+  it("passes input to the child stdin", async () => {
+    const script = "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{console.log('GOT:'+d)})";
+    const result = await runProcess(process.execPath, ["-e", script], {
+      timeoutMs: 5000,
+      maxOutputBytes: 1024,
+      input: "hello",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.stdout).toContain("GOT:hello");
+  });
 });

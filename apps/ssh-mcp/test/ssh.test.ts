@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildWindowsEnvironmentProbeScript, parseEnvironmentProbe } from "../src/ssh.js";
+import { buildSshPtyArgs, buildWindowsEnvironmentProbeScript, parseEnvironmentProbe } from "../src/ssh.js";
 import type { HostConfig } from "../src/types.js";
 
 describe("environment probe parser", () => {
@@ -45,5 +45,41 @@ describe("windows environment probe script", () => {
     expect(decoded).toContain("'C:\\helix'");
     expect(decoded).toContain("Get-Command docker");
     expect(decoded).not.toContain("PLACEHOLDER_ROOTS");
+  });
+});
+
+describe("ssh pty argument builder (TDD PTY-001)", () => {
+  const settings: GlobalSettings = {
+    defaultTimeoutSeconds: 60,
+    maxOutputBytes: 1024 * 1024,
+    maxConcurrentCommands: 4,
+    strictHostKeyChecking: false,
+    auditEnabled: false,
+  };
+
+  const openSshHost: HostConfig = {
+    hostname: "192.0.2.10",
+    os: "unix",
+    port: 22,
+    username: "developer",
+    tags: [],
+    allowedRemotePaths: ["/"],
+    auth: { type: "openssh" },
+    sudo: { mode: "reviewed-nopasswd", allow: ["^.*$"], approvalTtlSeconds: 300 },
+  };
+
+  it("forces a TTY via -tt and appends the command", () => {
+    const args = buildSshPtyArgs(openSshHost, settings, "top");
+    expect(args).toContain("-tt");
+    expect(args[args.length - 1]).toBe("top");
+    expect(args).toContain("developer@192.0.2.10");
+    expect(args).toContain("-o");
+  });
+
+  it("includes the identity file for key-based hosts", () => {
+    const host = { ...openSshHost, identityFile: "~/.ssh/id_ed25519" };
+    const args = buildSshPtyArgs(host, settings, "htop");
+    expect(args).toContain("-i");
+    expect(args[args.length - 1]).toBe("htop");
   });
 });
