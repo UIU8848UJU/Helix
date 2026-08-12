@@ -56,7 +56,17 @@ function Invoke-External(
         return
     }
 
-    & $FilePath @Arguments | Out-Host
+    # Native CLIs (claude/codex) write errors to stderr. PowerShell 5.1 with
+    # $ErrorActionPreference = "Stop" turns any stderr line into a terminating
+    # error before the exit code can be checked, so relax EAP around the call.
+    # -IgnoreExitCode + $LASTEXITCODE below still control real failures.
+    $OriginalErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $FilePath @Arguments | Out-Host
+    } finally {
+        $ErrorActionPreference = $OriginalErrorActionPreference
+    }
     $ExitCode = $LASTEXITCODE
     if ($ExitCode -ne 0 -and -not $IgnoreExitCode) {
         throw "Command failed with exit code ${ExitCode}: $FilePath $Display"

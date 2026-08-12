@@ -104,6 +104,13 @@ Stop-HelixBrokerDaemon $ExistingBrokerPath
 
 Push-Location $RootDir
 try {
+    # Native tools (npm/npx/cargo) write warnings to stderr. PowerShell 5.1 with
+    # $ErrorActionPreference = "Stop" treats any stderr line as a terminating
+    # error even when the tool exits 0, so relax EAP for native steps. Every
+    # invocation below still checks $LASTEXITCODE.
+    $OriginalErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+
     & npm install
     if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
 
@@ -131,6 +138,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Rust broker build failed" }
     }
 } finally {
+    $ErrorActionPreference = $OriginalErrorActionPreference
     Pop-Location
 }
 
