@@ -11,15 +11,13 @@ MCP / Skill-Matrix clients
         |
         | local IPC
         v
-Credential Broker Daemon
+Credential Broker Daemon (IPC lifecycle and request routing)
         |
-        +-- request protocol: submit / task_status / task_cancel
-        |
-        +-- bounded local task queue
-        |
-        +-- fixed worker pool
-        |
-        +-- persistent SSH session pool
+        +-- TaskPool (task state, bounded queue and fixed workers)
+        |       |
+        |       +-- BrokerEngine
+        |               |
+        |               +-- persistent SSH session pool
         |
         v
 Remote SSH hosts
@@ -38,16 +36,27 @@ Do not replace one with the other.
 
 The daemon uses a local socket transport through the Rust `interprocess` crate:
 
-- Windows: Named Pipe `\\.\pipe\helix-credential-broker-v1`
+- Windows: Named Pipe `\\.\pipe\helix-credential-broker-v1` (stable rendezvous name)
 - Unix: Unix Domain Socket `/tmp/helix-credential-broker-v1.sock`
 
 The IPC protocol is newline-delimited JSON. Each local connection sends one request and receives one response.
+Listener creation is also the authorization boundary: Windows applies a protected DACL granting
+access only to LocalSystem and the current user SID; Unix creates the socket with mode `0600`.
+The daemon enforces the 4 MiB request limit while reading, before an oversized payload can be
+accumulated in memory. IPC connections are handled independently and each request has a five-second
+read and response-write deadline. Unix sockets use native I/O timeouts. The Windows named-pipe
+backend has no timeout API, so handlers use nonblocking I/O with the same deadline. At most 64 IPC handlers may be active,
+bounding thread usage; an already accepted 65th connection waits for a bounded handler slot instead
+of being dropped, so saturation cannot permanently exclude a shutdown request.
 
 The TypeScript MCP process auto-starts the daemon on first use when the endpoint is unavailable. The daemon is detached from the MCP client and remains alive when one MCP process exits.
 
 ## Protocol
 
-Heavy Broker operations are no longer synchronous one-shot stdin RPCs. The daemon protocol has an explicit `protocolVersion`; v1 clients require daemon protocol version `1`.
+Heavy Broker operations are no longer synchronous one-shot stdin RPCs. The daemon protocol has an
+explicit `protocolVersion` plus capabilities. The `ssh_pty` request-set change is protocol v2;
+clients require version 2 and the capabilities they use. The endpoint name remains stable so a new
+client can find and shut down an incompatible resident daemon.
 
 ### Submit
 
@@ -73,7 +82,8 @@ The daemon immediately returns a TaskID and state:
 ```json
 {
   "ok": true,
-  "protocolVersion": 1,
+  "protocolVersion": 2,
+  "capabilities": ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "ssh_pty"],
   "taskId": "broker-...",
   "state": "queued"
 }
@@ -109,7 +119,12 @@ A `succeeded` Broker task means the Broker operation completed normally. The nes
 }
 ```
 
-Queued tasks are cancelled before execution. A running blocking libssh2 call is currently marked `cancelRequested` but is not force-interrupted in v1. Remote long-running work should use `job_cancel`, which controls the remote process group directly.
+Queued tasks are cancelled before execution. A running task first reports `cancelRequested=true`
+while it remains `running`; the executor receives a cooperative cancellation token and only then
+does the task enter the monotonic `cancelled` terminal state. Blocking libssh2 sections cannot be
+force-killed safely, so timeout/cancellation responses discard the SSH session rather than returning
+an uncertain channel to the pool. Remote long-running work should use `job_cancel`, which controls
+the remote process group directly.
 
 ### Shutdown and protocol upgrade
 
@@ -125,11 +140,16 @@ and the CLI exposes:
 helix-credential-broker daemon-stop
 ```
 
-When MCP finds a daemon on the expected endpoint but with an incompatible `protocolVersion`, it requests a graceful shutdown and then starts the configured runtime binary. This prevents a new MCP client from silently talking to an old resident daemon.
+When MCP finds a daemon with an incompatible version or missing capability, it requests shutdown
+and then starts the configured runtime binary. Shutdown stops admission, cancels queued tasks and
+cooperatively cancels/drains running tasks for a five-second deadline. Work is never replayed after
+restart; a blocking operation that misses the deadline is stopped by process exit and its local
+TaskID must be treated as lost.
 
 ## Worker Pool and Queue
 
-The daemon uses a fixed-size blocking worker pool plus a bounded queue.
+The separate `TaskPool` component uses a fixed-size blocking worker pool plus a bounded queue.
+The daemon owns its lifecycle but does not implement task scheduling or worker execution.
 
 Default startup values are derived by the MCP client:
 
@@ -266,13 +286,15 @@ Current limits:
 - idle SSH Session TTL;
 - maximum idle Sessions per connection key;
 - completed Broker Task retention TTL.
+- a 64 MiB global retained-result budget with deterministic oldest-terminal eviction;
+- one shared `stdout + stderr` collection budget applied while reading;
+- a 64-connection IPC handler cap and five-second framing/read/write deadlines.
 
 Recommended future limits if Skill-Matrix fan-out grows significantly:
 
 - per-host active worker limit;
 - per-host queue quota;
 - task priorities (`interactive`, `normal`, `background`);
-- global memory budget for task results;
 - fair scheduling across callers/agents;
 - metrics for queue wait, execution time, reconnects and pool hit rate.
 
