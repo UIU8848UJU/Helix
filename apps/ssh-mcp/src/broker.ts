@@ -5,7 +5,8 @@ import type { BrokerResponse, ExecutionResult, GlobalSettings, HostConfig } from
 import { getCredentialBrokerPath } from "./paths.js";
 import { newRequestId, writeAudit } from "./audit.js";
 
-const BROKER_PROTOCOL_VERSION = 1;
+const BROKER_PROTOCOL_VERSION = 2;
+const REQUIRED_BROKER_CAPABILITIES = ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "ssh_pty"] as const;
 const BROKER_ENDPOINT = process.platform === "win32"
   ? "\\\\.\\pipe\\helix-credential-broker-v1"
   : "/tmp/helix-credential-broker-v1.sock";
@@ -15,6 +16,7 @@ type BrokerTaskState = "queued" | "running" | "succeeded" | "failed" | "cancelle
 interface BrokerDaemonResponse {
   ok: boolean;
   protocolVersion?: number;
+  capabilities?: string[];
   taskId?: string;
   state?: BrokerTaskState;
   result?: BrokerResponse;
@@ -261,12 +263,17 @@ function daemonRpc(
   });
 }
 
-function assertProtocolCompatible(response: BrokerDaemonResponse): void {
+export function assertProtocolCompatible(response: BrokerDaemonResponse): void {
   if (response.protocolVersion !== BROKER_PROTOCOL_VERSION) {
     throw new Error(
       `Credential broker protocol mismatch: expected ${BROKER_PROTOCOL_VERSION}, `
       + `got ${String(response.protocolVersion ?? "unknown")}`,
     );
+  }
+  const capabilities = new Set(response.capabilities ?? []);
+  const missing = REQUIRED_BROKER_CAPABILITIES.filter((capability) => !capabilities.has(capability));
+  if (missing.length > 0) {
+    throw new Error(`Credential broker is missing required capabilities: ${missing.join(", ")}`);
   }
 }
 
@@ -293,6 +300,12 @@ async function stopIncompatibleDaemon(response: BrokerDaemonResponse): Promise<v
   try {
     await daemonRpc({ op: "shutdown" }, 1_000);
   } catch (error) {
+    try {
+      await daemonRpc({ op: "ping" }, 250);
+    } catch {
+      // Another MCP process won the same upgrade race and already stopped it.
+      return;
+    }
     throw new Error(
       `Credential broker protocol mismatch: expected ${BROKER_PROTOCOL_VERSION}, got ${String(actual)}. `
       + `The old daemon could not be stopped automatically: ${String(error)}`,
@@ -353,7 +366,12 @@ async function ensureBrokerDaemon(settings: GlobalSettings): Promise<void> {
   }
 
   if (existing) {
-    if (existing.protocolVersion === BROKER_PROTOCOL_VERSION) return;
+    try {
+      assertProtocolCompatible(existing);
+      return;
+    } catch {
+      // A same-version daemon can still be incompatible when a capability is absent.
+    }
     await stopIncompatibleDaemon(existing);
   }
 

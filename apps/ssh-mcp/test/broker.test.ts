@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildBrokerSshPtyRequest, isCredentialError, withCredentialAutoEnroll } from "../src/broker.js";
+import { assertProtocolCompatible, buildBrokerSshPtyRequest, isCredentialError, withCredentialAutoEnroll } from "../src/broker.js";
 import type { GlobalSettings, HostConfig } from "../src/types.js";
 
 const settings: GlobalSettings = {
@@ -239,5 +239,23 @@ describe("broker ssh_pty request builder (TDD PTY-001)", () => {
     expect(request.cols).toBe(120);
     expect(request.rows).toBe(40);
     expect(request.input).toBe("hello");
+  });
+});
+
+describe("broker daemon v2 capability contract", () => {
+  it("accepts the v2 capability set", () => {
+    expect(() => assertProtocolCompatible({
+      ok: true,
+      protocolVersion: 2,
+      capabilities: ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "ssh_pty"],
+    })).not.toThrow();
+  });
+
+  it("rejects a same-version daemon without ssh_pty", () => {
+    expect(() => assertProtocolCompatible({
+      ok: true,
+      protocolVersion: 2,
+      capabilities: ["task_pool_v2", "bounded_ipc", "owner_only_ipc"],
+    })).toThrow(/missing required capabilities: ssh_pty/);
   });
 });
