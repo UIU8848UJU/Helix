@@ -1,4 +1,10 @@
-use crate::{credential, pool::SessionPool, protocol::{BrokerRequest, BrokerResponse}, ssh};
+use crate::{
+    credential,
+    pool::SessionPool,
+    protocol::{BrokerRequest, BrokerResponse},
+    ssh,
+    task_pool::CancellationToken,
+};
 use anyhow::Result;
 use std::{path::PathBuf, time::Duration};
 
@@ -21,6 +27,14 @@ impl BrokerEngine {
     }
 
     pub fn handle(&self, request: BrokerRequest) -> Result<BrokerResponse> {
+        self.handle_with_cancellation(request, &CancellationToken::default())
+    }
+
+    pub fn handle_with_cancellation(
+        &self,
+        request: BrokerRequest,
+        cancellation: &CancellationToken,
+    ) -> Result<BrokerResponse> {
         match request {
             BrokerRequest::Ping => Ok(BrokerResponse::success()),
             BrokerRequest::CredentialExists { credential_ref } => Ok(BrokerResponse {
@@ -45,8 +59,17 @@ impl BrokerEngine {
                     timeout_seconds,
                     strict_host_key_checking,
                 )?;
-                let result = ssh::execute(&session, &command, None, max_output_bytes);
-                if result.is_ok() {
+                let result = ssh::execute(
+                    &session,
+                    &command,
+                    None,
+                    max_output_bytes,
+                    Duration::from_secs(timeout_seconds.max(1)),
+                    Some(cancellation),
+                );
+                if !cancellation.is_cancelled()
+                    && matches!(&result, Ok(response) if response.timed_out != Some(true))
+                {
                     self.sessions.release(key, session);
                 }
                 result
@@ -81,7 +104,9 @@ impl BrokerEngine {
                     max_output_bytes,
                     Duration::from_secs(timeout_seconds.max(1)),
                 );
-                if result.is_ok() {
+                if !cancellation.is_cancelled()
+                    && matches!(&result, Ok(response) if response.timed_out != Some(true))
+                {
                     self.sessions.release(key, session);
                 }
                 result
@@ -108,8 +133,17 @@ impl BrokerEngine {
                 let sudo = credential::read(&sudo_credential_ref)?;
                 let quoted = command.replace('\'', "'\"'\"'");
                 let wrapped = format!("sudo -S -p '' -- sh -lc '{}'", quoted);
-                let result = ssh::execute(&session, &wrapped, Some(&sudo.secret), max_output_bytes);
-                if result.is_ok() {
+                let result = ssh::execute(
+                    &session,
+                    &wrapped,
+                    Some(&sudo.secret),
+                    max_output_bytes,
+                    Duration::from_secs(timeout_seconds.max(1)),
+                    Some(cancellation),
+                );
+                if !cancellation.is_cancelled()
+                    && matches!(&result, Ok(response) if response.timed_out != Some(true))
+                {
                     self.sessions.release(key, session);
                 }
                 result
@@ -139,7 +173,7 @@ impl BrokerEngine {
                     PathBuf::from(remote_path).as_path(),
                     recursive,
                 );
-                if result.is_ok() {
+                if result.is_ok() && !cancellation.is_cancelled() {
                     self.sessions.release(key, session);
                 }
                 result?;
@@ -170,7 +204,7 @@ impl BrokerEngine {
                     PathBuf::from(local_path).as_path(),
                     recursive,
                 );
-                if result.is_ok() {
+                if result.is_ok() && !cancellation.is_cancelled() {
                     self.sessions.release(key, session);
                 }
                 result?;

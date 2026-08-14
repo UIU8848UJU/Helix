@@ -139,11 +139,15 @@ fn connect_with_retry(
     credential: &credential::StoredCredential,
 ) -> Result<Session> {
     const BACKOFF_MS: [u64; 3] = [200, 500, 1000];
-    for attempt in 0..=BACKOFF_MS.len() {
+    for backoff in BACKOFF_MS
+        .into_iter()
+        .map(Some)
+        .chain(std::iter::once(None))
+    {
         match ssh::connect(options, credential) {
             Ok(session) => return Ok(session),
-            Err(error) if attempt < BACKOFF_MS.len() && retryable_connect_error(&error) => {
-                thread::sleep(Duration::from_millis(BACKOFF_MS[attempt]));
+            Err(error) if backoff.is_some() && retryable_connect_error(&error) => {
+                thread::sleep(Duration::from_millis(backoff.unwrap()));
             }
             Err(error) => return Err(error),
         }

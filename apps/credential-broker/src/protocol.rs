@@ -1,12 +1,16 @@
 use serde::{Deserialize, Serialize};
 
-pub const DAEMON_PROTOCOL_VERSION: u32 = 1;
+pub const DAEMON_PROTOCOL_VERSION: u32 = 2;
+pub const DAEMON_CAPABILITIES: &[&str] =
+    &["task_pool_v2", "bounded_ipc", "owner_only_ipc", "ssh_pty"];
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum BrokerRequest {
     Ping,
-    CredentialExists { credential_ref: String },
+    CredentialExists {
+        credential_ref: String,
+    },
     SshExecute {
         credential_ref: String,
         host: String,
@@ -142,6 +146,7 @@ impl TaskState {
 pub struct DaemonResponse {
     pub ok: bool,
     pub protocol_version: u32,
+    pub capabilities: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -165,6 +170,10 @@ pub struct DaemonResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pooled_sessions: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub retained_result_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retained_result_bytes_limit: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
@@ -173,6 +182,10 @@ impl DaemonResponse {
         Self {
             ok: true,
             protocol_version: DAEMON_PROTOCOL_VERSION,
+            capabilities: DAEMON_CAPABILITIES
+                .iter()
+                .map(|capability| (*capability).to_owned())
+                .collect(),
             task_id: None,
             state: None,
             result: None,
@@ -184,6 +197,8 @@ impl DaemonResponse {
             queued_tasks: None,
             running_tasks: None,
             pooled_sessions: None,
+            retained_result_bytes: None,
+            retained_result_bytes_limit: None,
             error: None,
         }
     }

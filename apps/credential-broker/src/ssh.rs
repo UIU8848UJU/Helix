@@ -1,11 +1,13 @@
+use crate::task_pool::CancellationToken;
 use crate::{credential::StoredCredential, protocol::BrokerResponse};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use ssh2::{CheckResult, KnownHostFileKind, Session, Sftp};
 use std::{
     fs::{self, File},
     io::{Read, Write},
     net::{TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
+    thread,
     time::{Duration, Instant},
 };
 use zeroize::Zeroizing;
@@ -70,9 +72,7 @@ pub fn connect(options: &ConnectOptions<'_>, credential: &StoredCredential) -> R
     // TCP/SSH Session for later commands with a different timeout; libssh2's Session timeout is
     // updated whenever a pooled Session is checked out.
     let mut session = Session::new().context("failed to create SSH session")?;
-    session.set_timeout(
-        (options.timeout_seconds.saturating_mul(1000)).min(u32::MAX as u64) as u32,
-    );
+    session.set_timeout((options.timeout_seconds.saturating_mul(1000)).min(u32::MAX as u64) as u32);
     session.set_tcp_stream(tcp);
     session.handshake().context("SSH handshake failed")?;
     verify_known_host(
@@ -108,11 +108,122 @@ fn bounded_text(mut bytes: Vec<u8>, max: usize) -> (String, bool) {
     (String::from_utf8_lossy(&bytes).into_owned(), truncated)
 }
 
+struct CapturedOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    truncated: bool,
+    timed_out: bool,
+}
+
+fn append_with_shared_budget(
+    destination: &mut Vec<u8>,
+    bytes: &[u8],
+    retained: &mut usize,
+    budget: usize,
+) -> bool {
+    let take = bytes.len().min(budget.saturating_sub(*retained));
+    destination.extend_from_slice(&bytes[..take]);
+    *retained += take;
+    take < bytes.len()
+}
+
+fn collect_output(
+    session: &Session,
+    channel: &mut ssh2::Channel,
+    max_output_bytes: usize,
+    timeout: Duration,
+    cancellation: Option<&CancellationToken>,
+) -> Result<CapturedOutput> {
+    session.set_blocking(false);
+    let deadline = Instant::now() + timeout;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut retained = 0;
+    let mut truncated = false;
+    let mut stdout_done = false;
+    let mut stderr_done = false;
+    let mut stdout_buffer = [0u8; 8192];
+    let mut stderr_buffer = [0u8; 8192];
+
+    while !stdout_done || !stderr_done {
+        if Instant::now() >= deadline || cancellation.is_some_and(CancellationToken::is_cancelled) {
+            session.set_blocking(true);
+            return Ok(CapturedOutput {
+                stdout,
+                stderr,
+                truncated,
+                timed_out: true,
+            });
+        }
+        let mut made_progress = false;
+        if !stdout_done {
+            match channel.read(&mut stdout_buffer) {
+                Ok(0) => stdout_done = true,
+                Ok(count) => {
+                    made_progress = true;
+                    truncated |= append_with_shared_budget(
+                        &mut stdout,
+                        &stdout_buffer[..count],
+                        &mut retained,
+                        max_output_bytes,
+                    );
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => {
+                    session.set_blocking(true);
+                    return Err(error).context("failed to read SSH stdout");
+                }
+            }
+        }
+        if !stderr_done {
+            let mut stderr_stream = channel.stderr();
+            match stderr_stream.read(&mut stderr_buffer) {
+                Ok(0) => stderr_done = true,
+                Ok(count) => {
+                    made_progress = true;
+                    truncated |= append_with_shared_budget(
+                        &mut stderr,
+                        &stderr_buffer[..count],
+                        &mut retained,
+                        max_output_bytes,
+                    );
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => {
+                    session.set_blocking(true);
+                    return Err(error).context("failed to read SSH stderr");
+                }
+            }
+        }
+        if !made_progress {
+            if Instant::now() >= deadline {
+                session.set_blocking(true);
+                return Ok(CapturedOutput {
+                    stdout,
+                    stderr,
+                    truncated,
+                    timed_out: true,
+                });
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+    session.set_blocking(true);
+    Ok(CapturedOutput {
+        stdout,
+        stderr,
+        truncated,
+        timed_out: false,
+    })
+}
+
 pub fn execute(
     session: &Session,
     command: &str,
     stdin_secret: Option<&Zeroizing<String>>,
     max_output_bytes: usize,
+    timeout: Duration,
+    cancellation: Option<&CancellationToken>,
 ) -> Result<BrokerResponse> {
     let started = Instant::now();
     let mut channel = session.channel_session()?;
@@ -126,15 +237,32 @@ pub fn execute(
     }
     channel.send_eof()?;
 
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    channel.read_to_end(&mut stdout)?;
-    let mut stderr_stream = channel.stderr();
-    stderr_stream.read_to_end(&mut stderr)?;
+    let captured = collect_output(
+        session,
+        &mut channel,
+        max_output_bytes,
+        timeout,
+        cancellation,
+    )?;
+    if captured.timed_out {
+        let (stdout, _) = bounded_text(captured.stdout, max_output_bytes);
+        let (stderr, _) = bounded_text(captured.stderr, max_output_bytes);
+        return Ok(BrokerResponse {
+            ok: false,
+            exists: None,
+            exit_code: None,
+            stdout: Some(stdout),
+            stderr: Some(stderr),
+            timed_out: Some(true),
+            truncated: Some(captured.truncated),
+            duration_ms: Some(started.elapsed().as_millis()),
+            error: Some("SSH command timed out".to_owned()),
+        });
+    }
     channel.wait_close()?;
     let exit_code = channel.exit_status().unwrap_or(-1);
-    let (stdout, stdout_truncated) = bounded_text(stdout, max_output_bytes);
-    let (stderr, stderr_truncated) = bounded_text(stderr, max_output_bytes);
+    let (stdout, _) = bounded_text(captured.stdout, max_output_bytes);
+    let (stderr, _) = bounded_text(captured.stderr, max_output_bytes);
     Ok(BrokerResponse {
         ok: exit_code == 0,
         exists: None,
@@ -142,7 +270,7 @@ pub fn execute(
         stdout: Some(stdout),
         stderr: Some(stderr),
         timed_out: Some(false),
-        truncated: Some(stdout_truncated || stderr_truncated),
+        truncated: Some(captured.truncated),
         duration_ms: Some(started.elapsed().as_millis()),
         error: None,
     })
@@ -184,7 +312,7 @@ pub fn execute_pty(
     let (stdout, timed_out, truncated) = if timeout.as_secs() > 0 {
         // libssh2 non-blocking mode is session-scoped; restore blocking before
         // returning so the pooled session keeps its default behavior.
-        let _ = session.set_blocking(false);
+        session.set_blocking(false);
         let deadline = Instant::now() + timeout;
         let mut stdout = Vec::new();
         let mut truncated = false;
@@ -207,7 +335,7 @@ pub fn execute_pty(
                 }
                 Err(error) => {
                     if error.kind() != std::io::ErrorKind::WouldBlock {
-                        let _ = session.set_blocking(true);
+                        session.set_blocking(true);
                         return Err(error).context("failed to read PTY output");
                     }
                     if Instant::now() >= deadline {
@@ -218,7 +346,7 @@ pub fn execute_pty(
                 }
             }
         }
-        let _ = session.set_blocking(true);
+        session.set_blocking(true);
         (stdout, timed_out, truncated)
     } else {
         let mut stdout = Vec::new();
@@ -271,9 +399,7 @@ fn ensure_remote_dir(sftp: &Sftp, path: &Path) -> Result<()> {
     match sftp.mkdir(path, 0o755) {
         Ok(()) => Ok(()),
         Err(_) if sftp.stat(path).is_ok() => Ok(()),
-        Err(error) => {
-            Err(error).with_context(|| format!("failed to create {}", path.display()))
-        }
+        Err(error) => Err(error).with_context(|| format!("failed to create {}", path.display())),
     }
 }
 
@@ -289,12 +415,7 @@ fn upload_path(sftp: &Sftp, local: &Path, remote: &Path, recursive: bool) -> Res
         ensure_remote_dir(sftp, remote)?;
         for entry in fs::read_dir(local)? {
             let entry = entry?;
-            upload_path(
-                sftp,
-                &entry.path(),
-                &remote.join(entry.file_name()),
-                true,
-            )?;
+            upload_path(sftp, &entry.path(), &remote.join(entry.file_name()), true)?;
         }
         return Ok(());
     }
@@ -328,9 +449,7 @@ fn download_path(sftp: &Sftp, remote: &Path, local: &Path, recursive: bool) -> R
             let name = child
                 .file_name()
                 .ok_or_else(|| anyhow!("invalid remote file name"))?;
-            if name == std::ffi::OsStr::new(".")
-                || name == std::ffi::OsStr::new("..")
-            {
+            if name == std::ffi::OsStr::new(".") || name == std::ffi::OsStr::new("..") {
                 continue;
             }
             download_path(sftp, &child, &local.join(name), true)?;
@@ -354,4 +473,29 @@ pub fn upload(session: &Session, local: &Path, remote: &Path, recursive: bool) -
 pub fn download(session: &Session, remote: &Path, local: &Path, recursive: bool) -> Result<()> {
     let sftp = session.sftp()?;
     download_path(&sftp, remote, local, recursive)
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::*;
+
+    #[test]
+    fn shared_budget_is_applied_across_both_streams() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut retained = 0;
+        assert!(!append_with_shared_budget(
+            &mut stdout,
+            &[b'o'; 800],
+            &mut retained,
+            1024
+        ));
+        assert!(append_with_shared_budget(
+            &mut stderr,
+            &[b'e'; 800],
+            &mut retained,
+            1024
+        ));
+        assert_eq!(stdout.len() + stderr.len(), 1024);
+    }
 }

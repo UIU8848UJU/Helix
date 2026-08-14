@@ -1,12 +1,14 @@
 mod credential;
-mod ui;
 mod daemon;
 mod engine;
+mod ipc_security;
 mod pool;
 mod protocol;
 mod ssh;
+mod task_pool;
+mod ui;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use engine::BrokerEngine;
 use protocol::{BrokerRequest, BrokerResponse};
@@ -45,6 +47,12 @@ enum Command {
     },
     /// Ask a running daemon to exit cleanly.
     DaemonStop {
+        #[arg(long, default_value = daemon::DEFAULT_ENDPOINT)]
+        endpoint: String,
+    },
+    /// Print the effective broker pipe security descriptor for diagnostics.
+    #[cfg(windows)]
+    DaemonAcl {
         #[arg(long, default_value = daemon::DEFAULT_ENDPOINT)]
         endpoint: String,
     },
@@ -138,6 +146,11 @@ fn main() -> Result<()> {
             max_idle_sessions_per_key,
         ),
         Command::DaemonStop { endpoint } => daemon::stop_daemon(&endpoint),
+        #[cfg(windows)]
+        Command::DaemonAcl { endpoint } => {
+            println!("{}", ipc_security::named_pipe_sddl(&endpoint)?);
+            Ok(())
+        }
         Command::ServeOnce => serve_once(),
         Command::CredentialStore { target, username } => {
             let password = zeroize::Zeroizing::new(rpassword::prompt_password("Password: ")?);
@@ -154,7 +167,11 @@ fn main() -> Result<()> {
             eprintln!("Stored {} credential target(s)", targets.len());
             Ok(())
         }
-        Command::CredentialUi { username, targets, separate_passwords } => {
+        Command::CredentialUi {
+            username,
+            targets,
+            separate_passwords,
+        } => {
             let targets = normalize_targets(targets)?;
             if username.trim().is_empty() {
                 return Err(anyhow!("credential username must not be empty"));
@@ -266,7 +283,8 @@ mod tests {
         if std::env::var("HELIX_PTY_INTEGRATION").as_deref() != Ok("1") {
             return None;
         }
-        let host = std::env::var("HELIX_SSH_HOST").unwrap_or_else(|_| "192.168.110.128".to_string());
+        let host =
+            std::env::var("HELIX_SSH_HOST").unwrap_or_else(|_| "192.168.110.128".to_string());
         let port = std::env::var("HELIX_SSH_PORT")
             .ok()
             .and_then(|value| value.parse().ok())
@@ -308,7 +326,10 @@ mod tests {
         assert!(response.ok, "pty command failed: {response:?}");
         assert_eq!(response.exit_code, Some(0));
         let out = response.stdout.unwrap_or_default();
-        assert!(out.contains("PTY_OK"), "expected PTY_OK in output, got: {out:?}");
+        assert!(
+            out.contains("PTY_OK"),
+            "expected PTY_OK in output, got: {out:?}"
+        );
     }
 
     #[test]
@@ -326,7 +347,10 @@ mod tests {
         )
         .expect("pty exec should succeed");
         let out = response.stdout.unwrap_or_default();
-        assert!(out.contains("got:hello"), "expected got:hello, got: {out:?}");
+        assert!(
+            out.contains("got:hello"),
+            "expected got:hello, got: {out:?}"
+        );
     }
 
     #[test]
@@ -398,10 +422,35 @@ mod tests {
         ))
         .expect("engine pty request should parse");
         let engine = BrokerEngine::new(1, 1);
-        let response = engine.handle(request).expect("engine should dispatch ssh_pty");
+        let response = engine
+            .handle(request)
+            .expect("engine should dispatch ssh_pty");
         assert!(response.ok, "engine pty command failed: {response:?}");
         assert_eq!(response.exit_code, Some(0));
         let out = response.stdout.unwrap_or_default();
-        assert!(out.contains("ENGINE_PTY_OK"), "expected ENGINE_PTY_OK in output, got: {out:?}");
+        assert!(
+            out.contains("ENGINE_PTY_OK"),
+            "expected ENGINE_PTY_OK in output, got: {out:?}"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a real SSH target; set HELIX_PTY_INTEGRATION=1"]
+    fn ssh_integration_drains_stdout_and_stderr_under_one_budget() {
+        let Some(session) = pty_connect() else { return };
+        let response = ssh::execute(
+            &session,
+            "python3 -c \"import os; [(os.write(1,b'o'*8192), os.write(2,b'e'*8192)) for _ in range(64)]\"",
+            None,
+            16 * 1024,
+            std::time::Duration::from_secs(20),
+            None,
+        )
+        .expect("concurrent stdout/stderr collection should finish");
+        assert_eq!(response.timed_out, Some(false));
+        assert_eq!(response.truncated, Some(true));
+        let total =
+            response.stdout.unwrap_or_default().len() + response.stderr.unwrap_or_default().len();
+        assert!(total <= 16 * 1024, "shared output budget exceeded: {total}");
     }
 }

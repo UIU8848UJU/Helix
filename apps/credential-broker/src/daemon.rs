@@ -1,19 +1,19 @@
 use crate::{
     engine::BrokerEngine,
-    protocol::{BrokerRequest, BrokerResponse, DaemonRequest, DaemonResponse, TaskState},
+    ipc_security,
+    protocol::{DaemonRequest, DaemonResponse},
+    task_pool::TaskPool,
 };
-use anyhow::{anyhow, Context, Result};
-use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+use anyhow::{Context, Result, anyhow};
+use interprocess::local_socket::{GenericFilePath, ListenerOptions, prelude::*};
 use std::{
-    collections::HashMap,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, ErrorKind, Write},
     sync::{
-        atomic::{AtomicU64, AtomicUsize, Ordering},
-        mpsc::{self, Receiver, SyncSender, TrySendError},
-        Arc, Mutex,
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 #[cfg(windows)]
@@ -21,232 +21,10 @@ pub const DEFAULT_ENDPOINT: &str = r"\\.\pipe\helix-credential-broker-v1";
 #[cfg(not(windows))]
 pub const DEFAULT_ENDPOINT: &str = "/tmp/helix-credential-broker-v1.sock";
 
-#[derive(Clone)]
-struct TaskRecord {
-    state: TaskState,
-    result: Option<BrokerResponse>,
-    cancel_requested: bool,
-    created_at_ms: u128,
-    started_at_ms: Option<u128>,
-    finished_at_ms: Option<u128>,
-}
-
-struct QueuedTask {
-    task_id: String,
-    request: BrokerRequest,
-}
-
-pub struct TaskPool {
-    sender: SyncSender<QueuedTask>,
-    tasks: Arc<Mutex<HashMap<String, TaskRecord>>>,
-    engine: Arc<BrokerEngine>,
-    workers: usize,
-    queued: Arc<AtomicUsize>,
-    running: Arc<AtomicUsize>,
-    sequence: AtomicU64,
-    retention: Duration,
-}
-
-impl TaskPool {
-    pub fn new(
-        workers: usize,
-        queue_capacity: usize,
-        retention: Duration,
-        engine: Arc<BrokerEngine>,
-    ) -> Self {
-        let workers = workers.max(1);
-        let queue_capacity = queue_capacity.max(workers);
-        let (sender, receiver) = mpsc::sync_channel::<QueuedTask>(queue_capacity);
-        let receiver = Arc::new(Mutex::new(receiver));
-        let tasks = Arc::new(Mutex::new(HashMap::<String, TaskRecord>::new()));
-        let queued = Arc::new(AtomicUsize::new(0));
-        let running = Arc::new(AtomicUsize::new(0));
-
-        for index in 0..workers {
-            spawn_worker(
-                index,
-                Arc::clone(&receiver),
-                Arc::clone(&tasks),
-                Arc::clone(&engine),
-                Arc::clone(&queued),
-                Arc::clone(&running),
-            );
-        }
-
-        Self {
-            sender,
-            tasks,
-            engine,
-            workers,
-            queued,
-            running,
-            sequence: AtomicU64::new(1),
-            retention,
-        }
-    }
-
-    pub fn submit(&self, request: BrokerRequest) -> Result<String> {
-        self.cleanup_finished();
-        let task_id = format!(
-            "broker-{}-{}",
-            now_ms(),
-            self.sequence.fetch_add(1, Ordering::Relaxed)
-        );
-        self.tasks.lock().map_err(lock_error)?.insert(
-            task_id.clone(),
-            TaskRecord {
-                state: TaskState::Queued,
-                result: None,
-                cancel_requested: false,
-                created_at_ms: now_ms(),
-                started_at_ms: None,
-                finished_at_ms: None,
-            },
-        );
-
-        self.queued.fetch_add(1, Ordering::Relaxed);
-        match self.sender.try_send(QueuedTask {
-            task_id: task_id.clone(),
-            request,
-        }) {
-            Ok(()) => Ok(task_id),
-            Err(TrySendError::Full(_)) => {
-                self.queued.fetch_sub(1, Ordering::Relaxed);
-                self.tasks.lock().map_err(lock_error)?.remove(&task_id);
-                Err(anyhow!("credential broker task queue is full"))
-            }
-            Err(TrySendError::Disconnected(_)) => {
-                self.queued.fetch_sub(1, Ordering::Relaxed);
-                self.tasks.lock().map_err(lock_error)?.remove(&task_id);
-                Err(anyhow!("credential broker worker pool is unavailable"))
-            }
-        }
-    }
-
-    fn task(&self, task_id: &str) -> Result<TaskRecord> {
-        self.cleanup_finished();
-        self.tasks
-            .lock()
-            .map_err(lock_error)?
-            .get(task_id)
-            .cloned()
-            .ok_or_else(|| anyhow!("unknown broker task: {task_id}"))
-    }
-
-    fn cancel(&self, task_id: &str) -> Result<TaskRecord> {
-        let mut tasks = self.tasks.lock().map_err(lock_error)?;
-        let task = tasks
-            .get_mut(task_id)
-            .ok_or_else(|| anyhow!("unknown broker task: {task_id}"))?;
-        task.cancel_requested = true;
-        if task.state == TaskState::Queued {
-            task.state = TaskState::Cancelled;
-            task.finished_at_ms = Some(now_ms());
-        }
-        Ok(task.clone())
-    }
-
-    fn cleanup_finished(&self) {
-        let cutoff = now_ms().saturating_sub(self.retention.as_millis());
-        if let Ok(mut tasks) = self.tasks.lock() {
-            tasks.retain(|_, task| {
-                !task.state.is_terminal()
-                    || task.finished_at_ms.map(|finished| finished >= cutoff).unwrap_or(true)
-            });
-        }
-    }
-
-    fn stats_response(&self) -> DaemonResponse {
-        DaemonResponse {
-            workers: Some(self.workers),
-            queued_tasks: Some(self.queued.load(Ordering::Relaxed)),
-            running_tasks: Some(self.running.load(Ordering::Relaxed)),
-            pooled_sessions: Some(self.engine.pooled_sessions()),
-            ..DaemonResponse::success()
-        }
-    }
-
-    fn task_response(&self, task_id: &str, task: TaskRecord) -> DaemonResponse {
-        DaemonResponse {
-            task_id: Some(task_id.to_owned()),
-            state: Some(task.state),
-            result: task.result,
-            cancel_requested: Some(task.cancel_requested),
-            created_at_ms: Some(task.created_at_ms),
-            started_at_ms: task.started_at_ms,
-            finished_at_ms: task.finished_at_ms,
-            workers: Some(self.workers),
-            queued_tasks: Some(self.queued.load(Ordering::Relaxed)),
-            running_tasks: Some(self.running.load(Ordering::Relaxed)),
-            pooled_sessions: Some(self.engine.pooled_sessions()),
-            ..DaemonResponse::success()
-        }
-    }
-}
-
-fn spawn_worker(
-    index: usize,
-    receiver: Arc<Mutex<Receiver<QueuedTask>>>,
-    tasks: Arc<Mutex<HashMap<String, TaskRecord>>>,
-    engine: Arc<BrokerEngine>,
-    queued: Arc<AtomicUsize>,
-    running: Arc<AtomicUsize>,
-) {
-    thread::Builder::new()
-        .name(format!("helix-broker-worker-{index}"))
-        .spawn(move || loop {
-            let queued_task = {
-                let Ok(receiver) = receiver.lock() else {
-                    return;
-                };
-                match receiver.recv() {
-                    Ok(task) => task,
-                    Err(_) => return,
-                }
-            };
-            queued.fetch_sub(1, Ordering::Relaxed);
-
-            let should_run = if let Ok(mut task_map) = tasks.lock() {
-                if let Some(task) = task_map.get_mut(&queued_task.task_id) {
-                    if task.state == TaskState::Cancelled {
-                        false
-                    } else {
-                        task.state = TaskState::Running;
-                        task.started_at_ms = Some(now_ms());
-                        true
-                    }
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-            if !should_run {
-                continue;
-            }
-
-            running.fetch_add(1, Ordering::Relaxed);
-            let result = engine.handle(queued_task.request);
-            running.fetch_sub(1, Ordering::Relaxed);
-
-            if let Ok(mut task_map) = tasks.lock() {
-                if let Some(task) = task_map.get_mut(&queued_task.task_id) {
-                    match result {
-                        Ok(response) => {
-                            task.state = TaskState::Succeeded;
-                            task.result = Some(response);
-                        }
-                        Err(error) => {
-                            task.state = TaskState::Failed;
-                            task.result = Some(BrokerResponse::failure(format!("{error:#}")));
-                        }
-                    }
-                    task.finished_at_ms = Some(now_ms());
-                }
-            }
-        })
-        .expect("failed to start credential broker worker thread");
-}
+const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+const MAX_IPC_CONNECTIONS: usize = 64;
+const IPC_TIMEOUT: Duration = Duration::from_secs(5);
+const IPC_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 pub fn serve_daemon(
     endpoint: &str,
@@ -259,38 +37,135 @@ pub fn serve_daemon(
     let endpoint_name = endpoint
         .to_fs_name::<GenericFilePath>()
         .with_context(|| format!("invalid broker IPC endpoint: {endpoint}"))?;
-    let listener = ListenerOptions::new()
+    let listener_options = ListenerOptions::new()
         .name(endpoint_name)
-        .try_overwrite(true)
-        .create_sync()
-        .with_context(|| format!("failed to bind broker IPC endpoint: {endpoint}"))?;
+        .try_overwrite(true);
+    let listener = match ipc_security::secure_listener_options(listener_options)?.create_sync() {
+        Ok(listener) => listener,
+        Err(_bind_error) if compatible_daemon_is_listening(endpoint) => {
+            eprintln!("compatible credential broker already owns {endpoint}");
+            return Ok(());
+        }
+        Err(bind_error) => {
+            return Err(bind_error)
+                .with_context(|| format!("failed to bind broker IPC endpoint: {endpoint}"));
+        }
+    };
 
     let engine = Arc::new(BrokerEngine::new(
         session_idle_seconds,
         max_idle_sessions_per_key,
     ));
-    let pool = TaskPool::new(
+    let pool = Arc::new(TaskPool::new(
         workers,
         queue_capacity,
         Duration::from_secs(retention_seconds.max(30)),
         engine,
-    );
+    )?);
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let active_connections = Arc::new(AtomicUsize::new(0));
 
     eprintln!(
         "Helix credential broker daemon listening on {endpoint}; workers={}; queue_capacity={queue_capacity}",
         workers.max(1)
     );
 
-    for connection in listener.incoming() {
-        match connection {
-            Ok(stream) => match handle_connection(stream, &pool) {
-                Ok(true) => break,
-                Ok(false) => {}
-                Err(error) => eprintln!("broker IPC request failed: {error:#}"),
-            },
+    while !shutdown.load(Ordering::Acquire) {
+        match listener.accept() {
+            Ok(stream) => {
+                if shutdown.load(Ordering::Acquire) {
+                    break;
+                }
+                acquire_connection_slot(&active_connections);
+                let pool = Arc::clone(&pool);
+                let shutdown = Arc::clone(&shutdown);
+                let active_connections = Arc::clone(&active_connections);
+                let endpoint = endpoint.to_owned();
+                let connection_guard = ConnectionGuard(active_connections);
+                thread::Builder::new()
+                    .name("helix-broker-ipc".to_owned())
+                    .spawn(move || {
+                        let _connection_guard = connection_guard;
+                        match handle_connection(stream, &pool) {
+                            Ok(true) => {
+                                shutdown.store(true, Ordering::Release);
+                                if let Err(error) = wake_listener(&endpoint) {
+                                    eprintln!(
+                                        "failed to wake broker listener for shutdown: {error:#}"
+                                    );
+                                }
+                            }
+                            Ok(false) => {}
+                            Err(error) => eprintln!("broker IPC request failed: {error:#}"),
+                        }
+                    })
+                    .context("failed to start broker IPC handler")?;
+            }
             Err(error) => eprintln!("broker IPC accept failed: {error}"),
         }
     }
+    if !pool.shutdown(IPC_TIMEOUT) {
+        eprintln!(
+            "credential broker shutdown deadline elapsed; process exit will stop remaining work"
+        );
+    }
+    Ok(())
+}
+
+fn compatible_daemon_is_listening(endpoint: &str) -> bool {
+    let result = (|| -> Result<bool> {
+        let endpoint_name = endpoint
+            .to_fs_name::<GenericFilePath>()
+            .with_context(|| format!("invalid broker IPC endpoint: {endpoint}"))?;
+        let mut stream = interprocess::local_socket::Stream::connect(endpoint_name)?;
+        configure_client_timeouts(&stream)?;
+        writeln!(stream, "{{\"op\":\"ping\"}}")?;
+        stream.flush()?;
+        let response: DaemonResponse =
+            serde_json::from_slice(&read_request_line(BufReader::new(stream))?)?;
+        Ok(response.ok
+            && response.protocol_version == crate::protocol::DAEMON_PROTOCOL_VERSION
+            && crate::protocol::DAEMON_CAPABILITIES.iter().all(|required| {
+                response
+                    .capabilities
+                    .iter()
+                    .any(|actual| actual == required)
+            }))
+    })();
+    result.unwrap_or(false)
+}
+
+struct ConnectionGuard(Arc<AtomicUsize>);
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn acquire_connection_slot(active_connections: &AtomicUsize) {
+    loop {
+        if active_connections
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < MAX_IPC_CONNECTIONS).then_some(active + 1)
+            })
+            .is_ok()
+        {
+            return;
+        }
+        // Preserve the already-accepted connection instead of dropping a
+        // possible shutdown request. Existing handlers have a bounded read
+        // deadline, so capacity becomes available within IPC_TIMEOUT.
+        thread::sleep(IPC_POLL_INTERVAL);
+    }
+}
+
+fn wake_listener(endpoint: &str) -> Result<()> {
+    let endpoint_name = endpoint
+        .to_fs_name::<GenericFilePath>()
+        .with_context(|| format!("invalid broker IPC endpoint: {endpoint}"))?;
+    interprocess::local_socket::Stream::connect(endpoint_name)
+        .with_context(|| format!("failed to connect to broker daemon: {endpoint}"))?;
     Ok(())
 }
 
@@ -300,49 +175,156 @@ pub fn stop_daemon(endpoint: &str) -> Result<()> {
         .with_context(|| format!("invalid broker IPC endpoint: {endpoint}"))?;
     let mut stream = interprocess::local_socket::Stream::connect(endpoint_name)
         .with_context(|| format!("failed to connect to broker daemon: {endpoint}"))?;
+    configure_client_timeouts(&stream)?;
     writeln!(stream, "{{\"op\":\"shutdown\"}}")?;
     stream.flush()?;
     let mut reader = BufReader::new(stream);
-    let mut response = String::new();
-    reader.read_line(&mut response)?;
-    let response: DaemonResponse = serde_json::from_str(response.trim())?;
+    let response = read_request_line(&mut reader)?;
+    let response: DaemonResponse = serde_json::from_slice(&response)?;
     if !response.ok {
-        return Err(anyhow!(response.error.unwrap_or_else(|| "daemon shutdown failed".to_owned())));
+        return Err(anyhow!(
+            response
+                .error
+                .unwrap_or_else(|| "daemon shutdown failed".to_owned())
+        ));
     }
     Ok(())
 }
 
-fn handle_connection(
-    stream: interprocess::local_socket::Stream,
-    pool: &TaskPool,
-) -> Result<bool> {
+fn handle_connection(stream: interprocess::local_socket::Stream, pool: &TaskPool) -> Result<bool> {
+    configure_server_read(&stream)?;
     let mut reader = BufReader::new(stream);
-    let mut input = String::new();
-    reader.read_line(&mut input)?;
-    if input.len() > 4 * 1024 * 1024 {
+    let (response, shutdown) = match read_request_line(&mut reader) {
+        Ok(input) => match serde_json::from_slice::<DaemonRequest>(&input) {
+            Ok(request) => handle_request(request, pool),
+            Err(error) => (
+                DaemonResponse::failure(format!("invalid daemon request JSON: {error}")),
+                false,
+            ),
+        },
+        Err(error) => (DaemonResponse::failure(format!("{error:#}")), false),
+    };
+    write_response(reader.into_inner(), &response)?;
+    Ok(shutdown)
+}
+
+fn write_response(
+    mut stream: interprocess::local_socket::Stream,
+    response: &DaemonResponse,
+) -> Result<()> {
+    let mut output = serde_json::to_vec(response)?;
+    output.push(b'\n');
+    let deadline = Instant::now() + IPC_TIMEOUT;
+    let mut written = 0;
+    while written < output.len() {
+        match stream.write(&output[written..]) {
+            Ok(0) => return Err(std::io::Error::from(ErrorKind::WriteZero).into()),
+            Ok(count) => written += count,
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                if Instant::now() >= deadline {
+                    return Err(anyhow!("broker IPC response timed out"));
+                }
+                #[cfg(windows)]
+                thread::sleep(IPC_POLL_INTERVAL);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    stream.flush()?;
+    Ok(())
+}
+
+fn read_request_line(mut reader: impl BufRead) -> Result<Vec<u8>> {
+    let mut input = Vec::new();
+    let deadline = Instant::now() + IPC_TIMEOUT;
+    loop {
+        match reader.fill_buf() {
+            Ok([]) => {
+                #[cfg(not(windows))]
+                break;
+                #[cfg(windows)]
+                {
+                    // PIPE_NOWAIT reports an empty read while the peer is still
+                    // connected but has not produced another byte yet.
+                    if Instant::now() >= deadline {
+                        return Err(anyhow!("broker IPC request timed out"));
+                    }
+                    thread::sleep(IPC_POLL_INTERVAL);
+                }
+            }
+            Ok(available) => {
+                let newline = available.iter().position(|byte| *byte == b'\n');
+                let consumed = newline.map_or(available.len(), |index| index + 1);
+                let payload_len = newline.unwrap_or(available.len());
+                input.extend_from_slice(&available[..payload_len]);
+                reader.consume(consumed);
+
+                // Allow one possible CR until the following LF is observed, but
+                // never retain more than MAX_REQUEST_BYTES + 1 bytes.
+                if input.len() > MAX_REQUEST_BYTES + 1
+                    || (input.len() == MAX_REQUEST_BYTES + 1 && input.last() != Some(&b'\r'))
+                {
+                    return Err(anyhow!("broker IPC request exceeds 4 MiB"));
+                }
+                if newline.is_some() {
+                    if input.last() == Some(&b'\r') {
+                        input.pop();
+                    }
+                    break;
+                }
+            }
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                if Instant::now() >= deadline {
+                    return Err(anyhow!("broker IPC request timed out"));
+                }
+                #[cfg(windows)]
+                thread::sleep(IPC_POLL_INTERVAL);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    if input.len() > MAX_REQUEST_BYTES {
         return Err(anyhow!("broker IPC request exceeds 4 MiB"));
     }
-    let (response, shutdown) = match serde_json::from_str::<DaemonRequest>(input.trim()) {
-        Ok(request) => handle_request(request, pool),
-        Err(error) => (
-            DaemonResponse::failure(format!("invalid daemon request JSON: {error}")),
-            false,
-        ),
-    };
-    let mut stream = reader.into_inner();
-    writeln!(stream, "{}", serde_json::to_string(&response)?)?;
-    stream.flush()?;
-    Ok(shutdown)
+    Ok(input)
+}
+
+#[cfg(not(windows))]
+fn configure_server_read(stream: &interprocess::local_socket::Stream) -> Result<()> {
+    stream.set_recv_timeout(Some(IPC_TIMEOUT))?;
+    stream.set_send_timeout(Some(IPC_TIMEOUT))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn configure_server_read(stream: &interprocess::local_socket::Stream) -> Result<()> {
+    // The named-pipe backend has no timeout API. Nonblocking reads plus the
+    // deadline in read_request_line provide equivalent bounded behavior.
+    stream.set_nonblocking(true)?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn configure_client_timeouts(stream: &interprocess::local_socket::Stream) -> Result<()> {
+    stream.set_recv_timeout(Some(IPC_TIMEOUT))?;
+    stream.set_send_timeout(Some(IPC_TIMEOUT))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn configure_client_timeouts(stream: &interprocess::local_socket::Stream) -> Result<()> {
+    stream.set_nonblocking(true)?;
+    Ok(())
 }
 
 fn handle_request(request: DaemonRequest, pool: &TaskPool) -> (DaemonResponse, bool) {
     let response = match request {
         DaemonRequest::Ping => pool.stats_response(),
         DaemonRequest::Submit { request } => match pool.submit(request) {
-            Ok(task_id) => {
-                let task = pool.task(&task_id).expect("newly submitted task must exist");
-                pool.task_response(&task_id, task)
-            }
+            Ok(task_id) => match pool.task(&task_id) {
+                Ok(task) => pool.task_response(&task_id, task),
+                Err(error) => DaemonResponse::failure(format!("{error:#}")),
+            },
             Err(error) => DaemonResponse::failure(format!("{error:#}")),
         },
         DaemonRequest::TaskStatus { task_id } => match pool.task(&task_id) {
@@ -358,29 +340,10 @@ fn handle_request(request: DaemonRequest, pool: &TaskPool) -> (DaemonResponse, b
     (response, false)
 }
 
-fn now_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-}
-
-fn lock_error<T>(_: std::sync::PoisonError<T>) -> anyhow::Error {
-    anyhow!("credential broker task state lock was poisoned")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn terminal_task_state_is_detected() {
-        assert!(!TaskState::Queued.is_terminal());
-        assert!(!TaskState::Running.is_terminal());
-        assert!(TaskState::Succeeded.is_terminal());
-        assert!(TaskState::Failed.is_terminal());
-        assert!(TaskState::Cancelled.is_terminal());
-    }
+    use std::io::Cursor;
 
     #[test]
     fn default_endpoint_matches_platform_transport() {
@@ -388,5 +351,30 @@ mod tests {
         assert!(DEFAULT_ENDPOINT.starts_with(r"\\.\pipe\"));
         #[cfg(not(windows))]
         assert!(DEFAULT_ENDPOINT.ends_with(".sock"));
+    }
+
+    #[test]
+    fn request_reader_accepts_the_maximum_payload() {
+        let mut input = vec![b'x'; MAX_REQUEST_BYTES];
+        input.push(b'\n');
+        assert_eq!(
+            read_request_line(Cursor::new(input)).unwrap().len(),
+            MAX_REQUEST_BYTES
+        );
+    }
+
+    #[test]
+    fn request_reader_rejects_input_beyond_limit_while_reading() {
+        let input = vec![b'x'; MAX_REQUEST_BYTES + 1];
+        let error = read_request_line(Cursor::new(input)).unwrap_err();
+        assert_eq!(error.to_string(), "broker IPC request exceeds 4 MiB");
+    }
+
+    #[test]
+    fn request_reader_rejects_oversized_line_with_terminator() {
+        let mut input = vec![b'x'; MAX_REQUEST_BYTES + 1];
+        input.push(b'\n');
+        let error = read_request_line(Cursor::new(input)).unwrap_err();
+        assert_eq!(error.to_string(), "broker IPC request exceeds 4 MiB");
     }
 }
