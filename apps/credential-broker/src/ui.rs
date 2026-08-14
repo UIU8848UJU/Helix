@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Result};
 #[cfg(windows)]
 use anyhow::Context;
+use anyhow::{Result, anyhow};
 #[cfg(windows)]
 use zeroize::{Zeroize, Zeroizing};
 
@@ -23,9 +23,7 @@ pub fn enroll(username: &str, targets: &[String], separate_passwords: bool) -> R
 
     if separate_passwords {
         for target in targets {
-            let message = format!(
-                "Enter the password for user {username}.\nCredential: {target}"
-            );
+            let message = format!("Enter the password for user {username}.\nCredential: {target}");
             let (entered, password) =
                 windows::prompt(username, "Helix Credential Enrollment", &message)?;
             credential::write(target, &entered, password.as_str())?;
@@ -68,13 +66,13 @@ mod windows {
     use super::*;
     use std::{ffi::c_void, ptr};
     use windows_sys::Win32::Security::Credentials::{
-        CredFree, CredPackAuthenticationBufferW, CredUnPackAuthenticationBufferW,
-        CredUIPromptForWindowsCredentialsW, CREDUI_INFOW, CREDUIWIN_GENERIC,
-        CRED_PACK_GENERIC_CREDENTIALS,
+        CRED_PACK_GENERIC_CREDENTIALS, CREDUI_INFOW, CREDUIWIN_GENERIC, CredFree,
+        CredPackAuthenticationBufferW, CredUIPromptForWindowsCredentialsW,
+        CredUnPackAuthenticationBufferW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, GetForegroundWindow, SetForegroundWindow, SetWindowPos, ShowWindow,
-        HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE,
+        FindWindowW, GetForegroundWindow, HWND_TOPMOST, SW_RESTORE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_SHOWWINDOW, SetForegroundWindow, SetWindowPos, ShowWindow,
     };
 
     const ERROR_CANCELLED: u32 = 1223;
@@ -85,7 +83,10 @@ mod windows {
     }
 
     fn wide_vec_to_string(value: &[u16]) -> String {
-        let len = value.iter().position(|&unit| unit == 0).unwrap_or(value.len());
+        let len = value
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(value.len());
         String::from_utf16_lossy(&value[..len])
     }
 
@@ -145,7 +146,9 @@ mod windows {
             }
         }
         if in_size == 0 {
-            return Err(anyhow!("CredPackAuthenticationBufferW returned a zero-sized buffer"));
+            return Err(anyhow!(
+                "CredPackAuthenticationBufferW returned a zero-sized buffer"
+            ));
         }
         let mut in_auth = vec![0u8; in_size as usize];
         let ok = unsafe {
@@ -200,11 +203,14 @@ mod windows {
             return Err(anyhow!("Credential UI was cancelled by the user"));
         }
         if code != 0 {
-            return Err(std::io::Error::from_raw_os_error(code as i32))
-                .with_context(|| format!("CredUIPromptForWindowsCredentialsW failed with code {code}"));
+            return Err(std::io::Error::from_raw_os_error(code as i32)).with_context(|| {
+                format!("CredUIPromptForWindowsCredentialsW failed with code {code}")
+            });
         }
         if out_auth.is_null() || out_size == 0 {
-            return Err(anyhow!("CredUIPromptForWindowsCredentialsW returned no auth buffer"));
+            return Err(anyhow!(
+                "CredUIPromptForWindowsCredentialsW returned no auth buffer"
+            ));
         }
 
         let unpacked = unpack_auth_buffer(out_auth, out_size);
@@ -286,7 +292,7 @@ mod windows {
         use std::ffi::c_void;
         use std::ptr;
         use windows_sys::Win32::Security::Credentials::{
-            CredPackAuthenticationBufferW, CRED_PACK_GENERIC_CREDENTIALS,
+            CRED_PACK_GENERIC_CREDENTIALS, CredPackAuthenticationBufferW,
         };
 
         #[test]
@@ -336,11 +342,8 @@ mod windows {
             assert_eq!(ok, 1, "pack should succeed");
             packed.truncate(size as usize);
 
-            let (entered, secret) = unpack_auth_buffer(
-                packed.as_mut_ptr().cast::<c_void>(),
-                size,
-            )
-            .expect("unpack must not crash on an empty domain field");
+            let (entered, secret) = unpack_auth_buffer(packed.as_mut_ptr().cast::<c_void>(), size)
+                .expect("unpack must not crash on an empty domain field");
             assert_eq!(entered, "developer");
             assert_eq!(secret, "s3cret");
         }
