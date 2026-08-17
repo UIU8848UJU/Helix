@@ -37,8 +37,8 @@ jobs:
       - name: Build
         run: npm run build
 
-  credential-broker:
-    name: credential-broker (${{ matrix.os }})
+  helixd:
+    name: helixd (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -66,13 +66,13 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: apps/credential-broker
+          workspaces: .
 
       - name: Test broker in release mode
-        run: cargo test --release --manifest-path apps/credential-broker/Cargo.toml
+        run: cargo test --release --workspace
 
       - name: Build release broker
-        run: cargo build --release --manifest-path apps/credential-broker/Cargo.toml
+        run: cargo build --release --workspace
 
       - name: Test Broker daemon IPC
         run: node scripts/test-broker-daemon.mjs

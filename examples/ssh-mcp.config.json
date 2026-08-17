@@ -9,7 +9,7 @@
     "strictHostKeyChecking": false,
     "auditEnabled": true,
     "auditCommandMode": "plain",
-    "credentialBrokerPath": "C:\\Tools\\Helix\\helix-credential-broker.exe"
+    "credentialBrokerPath": "C:\\Tools\\Helix\\helixd.exe"
   },
   "hosts": {
     "build-key": {

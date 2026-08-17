@@ -11,7 +11,7 @@ MCP / Skill-Matrix clients
         |
         | local IPC
         v
-Credential Broker Daemon (IPC lifecycle and request routing)
+helixd (Credential Broker Daemon; IPC lifecycle and request routing)
         |
         +-- TaskPool (task state, bounded queue and fixed workers)
         |       |
@@ -54,8 +54,8 @@ The TypeScript MCP process auto-starts the daemon on first use when the endpoint
 ## Protocol
 
 Heavy Broker operations are no longer synchronous one-shot stdin RPCs. The daemon protocol has an
-explicit `protocolVersion` plus capabilities. The `ssh_pty` request-set change is protocol v2;
-clients require version 2 and the capabilities they use. The endpoint name remains stable so a new
+explicit `protocolVersion` plus capabilities. The `ssh_pty` request-set change was protocol v2;
+protocol v3 adds `spool_v1` (large-output spooling) and Harness/Sandbox execution policy, so clients require version 3 and the capabilities they use. The endpoint name remains stable so a new
 client can find and shut down an incompatible resident daemon.
 
 ### Submit
@@ -82,8 +82,8 @@ The daemon immediately returns a TaskID and state:
 ```json
 {
   "ok": true,
-  "protocolVersion": 2,
-  "capabilities": ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "ssh_pty"],
+  "protocolVersion": 3,
+  "capabilities": ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "ssh_pty", "spool_v1"],
   "taskId": "broker-...",
   "state": "queued"
 }
@@ -137,7 +137,7 @@ The daemon supports:
 and the CLI exposes:
 
 ```text
-helix-credential-broker daemon-stop
+helixd daemon-stop
 ```
 
 When MCP finds a daemon with an incompatible version or missing capability, it requests shutdown
@@ -219,7 +219,7 @@ A single pooled Session is checked out by one operation at a time. Parallel work
 
 ## Runtime Binary and Upgrade Lifecycle
 
-On Windows, a running executable can prevent the build output from being replaced. Helix therefore does not run the long-lived daemon directly from `apps/credential-broker/target/release` after installation.
+On Windows, a running executable can prevent the build output from being replaced. Helix therefore does not run the long-lived daemon directly from `target/release` after installation.
 
 The installer:
 
@@ -227,7 +227,7 @@ The installer:
 1. stops an existing Broker daemon when possible
 2. builds/tests the repository binary
 3. hashes the resulting executable
-4. copies it to %APPDATA%/Helix/bin/helix-credential-broker-<hash>.exe
+4. copies it to %APPDATA%/Helix/bin/helixd-<hash>.exe
 5. writes that runtime path to credentialBrokerPath
 6. lets MCP auto-start the new daemon on first use
 ```
@@ -287,6 +287,7 @@ Current limits:
 - maximum idle Sessions per connection key;
 - completed Broker Task retention TTL.
 - a 64 MiB global retained-result budget with deterministic oldest-terminal eviction;
+- outputs above 64 KiB spill to the runtime spool directory and are read via spool_read / spool_tail / spool_search;
 - one shared `stdout + stderr` collection budget applied while reading;
 - a 64-connection IPC handler cap and five-second framing/read/write deadlines.
 

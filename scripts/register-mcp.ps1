@@ -101,7 +101,7 @@ if (-not $BrokerPath) {
     }
 }
 if (-not $BrokerPath) {
-    $BrokerPath = Join-Path $RootDir "apps\credential-broker\target\release\helix-credential-broker.exe"
+    $BrokerPath = Join-Path $RootDir "target\release\helixd.exe"
 }
 $BrokerPath = Resolve-FullPath $BrokerPath
 

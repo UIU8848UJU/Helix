@@ -2,15 +2,13 @@ import { spawn } from "node:child_process";
 import { createConnection } from "node:net";
 import path from "node:path";
 
-const PROTOCOL_VERSION = 2;
+const PROTOCOL_VERSION = 3;
 const root = process.cwd();
 const executable = path.join(
   root,
-  "apps",
-  "credential-broker",
   "target",
   "release",
-  process.platform === "win32" ? "helix-credential-broker.exe" : "helix-credential-broker",
+  process.platform === "win32" ? "helixd.exe" : "helixd",
 );
 const unique = `${process.pid}-${Date.now()}`;
 const endpoint = process.platform === "win32"
@@ -60,7 +58,7 @@ function assertProtocol(response) {
   if (response.protocolVersion !== PROTOCOL_VERSION) {
     throw new Error(`expected protocolVersion=${PROTOCOL_VERSION}, got ${response.protocolVersion}`);
   }
-  for (const capability of ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "ssh_pty"]) {
+  for (const capability of ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "ssh_pty", "spool_v1"]) {
     if (!response.capabilities?.includes(capability)) {
       throw new Error(`missing daemon capability: ${capability}`);
     }
@@ -254,7 +252,7 @@ try {
   await Promise.race([new Promise((resolve) => alive[0].once("exit", resolve)), sleep(2000)]);
   if (alive[0].exitCode === null) throw new Error("startup-race winner did not shut down");
 
-  console.log(`Broker daemon IPC smoke test passed on ${process.platform}: ${endpoint}`);
+  console.log(`helixd daemon IPC smoke test passed on ${process.platform}: ${endpoint}`);
 } finally {
   if (!shutdownRequested || child.exitCode === null) {
     child.kill();

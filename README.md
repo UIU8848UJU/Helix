@@ -1,6 +1,6 @@
 # Helix
 
-Helix 是面向 AI Agent 的远程操作基础设施。当前模块提供 SSH MCP、Rust Credential Broker Daemon、主机管理、文件传输、Docker/Compose、环境探测、直接 sudo 和远端持久作业。
+Helix 是面向 AI Agent 的远程执行与会话 Runtime。当前由 SSH MCP + helixd（Rust 常驻 daemon）提供凭据、SSH/PTY/SFTP、任务队列、主机管理、Docker/Compose 与远端持久作业。
 
 ## 快速安装
 
@@ -9,7 +9,7 @@ Windows：
 ```powershell
 .\scripts\install.ps1
 .\scripts\build-broker-release.ps1
-.\scripts\install.ps1 -BrokerBinary .\dist\helix-credential-broker.exe
+.\scripts\install.ps1 -BrokerBinary .\dist\helixd.exe
 ```
 
 Linux/macOS：
@@ -45,8 +45,11 @@ sudo_exec 直接执行
 
 ```text
 apps/ssh-mcp/                 TypeScript MCP 控制层
-apps/credential-broker/       Rust 常驻凭据、SSH Session 与任务 Broker
-docs/architecture/            Broker 等架构设计文档
+apps/helixd/                  Rust 常驻 daemon（凭据、任务、会话与终端运行时）
+crates/helix-core/            Transport/任务池/Spool/沙箱策略等核心库
+crates/helix-credential/      Windows 凭据存储与 UI
+crates/helix-transport-ssh/   SSH Transport（exec/PTY/SFTP/sudo）
+docs/architecture/            Helix/helixd 架构设计文档
 docs/guides/                  AI 与人工操作指南
 skills/                       Helix 远程操作 Skill
 examples/                     配置示例
@@ -60,7 +63,7 @@ scripts/                      安装、注册、管理和卸载脚本
 - `host_update`：修改连接、路径和认证配置；
 - `host_offboard`：删除主机配置；
 - `credential_status`：检查凭据是否存在；
-- `credential_enroll_launch`：由 credential broker 弹出 Windows 原生凭据对话框；
+- `credential_enroll_launch`：由 helixd 弹出 Windows 原生凭据对话框；
 - `credential_enroll_request`：无桌面环境的命令行备用方案；
 - `ssh_check` / `ssh_exec`：连接检查和普通命令（Windows 主机自动走 PowerShell `-EncodedCommand`，支持 win→win 命令执行）；
 - `sudo_exec`：直接 sudo；
@@ -78,7 +81,7 @@ scripts/                      安装、注册、管理和卸载脚本
 
 ```text
 MCP
-  → spawn helix-credential-broker serve-once
+  → spawn helixd serve-once
   → TCP connect
   → SSH KEX
   → password auth
@@ -93,7 +96,7 @@ MCP
 ```text
 MCP / Skill-Matrix subprocesses
   → Named Pipe (Windows) / Unix Domain Socket (Unix)
-  → Credential Broker Daemon
+  → helixd daemon
   → submit TaskID
   → bounded queue
   → fixed worker pool
@@ -108,9 +111,9 @@ Windows: \\.\pipe\helix-credential-broker-v1
 Unix:    /tmp/helix-credential-broker-v1.sock
 ```
 
-MCP 第一次需要密码 SSH 时会自动启动 Broker Daemon。正常调用不需要人工启动守护进程，也不会再为每条命令创建一个 Rust 进程。
+MCP 第一次需要密码 SSH 时会自动启动 helixd daemon。正常调用不需要人工启动守护进程，也不会再为每条命令创建一个 Rust 进程。
 
-Broker 协议从同步 stdin RPC 改成：
+Daemon 协议从同步 stdin RPC 改成：
 
 ```text
 submit
@@ -127,8 +130,10 @@ queueCapacity = max(32, workers * 16)（默认 64）
 SSH idle Session TTL = 120s
 max idle Sessions / connection key = 2
 握手重试 = 200ms / 500ms / 1000ms
-Broker Task 完成态保留 = 600s
+helixd Task 完成态保留 = 600s
 ```
+
+协议版本为 v3，能力含 `task_pool_v2` / `bounded_ipc` / `owner_only_ipc` / `ssh_pty` / `spool_v1`。大输出（>64 KiB）自动落盘到 spool，IPC 只返回元数据，通过 `spool_read` / `spool_tail` / `spool_search` 读取。执行策略支持 **Harness**（开发，默认，拦截 `rm -rf /`、reboot、mkfs 等破坏性命令）和 **Sandbox**（生产，read-only + sudo 限制 + 路径/命令白名单），由 `helixd serve-daemon --mode harness|sandbox` 选择。
 
 因此即使 Skill-Matrix 同时启动 20 个子进程请求远端信息，也不会同时创建 20 个 Broker 进程和 20 个 SSH 握手。请求先进入有界队列，最多由固定数量 worker 执行。
 
@@ -372,7 +377,7 @@ host_list
   → ssh_check
   → environment_probe
   → 短任务：ssh_exec / sudo_exec / Docker / Compose / 传输
-      ↳ 密码主机由 Broker Daemon 自动 submit + poll + Session 复用
+      ↳ 密码主机由 helixd daemon 自动 submit + poll + Session 复用
   → 长任务：job_start → job_status / job_logs
 ```
 
@@ -383,8 +388,8 @@ npm install
 npm run check
 npm test
 npm run build
-cargo test --release --manifest-path apps/credential-broker/Cargo.toml
-cargo build --release --manifest-path apps/credential-broker/Cargo.toml
+cargo test --release --workspace
+cargo build --release --workspace
 ```
 
 完整 AI 操作说明：

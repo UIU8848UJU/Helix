@@ -2,32 +2,32 @@
 
 ## 1. 目的
 
-`helix-credential-broker.exe` 是 Helix 的本地高安全执行边界，用于处理无法使用 SSH 私钥的 Windows 单机内网场景。
+`helixd.exe` 是 Helix 的本地高安全执行边界，用于处理无法使用 SSH 私钥的 Windows 单机内网场景。
 
-TypeScript SSH MCP 不读取、返回或记录明文密码。密码只由 Rust Broker 从 Windows Credential Manager 读取，并直接用于 SSH 密码认证、SFTP 或审核后的 `sudo -S` 标准输入。
+TypeScript SSH MCP 不读取、返回或记录明文密码。密码只由 helixd（Rust daemon）从 Windows Credential Manager 读取，并直接用于 SSH 密码认证、SFTP 或审核后的 `sudo -S` 标准输入。
 
 ```text
 AI / MCP Client
   -> Helix SSH MCP (host + command, no password)
-  -> helix-credential-broker.exe
+  -> helixd.exe
   -> Windows Credential Manager
   -> SSH / SFTP / sudo stdin
 ```
 
-Broker 不提供 `get_password`、`decrypt_password` 或输出秘密的接口。
+helixd 不提供 `get_password`、`decrypt_password` 或输出秘密的接口。
 
 ## 2. 构建
 
 需要 Rust 1.85+：
 
 ```powershell
-cargo build --release --manifest-path apps/credential-broker/Cargo.toml
+cargo build --release --workspace
 ```
 
 产物：
 
 ```text
-apps/credential-broker/target/release/helix-credential-broker.exe
+target/release/helixd.exe
 ```
 
 运行环境只需要编译后的 EXE；内网机器不一定需要安装 Rust。
@@ -37,7 +37,7 @@ apps/credential-broker/target/release/helix-credential-broker.exe
 登录密码：
 
 ```powershell
-helix-credential-broker.exe credential-store `
+helixd.exe credential-store `
   --target "Helix/ssh/build-password/login" `
   --username "developer"
 ```
@@ -45,7 +45,7 @@ helix-credential-broker.exe credential-store `
 sudo 密码：
 
 ```powershell
-helix-credential-broker.exe credential-store `
+helixd.exe credential-store `
   --target "Helix/ssh/build-password/sudo" `
   --username "developer"
 ```
@@ -55,14 +55,14 @@ helix-credential-broker.exe credential-store `
 检查是否存在：
 
 ```powershell
-helix-credential-broker.exe credential-exists `
+helixd.exe credential-exists `
   --target "Helix/ssh/build-password/login"
 ```
 
 删除：
 
 ```powershell
-helix-credential-broker.exe credential-delete `
+helixd.exe credential-delete `
   --target "Helix/ssh/build-password/login"
 ```
 
@@ -89,7 +89,7 @@ helix-credential-broker.exe credential-delete `
 }
 ```
 
-`settings.credentialBrokerPath` 或环境变量 `HELIX_CREDENTIAL_BROKER` 指向 Broker EXE。
+`settings.credentialBrokerPath` 或环境变量 `HELIX_CREDENTIAL_BROKER` 指向 helixd EXE。
 
 ## 5. sudo 审批流程
 

@@ -9,7 +9,7 @@ param(
     [ValidateSet("Harness", "Personal", "EnterpriseLocked")]
     [string]$DeploymentMode = "Harness",
 
-    # Path to a pre-built release broker binary (e.g. dist\helix-credential-broker.exe).
+    # Path to a pre-built release broker binary (e.g. dist\helixd.exe).
     # When provided, the Rust toolchain is not required: cargo test/build are skipped
     # and the given binary is installed into the runtime bin directory as-is.
     [string]$BrokerBinary = ""
@@ -131,11 +131,11 @@ try {
             throw "Pre-built broker binary was not found: $BrokerBinary"
         }
     } else {
-        & cargo test --release --manifest-path "apps/credential-broker/Cargo.toml"
-        if ($LASTEXITCODE -ne 0) { throw "Rust broker tests failed" }
+        & cargo test --release --workspace
+        if ($LASTEXITCODE -ne 0) { throw "Rust daemon tests failed" }
 
-        & cargo build --release --manifest-path "apps/credential-broker/Cargo.toml"
-        if ($LASTEXITCODE -ne 0) { throw "Rust broker build failed" }
+        & cargo build --release --workspace
+        if ($LASTEXITCODE -ne 0) { throw "Rust daemon build failed" }
     }
 } finally {
     $ErrorActionPreference = $OriginalErrorActionPreference
@@ -145,10 +145,10 @@ try {
 $BuiltBroker = if ($BrokerBinary) {
     (Resolve-Path -LiteralPath $BrokerBinary).Path
 } else {
-    Join-Path $RootDir "apps\credential-broker\target\release\helix-credential-broker.exe"
+    Join-Path $RootDir "target\release\helixd.exe"
 }
 if (-not (Test-Path -LiteralPath $BuiltBroker)) {
-    throw "Rust broker was not found: $BuiltBroker"
+    throw "Rust daemon was not found: $BuiltBroker"
 }
 
 $RuntimeDir = Split-Path $ConfigFile -Parent
@@ -160,7 +160,7 @@ New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 # from being blocked by a running Windows executable and lets upgrades switch binaries atomically.
 $BrokerHash = (Get-FileHash -LiteralPath $BuiltBroker -Algorithm SHA256).Hash.ToLowerInvariant()
 $BrokerTag = $BrokerHash.Substring(0, 16)
-$Broker = Join-Path $BinDir "helix-credential-broker-$BrokerTag.exe"
+$Broker = Join-Path $BinDir "helixd-$BrokerTag.exe"
 if (-not (Test-Path -LiteralPath $Broker)) {
     Copy-Item -LiteralPath $BuiltBroker -Destination $Broker -Force
 }
@@ -230,7 +230,7 @@ $BrowserEntry = Join-Path $RootDir "apps\browser-mcp\build\index.js"
 Write-Host ""
 Write-Host "Helix SSH MCP installation completed."
 Write-Host "Entry:  $Entry"
-Write-Host "Broker runtime: $Broker"
+Write-Host "Daemon runtime: $Broker"
 Write-Host "Config: $ConfigFile"
 Write-Host "AI guide: $GuideFile"
 Write-Host "Skill:    $SkillFile"
@@ -241,7 +241,7 @@ Write-Host "Deployment mode: $DeploymentMode"
 Write-Host "Host mutation: $($Config.settings.allowHostMutation)"
 Write-Host "Policy mutation: $($Config.settings.allowPolicyMutation)"
 Write-Host "Strict host-key checking: $($Config.settings.strictHostKeyChecking)"
-Write-Host "Broker: persistent daemon; Named Pipe + bounded task pool + SSH Session pool"
+Write-Host "Daemon: persistent daemon; Named Pipe + bounded task pool + SSH Session pool"
 Write-Host "Direct sudo: enabled; destructive commands are blocked by the Harness guard"
 Write-Host ""
 Write-Host "MCP client configuration:"
