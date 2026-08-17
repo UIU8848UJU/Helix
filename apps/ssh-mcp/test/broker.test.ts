@@ -242,20 +242,28 @@ describe("broker ssh_pty request builder (TDD PTY-001)", () => {
   });
 });
 
-describe("broker daemon v2 capability contract", () => {
-  it("accepts the v2 capability set", () => {
+describe("broker daemon v3 capability contract", () => {
+  it("accepts the v3 capability set", () => {
     expect(() => assertProtocolCompatible({
       ok: true,
-      protocolVersion: 2,
-      capabilities: ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "ssh_pty"],
+      protocolVersion: 3,
+      capabilities: ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "ssh_pty", "spool_v1"],
     })).not.toThrow();
   });
 
   it("rejects a same-version daemon without ssh_pty", () => {
     expect(() => assertProtocolCompatible({
       ok: true,
-      protocolVersion: 2,
+      protocolVersion: 3,
       capabilities: ["task_pool_v2", "bounded_ipc", "owner_only_ipc"],
     })).toThrow(/missing required capabilities: ssh_pty/);
+  });
+
+  it("rejects a same-version daemon without spool_v1", () => {
+    expect(() => assertProtocolCompatible({
+      ok: true,
+      protocolVersion: 3,
+      capabilities: ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "ssh_pty"],
+    })).toThrow(/missing required capabilities: spool_v1/);
   });
 });

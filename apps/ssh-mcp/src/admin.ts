@@ -115,7 +115,7 @@ export async function launchCredentialWindow(
   }
   await fs.access(brokerPath).catch(() => {
     throw new Error(
-      `Helix credential broker was not found: ${brokerPath}. Re-run scripts\\install.ps1 or build apps\\credential-broker.`,
+      `Helix credential broker was not found: ${brokerPath}. Re-run scripts\\install.ps1 or build apps\\helixd.`,
     );
   });
   const child = spawn(brokerPath, buildBrokerCredentialUiArgs(input), {

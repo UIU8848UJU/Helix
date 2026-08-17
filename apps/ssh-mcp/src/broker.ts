@@ -1,12 +1,20 @@
 import { promises as fs } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createConnection } from "node:net";
-import type { BrokerResponse, ExecutionResult, GlobalSettings, HostConfig } from "./types.js";
+import type {
+  BrokerResponse,
+  ExecutionResult,
+  GlobalSettings,
+  HostConfig,
+  SpoolReadResult,
+  SpoolSearchResult,
+  SpoolTailResult,
+} from "./types.js";
 import { getCredentialBrokerPath } from "./paths.js";
 import { newRequestId, writeAudit } from "./audit.js";
 
-const BROKER_PROTOCOL_VERSION = 2;
-const REQUIRED_BROKER_CAPABILITIES = ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "ssh_pty"] as const;
+const BROKER_PROTOCOL_VERSION = 3;
+const REQUIRED_BROKER_CAPABILITIES = ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "ssh_pty", "spool_v1"] as const;
 const BROKER_ENDPOINT = process.platform === "win32"
   ? "\\\\.\\pipe\\helix-credential-broker-v1"
   : "/tmp/helix-credential-broker-v1.sock";
@@ -20,6 +28,19 @@ interface BrokerDaemonResponse {
   taskId?: string;
   state?: BrokerTaskState;
   result?: BrokerResponse;
+  spool?: {
+    content?: string;
+    nextCursor?: number;
+    eof?: boolean;
+    size?: number;
+    start?: number;
+    matches?: Array<{
+      line: number;
+      text: string;
+      before?: string[];
+      after?: string[];
+    }>;
+  };
   cancelRequested?: boolean;
   workers?: number;
   queuedTasks?: number;
@@ -204,7 +225,104 @@ function responseToExecution(response: BrokerResponse): ExecutionResult {
     timedOut: response.timedOut ?? false,
     truncated: response.truncated ?? false,
     durationMs: response.durationMs ?? 0,
+    stdoutRef: response.stdoutRef,
+    stderrRef: response.stderrRef,
+    stdoutSize: response.stdoutSize,
+    stderrSize: response.stderrSize,
   };
+}
+
+/** Read a spooled stream range by cursor. */
+export async function brokerSpoolRead(
+  settings: GlobalSettings,
+  resultRef: string,
+  cursor = 0,
+  maxBytes = 32 * 1024,
+): Promise<SpoolReadResult> {
+  await ensureBrokerDaemon(settings);
+  const response = await daemonRpc({
+    op: "spool_read",
+    result_ref: resultRef,
+    cursor,
+    max_bytes: maxBytes,
+  }, 5_000);
+  assertProtocolCompatible(response);
+  if (!response.ok) {
+    throw new Error(response.error ?? "spool read failed");
+  }
+  return {
+    content: response.spool?.content ?? "",
+    nextCursor: response.spool?.nextCursor ?? 0,
+    eof: response.spool?.eof ?? false,
+    size: response.spool?.size ?? 0,
+  };
+}
+
+/** Read the tail of a spooled stream. */
+export async function brokerSpoolTail(
+  settings: GlobalSettings,
+  resultRef: string,
+  maxBytes = 32 * 1024,
+): Promise<SpoolTailResult> {
+  await ensureBrokerDaemon(settings);
+  const response = await daemonRpc({
+    op: "spool_tail",
+    result_ref: resultRef,
+    max_bytes: maxBytes,
+  }, 5_000);
+  assertProtocolCompatible(response);
+  if (!response.ok) {
+    throw new Error(response.error ?? "spool tail failed");
+  }
+  return {
+    content: response.spool?.content ?? "",
+    size: response.spool?.size ?? 0,
+    start: response.spool?.start ?? 0,
+  };
+}
+
+/** Search a spooled stream with optional regex and context lines. */
+export async function brokerSpoolSearch(
+  settings: GlobalSettings,
+  resultRef: string,
+  pattern: string,
+  options: { regex?: boolean; before?: number; after?: number; maxMatches?: number } = {},
+): Promise<SpoolSearchResult> {
+  await ensureBrokerDaemon(settings);
+  const response = await daemonRpc({
+    op: "spool_search",
+    result_ref: resultRef,
+    pattern,
+    regex: options.regex ?? false,
+    before: options.before ?? 0,
+    after: options.after ?? 0,
+    max_matches: options.maxMatches ?? 20,
+  }, 5_000);
+  assertProtocolCompatible(response);
+  if (!response.ok) {
+    throw new Error(response.error ?? "spool search failed");
+  }
+  return { matches: response.spool?.matches ?? [] };
+}
+
+/** Resolve spooled stdout/stderr into inline content when refs are present. */
+export async function resolveSpoolRefs(
+  settings: GlobalSettings,
+  response: BrokerResponse,
+): Promise<BrokerResponse> {
+  if (!response.stdoutRef && !response.stderrRef) {
+    return response;
+  }
+  const resolved = { ...response };
+  if (response.stdoutRef) {
+    const read = await brokerSpoolRead(settings, response.stdoutRef, 0, response.stdoutSize ?? 32 * 1024);
+    resolved.stdout = read.content;
+  }
+  if (response.stderrRef) {
+    const read = await brokerSpoolRead(settings, response.stderrRef, 0, response.stderrSize ?? 32 * 1024);
+    resolved.stderr = read.content;
+  }
+  return resolved;
 }
 
 function sleep(milliseconds: number): Promise<void> {
@@ -407,7 +525,7 @@ export async function runBroker(
     switch (status.state) {
       case "succeeded":
         if (!status.result) throw new Error(`Credential broker task ${taskId} completed without a result`);
-        return status.result;
+        return await resolveSpoolRefs(settings, status.result);
       case "failed":
         throw new Error(status.result?.error ?? status.error ?? `Credential broker task ${taskId} failed`);
       case "cancelled":

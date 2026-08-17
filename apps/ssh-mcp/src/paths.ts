@@ -40,9 +40,9 @@ export function getCredentialBrokerPath(settings?: GlobalSettings): string {
   if (configured) return path.resolve(expandHome(configured));
   const here = path.dirname(fileURLToPath(import.meta.url));
   const executable = process.platform === "win32"
-    ? "helix-credential-broker.exe"
-    : "helix-credential-broker";
-  return path.resolve(here, "../../credential-broker/target/release", executable);
+    ? "helixd.exe"
+    : "helixd";
+  return path.resolve(here, "../../../target/release", executable);
 }
 
 export function getLocalPathRoots(): string[] {

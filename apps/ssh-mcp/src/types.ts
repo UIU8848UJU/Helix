@@ -52,6 +52,10 @@ export interface ExecutionResult {
   timedOut: boolean;
   truncated: boolean;
   durationMs: number;
+  stdoutRef?: string;
+  stderrRef?: string;
+  stdoutSize?: number;
+  stderrSize?: number;
 }
 
 export interface RemoteExecutionOptions {
@@ -110,10 +114,38 @@ export interface BrokerResponse {
   exitCode?: number;
   stdout?: string;
   stderr?: string;
+  stdoutRef?: string;
+  stderrRef?: string;
+  stdoutSize?: number;
+  stderrSize?: number;
   timedOut?: boolean;
   truncated?: boolean;
   durationMs?: number;
   error?: string;
+}
+
+export interface SpoolReadResult {
+  content: string;
+  nextCursor: number;
+  eof: boolean;
+  size: number;
+}
+
+export interface SpoolTailResult {
+  content: string;
+  size: number;
+  start: number;
+}
+
+export interface SpoolMatch {
+  line: number;
+  text: string;
+  before?: string[];
+  after?: string[];
+}
+
+export interface SpoolSearchResult {
+  matches: SpoolMatch[];
 }
 
 export interface PendingApproval {
