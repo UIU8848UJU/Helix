@@ -1,0 +1,13 @@
+﻿[package]
+name = "helix-transport-ssh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+helix-core = { path = "../helix-core" }
+helix-credential = { path = "../helix-credential" }
+ssh2.workspace = true
+zeroize.workspace = true

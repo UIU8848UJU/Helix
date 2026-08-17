@@ -120,6 +120,7 @@ pub(crate) fn named_pipe_sddl(endpoint: &str) -> Result<String> {
 }
 
 #[cfg(windows)]
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn secure_listener_options(options: ListenerOptions<'_>) -> Result<ListenerOptions<'_>> {
     let sddl = U16CString::from_str(windows_listener_sddl()?)?;
     let descriptor = SecurityDescriptor::deserialize(&sddl)

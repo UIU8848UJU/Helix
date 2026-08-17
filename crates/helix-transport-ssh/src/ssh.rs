@@ -1,5 +1,6 @@
-use crate::task_pool::CancellationToken;
-use crate::{credential::StoredCredential, protocol::BrokerResponse};
+﻿use helix_core::task_pool::CancellationToken;
+use helix_core::protocol::BrokerResponse;
+use helix_credential::credential::StoredCredential;
 use anyhow::{Context, Result, anyhow};
 use ssh2::{CheckResult, KnownHostFileKind, Session, Sftp};
 use std::{
@@ -257,6 +258,7 @@ pub fn execute(
             truncated: Some(captured.truncated),
             duration_ms: Some(started.elapsed().as_millis()),
             error: Some("SSH command timed out".to_owned()),
+            ..BrokerResponse::success()
         });
     }
     channel.wait_close()?;
@@ -273,6 +275,7 @@ pub fn execute(
         truncated: Some(captured.truncated),
         duration_ms: Some(started.elapsed().as_millis()),
         error: None,
+        ..BrokerResponse::success()
     })
 }
 
@@ -367,6 +370,7 @@ pub fn execute_pty(
             truncated: Some(truncated),
             duration_ms: Some(started.elapsed().as_millis()),
             error: Some("PTY command timed out".to_string()),
+            ..BrokerResponse::success()
         });
     }
 
@@ -383,6 +387,7 @@ pub fn execute_pty(
         truncated: Some(truncated || post_truncated),
         duration_ms: Some(started.elapsed().as_millis()),
         error: None,
+        ..BrokerResponse::success()
     })
 }
 
@@ -499,3 +504,5 @@ mod output_tests {
         assert_eq!(stdout.len() + stderr.len(), 1024);
     }
 }
+
+

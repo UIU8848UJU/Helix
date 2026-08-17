@@ -1,4 +1,5 @@
-use crate::{credential, ssh};
+﻿use crate::ssh;
+use helix_credential::credential;
 use anyhow::Result;
 use ssh2::Session;
 use std::{
@@ -171,3 +172,4 @@ mod tests {
         assert!(retryable_connect_error(&error));
     }
 }
+

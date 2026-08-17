@@ -1,27 +1,31 @@
-mod credential;
-mod daemon;
+﻿mod daemon;
 mod engine;
 mod ipc_security;
-mod pool;
-mod protocol;
-mod ssh;
-mod task_pool;
-mod ui;
 
 use anyhow::{Context, Result, anyhow};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use engine::BrokerEngine;
-use protocol::{BrokerRequest, BrokerResponse};
+use helix_core::{
+    protocol::{BrokerRequest, BrokerResponse},
+    sandbox::{ExecutionMode, SandboxPolicy},
+};
+use helix_credential::{credential, ui};
 use std::{
     collections::HashSet,
     io::{self, Read},
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ModeArg {
+    Harness,
+    Sandbox,
+}
+
 #[derive(Debug, Parser)]
 #[command(
-    name = "helix-credential-broker",
+    name = "helixd",
     version,
-    about = "Persistent credential, SSH session and task broker for Helix"
+    about = "Helix daemon: persistent credential, SSH session, task and terminal runtime"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -44,6 +48,24 @@ enum Command {
         session_idle_seconds: u64,
         #[arg(long, default_value_t = 2)]
         max_idle_sessions_per_key: usize,
+        /// Execution policy profile: harness (permissive) or sandbox (locked).
+        #[arg(long, value_enum, default_value_t = ModeArg::Harness)]
+        mode: ModeArg,
+        /// Force read-only remote access (denies sudo and uploads).
+        #[arg(long)]
+        read_only: bool,
+        /// Allow sudo in sandbox mode.
+        #[arg(long)]
+        allow_sudo: bool,
+        /// Restrict remote transfers to this path prefix (repeatable).
+        #[arg(long = "allowed-remote-path")]
+        allowed_remote_paths: Vec<String>,
+        /// Restrict local transfers to this path prefix (repeatable).
+        #[arg(long = "allowed-local-path")]
+        allowed_local_paths: Vec<String>,
+        /// Whitelist a command prefix (repeatable; sandbox only).
+        #[arg(long = "allowed-command")]
+        allowed_commands: Vec<String>,
     },
     /// Ask a running daemon to exit cleanly.
     DaemonStop {
@@ -106,12 +128,50 @@ fn normalize_targets(targets: Vec<String>) -> Result<Vec<String>> {
     Ok(normalized)
 }
 
+fn build_policy(
+    mode: ModeArg,
+    read_only: bool,
+    allow_sudo: bool,
+    allowed_remote_paths: Vec<String>,
+    allowed_local_paths: Vec<String>,
+    allowed_commands: Vec<String>,
+) -> SandboxPolicy {
+    match mode {
+        ModeArg::Harness => SandboxPolicy {
+            mode: ExecutionMode::Harness,
+            read_only_remote: read_only,
+            allow_sudo: allow_sudo || !read_only,
+            allowed_remote_paths: non_empty(allowed_remote_paths),
+            allowed_local_paths: non_empty(allowed_local_paths),
+            allowed_command_prefixes: non_empty(allowed_commands),
+            ..SandboxPolicy::harness()
+        },
+        ModeArg::Sandbox => SandboxPolicy {
+            mode: ExecutionMode::Sandbox,
+            read_only_remote: read_only || !allow_sudo,
+            allow_sudo,
+            allowed_remote_paths: non_empty(allowed_remote_paths),
+            allowed_local_paths: non_empty(allowed_local_paths),
+            allowed_command_prefixes: non_empty(allowed_commands),
+            ..SandboxPolicy::sandbox()
+        },
+    }
+}
+
+fn non_empty(values: Vec<String>) -> Option<Vec<String>> {
+    if values.is_empty() {
+        None
+    } else {
+        Some(values)
+    }
+}
+
 fn serve_once() -> Result<()> {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
     let request: BrokerRequest =
         serde_json::from_str(input.trim()).context("invalid broker request JSON")?;
-    let engine = BrokerEngine::new(1, 1);
+    let engine = BrokerEngine::new(1, 1, SandboxPolicy::harness());
     let response = match engine.handle(request) {
         Ok(response) => response,
         Err(error) => BrokerResponse::failure(format!("{error:#}")),
@@ -129,6 +189,12 @@ fn main() -> Result<()> {
         task_retention_seconds: 600,
         session_idle_seconds: 120,
         max_idle_sessions_per_key: 2,
+        mode: ModeArg::Harness,
+        read_only: false,
+        allow_sudo: false,
+        allowed_remote_paths: Vec::new(),
+        allowed_local_paths: Vec::new(),
+        allowed_commands: Vec::new(),
     }) {
         Command::ServeDaemon {
             endpoint,
@@ -137,14 +203,31 @@ fn main() -> Result<()> {
             task_retention_seconds,
             session_idle_seconds,
             max_idle_sessions_per_key,
-        } => daemon::serve_daemon(
-            &endpoint,
-            workers,
-            queue_capacity,
-            task_retention_seconds,
-            session_idle_seconds,
-            max_idle_sessions_per_key,
-        ),
+            mode,
+            read_only,
+            allow_sudo,
+            allowed_remote_paths,
+            allowed_local_paths,
+            allowed_commands,
+        } => {
+            let policy = build_policy(
+                mode,
+                read_only,
+                allow_sudo,
+                allowed_remote_paths,
+                allowed_local_paths,
+                allowed_commands,
+            );
+            daemon::serve_daemon(
+                &endpoint,
+                workers,
+                queue_capacity,
+                task_retention_seconds,
+                session_idle_seconds,
+                max_idle_sessions_per_key,
+                policy,
+            )
+        }
         Command::DaemonStop { endpoint } => daemon::stop_daemon(&endpoint),
         #[cfg(windows)]
         Command::DaemonAcl { endpoint } => {
@@ -189,6 +272,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use helix_core::protocol::BrokerRequest;
 
     #[test]
     fn ping_protocol_round_trip() {
@@ -264,6 +348,7 @@ mod tests {
 
     #[test]
     fn pty_dimensions_default_to_80x24() {
+        use helix_transport_ssh::ssh;
         assert_eq!(ssh::pty_dimensions(None, None), (80, 24));
         assert_eq!(ssh::pty_dimensions(Some(120), Some(40)), (120, 40));
         assert_eq!(ssh::pty_dimensions(Some(0), Some(0)), (80, 24));
@@ -277,6 +362,27 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(request, BrokerRequest::SshPty { .. }));
+    }
+
+    #[test]
+    fn harness_policy_allows_exec_and_blocks_destructive_commands() {
+        use helix_core::protocol::BrokerRequest as Request;
+        let engine = BrokerEngine::new(1, 1, SandboxPolicy::harness());
+        let denied = engine.handle_with_cancellation(
+            Request::SshExecute {
+                credential_ref: "x".into(),
+                host: "h".into(),
+                port: 22,
+                username: None,
+                command: "rm -rf /".into(),
+                timeout_seconds: 1,
+                max_output_bytes: 1024,
+                strict_host_key_checking: false,
+            },
+            &helix_core::task_pool::CancellationToken::default(),
+        );
+        assert!(denied.is_err());
+        assert!(denied.unwrap_err().to_string().contains("sandbox policy"));
     }
 
     fn pty_integration_context() -> Option<(String, u16, String, String, bool)> {
@@ -297,6 +403,7 @@ mod tests {
     }
 
     fn pty_connect() -> Option<ssh2::Session> {
+        use helix_transport_ssh::ssh;
         let (host, port, user, credential_ref, strict) = pty_integration_context()?;
         let stored = credential::read(&credential_ref).ok()?;
         let options = ssh::ConnectOptions {
@@ -312,6 +419,7 @@ mod tests {
     #[test]
     #[ignore = "requires a real SSH target; set HELIX_PTY_INTEGRATION=1"]
     fn pty_integration_tty_is_allocated() {
+        use helix_transport_ssh::ssh;
         let Some(session) = pty_connect() else { return };
         let response = ssh::execute_pty(
             &session,
@@ -335,6 +443,7 @@ mod tests {
     #[test]
     #[ignore = "requires a real SSH target; set HELIX_PTY_INTEGRATION=1"]
     fn pty_integration_input_reaches_stdin() {
+        use helix_transport_ssh::ssh;
         let Some(session) = pty_connect() else { return };
         let response = ssh::execute_pty(
             &session,
@@ -356,6 +465,7 @@ mod tests {
     #[test]
     #[ignore = "requires a real SSH target; set HELIX_PTY_INTEGRATION=1"]
     fn pty_integration_output_is_truncated() {
+        use helix_transport_ssh::ssh;
         let Some(session) = pty_connect() else { return };
         let response = ssh::execute_pty(
             &session,
@@ -375,6 +485,7 @@ mod tests {
     #[test]
     #[ignore = "requires a real SSH target; set HELIX_PTY_INTEGRATION=1"]
     fn pty_integration_timeout_returns_timed_out() {
+        use helix_transport_ssh::ssh;
         let Some(session) = pty_connect() else { return };
         let response = ssh::execute_pty(
             &session,
@@ -393,6 +504,7 @@ mod tests {
     #[test]
     #[ignore = "requires a real SSH target; set HELIX_PTY_INTEGRATION=1"]
     fn pty_integration_exit_code_propagates() {
+        use helix_transport_ssh::ssh;
         let Some(session) = pty_connect() else { return };
         let response = ssh::execute_pty(
             &session,
@@ -411,7 +523,7 @@ mod tests {
     #[test]
     #[ignore = "requires a real SSH target; set HELIX_PTY_INTEGRATION=1"]
     fn pty_integration_engine_dispatch_via_serve_once() {
-        // Full production path: serve-once JSON -> engine.handle -> SessionPool
+        // Full production path: serve-once JSON -> engine.handle -> transport
         // -> ssh::execute_pty. Mirrors the JSON emitted by the TS brokerSshPty builder.
         let (host, port, user, credential_ref, strict) = match pty_integration_context() {
             Some(context) => context,
@@ -421,7 +533,7 @@ mod tests {
             r#"{{"op":"ssh_pty","credential_ref":"{credential_ref}","host":"{host}","port":{port},"username":"{user}","command":"test -t 0 && echo ENGINE_PTY_OK","timeout_seconds":30,"max_output_bytes":1048576,"strict_host_key_checking":{strict},"cols":120,"rows":40,"input":"hello"}}"#
         ))
         .expect("engine pty request should parse");
-        let engine = BrokerEngine::new(1, 1);
+        let engine = BrokerEngine::new(1, 1, SandboxPolicy::harness());
         let response = engine
             .handle(request)
             .expect("engine should dispatch ssh_pty");
@@ -437,6 +549,7 @@ mod tests {
     #[test]
     #[ignore = "requires a real SSH target; set HELIX_PTY_INTEGRATION=1"]
     fn ssh_integration_drains_stdout_and_stderr_under_one_budget() {
+        use helix_transport_ssh::ssh;
         let Some(session) = pty_connect() else { return };
         let response = ssh::execute(
             &session,

@@ -1,0 +1,19 @@
+﻿[package]
+name = "helix-credential"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+widestring = "1.2"
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Credentials",
+  "Win32_UI_WindowsAndMessaging",
+] }

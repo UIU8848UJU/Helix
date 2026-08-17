@@ -1,8 +1,14 @@
+﻿use crate::spool::SpoolMatch;
 use serde::{Deserialize, Serialize};
 
-pub const DAEMON_PROTOCOL_VERSION: u32 = 2;
-pub const DAEMON_CAPABILITIES: &[&str] =
-    &["task_pool_v2", "bounded_ipc", "owner_only_ipc", "ssh_pty"];
+pub const DAEMON_PROTOCOL_VERSION: u32 = 3;
+pub const DAEMON_CAPABILITIES: &[&str] = &[
+    "task_pool_v2",
+    "bounded_ipc",
+    "owner_only_ipc",
+    "ssh_pty",
+    "spool_v1",
+];
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -82,6 +88,14 @@ pub struct BrokerResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stderr: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdout_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stderr_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdout_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stderr_size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub timed_out: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated: Option<bool>,
@@ -99,6 +113,10 @@ impl BrokerResponse {
             exit_code: None,
             stdout: None,
             stderr: None,
+            stdout_ref: None,
+            stderr_ref: None,
+            stdout_size: None,
+            stderr_size: None,
             timed_out: None,
             truncated: None,
             duration_ms: None,
@@ -119,9 +137,32 @@ impl BrokerResponse {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum DaemonRequest {
     Ping,
-    Submit { request: BrokerRequest },
-    TaskStatus { task_id: String },
-    TaskCancel { task_id: String },
+    Submit {
+        request: BrokerRequest,
+    },
+    TaskStatus {
+        task_id: String,
+    },
+    TaskCancel {
+        task_id: String,
+    },
+    SpoolRead {
+        result_ref: String,
+        cursor: usize,
+        max_bytes: usize,
+    },
+    SpoolTail {
+        result_ref: String,
+        max_bytes: usize,
+    },
+    SpoolSearch {
+        result_ref: String,
+        pattern: String,
+        regex: bool,
+        before: usize,
+        after: usize,
+        max_matches: usize,
+    },
     Shutdown,
 }
 
@@ -153,6 +194,8 @@ pub struct DaemonResponse {
     pub state: Option<TaskState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<BrokerResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spool: Option<SpoolResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cancel_requested: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -189,6 +232,7 @@ impl DaemonResponse {
             task_id: None,
             state: None,
             result: None,
+            spool: None,
             cancel_requested: None,
             created_at_ms: None,
             started_at_ms: None,
@@ -208,6 +252,44 @@ impl DaemonResponse {
             ok: false,
             error: Some(error.into()),
             ..Self::success()
+        }
+    }
+}
+
+/// Spool operation result envelope used for `SpoolRead`, `SpoolTail` and
+/// `SpoolSearch` daemon responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpoolResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eof: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matches: Option<Vec<SpoolMatch>>,
+}
+
+impl Default for BrokerResponse {
+    fn default() -> Self {
+        Self::success()
+    }
+}
+
+impl Default for SpoolResult {
+    fn default() -> Self {
+        Self {
+            content: None,
+            next_cursor: None,
+            eof: None,
+            size: None,
+            start: None,
+            matches: None,
         }
     }
 }

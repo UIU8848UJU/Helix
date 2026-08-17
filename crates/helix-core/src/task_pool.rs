@@ -1,6 +1,6 @@
-use crate::{
-    engine::BrokerEngine,
+﻿use crate::{
     protocol::{BrokerRequest, BrokerResponse, DaemonResponse, TaskState},
+    spool::SpoolManager,
 };
 use anyhow::{Context, Result, anyhow};
 use std::{
@@ -17,21 +17,24 @@ use std::{
 const JANITOR_INTERVAL: Duration = Duration::from_millis(100);
 const DEFAULT_RETAINED_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_RESULT_BYTES: usize = 8 * 1024 * 1024;
+/// Combined stdout+stderr size above which a finished task result is spilled
+/// to a spool file instead of being returned inline over IPC.
+pub const DEFAULT_SPOOL_THRESHOLD_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Default)]
-pub(crate) struct CancellationToken(Arc<AtomicBool>);
+pub struct CancellationToken(Arc<AtomicBool>);
 
 impl CancellationToken {
-    pub(crate) fn cancel(&self) {
+    pub fn cancel(&self) {
         self.0.store(true, Ordering::Release);
     }
 
-    pub(crate) fn is_cancelled(&self) -> bool {
+    pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
 }
 
-pub(crate) trait TaskExecutor: Send + Sync + 'static {
+pub trait TaskExecutor: Send + Sync + 'static {
     fn execute(
         &self,
         request: BrokerRequest,
@@ -40,20 +43,6 @@ pub(crate) trait TaskExecutor: Send + Sync + 'static {
 
     fn pooled_sessions(&self) -> usize {
         0
-    }
-}
-
-impl TaskExecutor for BrokerEngine {
-    fn execute(
-        &self,
-        request: BrokerRequest,
-        cancellation: &CancellationToken,
-    ) -> Result<BrokerResponse> {
-        self.handle_with_cancellation(request, cancellation)
-    }
-
-    fn pooled_sessions(&self) -> usize {
-        self.pooled_sessions()
     }
 }
 
@@ -90,16 +79,17 @@ impl Clock for SystemClock {
 }
 
 #[derive(Clone)]
-pub(crate) struct TaskRecord {
-    state: TaskState,
-    result: Option<BrokerResponse>,
-    result_bytes: usize,
-    cancel_requested: bool,
-    cancellation: CancellationToken,
-    created_at_ms: u128,
-    started_at_ms: Option<u128>,
-    finished_at_ms: Option<u128>,
-    finished_mono_ms: Option<u128>,
+pub struct TaskRecord {
+    pub(crate) state: TaskState,
+    pub(crate) result: Option<BrokerResponse>,
+    pub(crate) result_bytes: usize,
+    pub(crate) cancel_requested: bool,
+    pub(crate) cancellation: CancellationToken,
+    pub(crate) created_at_ms: u128,
+    pub(crate) started_at_ms: Option<u128>,
+    pub(crate) finished_at_ms: Option<u128>,
+    pub(crate) finished_mono_ms: Option<u128>,
+    pub(crate) spooled: bool,
 }
 
 struct TaskStore {
@@ -116,7 +106,7 @@ enum Work {
     Stop,
 }
 
-pub(crate) struct TaskPool {
+pub struct TaskPool {
     sender: Mutex<Option<SyncSender<Work>>>,
     store: Arc<(Mutex<TaskStore>, Condvar)>,
     executor: Arc<dyn TaskExecutor>,
@@ -126,14 +116,16 @@ pub(crate) struct TaskPool {
     sequence: AtomicU64,
     retention: Duration,
     retained_bytes_limit: usize,
+    spool: Option<Arc<SpoolManager>>,
 }
 
 impl TaskPool {
-    pub(crate) fn new(
+    pub fn new(
         workers: usize,
         queue_capacity: usize,
         retention: Duration,
-        engine: Arc<BrokerEngine>,
+        engine: Arc<dyn TaskExecutor>,
+        spool: Option<Arc<SpoolManager>>,
     ) -> Result<Self> {
         Self::with_components(
             workers,
@@ -142,9 +134,12 @@ impl TaskPool {
             DEFAULT_RETAINED_BYTES,
             engine,
             Arc::new(SystemClock::new()),
+            spool,
+            DEFAULT_SPOOL_THRESHOLD_BYTES,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn with_components(
         workers: usize,
         queue_capacity: usize,
@@ -152,6 +147,8 @@ impl TaskPool {
         retained_bytes_limit: usize,
         executor: Arc<dyn TaskExecutor>,
         clock: Arc<dyn Clock>,
+        spool: Option<Arc<SpoolManager>>,
+        spool_threshold_bytes: usize,
     ) -> Result<Self> {
         let workers = workers.max(1);
         let (sender, receiver) = mpsc::sync_channel::<Work>(queue_capacity.max(1));
@@ -175,6 +172,8 @@ impl TaskPool {
                 retention,
                 retained_bytes_limit,
                 DEFAULT_RESULT_BYTES.min(retained_bytes_limit),
+                spool.clone(),
+                spool_threshold_bytes,
             )?);
         }
         Ok(Self {
@@ -187,11 +186,12 @@ impl TaskPool {
             sequence: AtomicU64::new(1),
             retention,
             retained_bytes_limit,
+            spool,
         })
     }
-
-    pub(crate) fn submit(&self, request: BrokerRequest) -> Result<String> {
-        cleanup_finished(&self.store, self.clock.monotonic_ms(), self.retention);
+    pub fn submit(&self, request: BrokerRequest) -> Result<String> {
+        let removed = cleanup_finished(&self.store, self.clock.monotonic_ms(), self.retention);
+        self.cleanup_spools(removed);
         let task_id = format!(
             "broker-{}-{}",
             self.clock.wall_ms(),
@@ -215,6 +215,7 @@ impl TaskPool {
                     started_at_ms: None,
                     finished_at_ms: None,
                     finished_mono_ms: None,
+                    spooled: false,
                 },
             );
         }
@@ -252,8 +253,9 @@ impl TaskPool {
         }
     }
 
-    pub(crate) fn task(&self, task_id: &str) -> Result<TaskRecord> {
-        cleanup_finished(&self.store, self.clock.monotonic_ms(), self.retention);
+    pub fn task(&self, task_id: &str) -> Result<TaskRecord> {
+        let removed = cleanup_finished(&self.store, self.clock.monotonic_ms(), self.retention);
+        self.cleanup_spools(removed);
         self.store
             .0
             .lock()
@@ -264,7 +266,7 @@ impl TaskPool {
             .ok_or_else(|| anyhow!("unknown broker task: {task_id}"))
     }
 
-    pub(crate) fn cancel(&self, task_id: &str) -> Result<TaskRecord> {
+    pub fn cancel(&self, task_id: &str) -> Result<TaskRecord> {
         let mut store = self.store.0.lock().map_err(lock_error)?;
         let now_wall = self.clock.wall_ms();
         let now_mono = self.clock.monotonic_ms();
@@ -287,7 +289,7 @@ impl TaskPool {
         Ok(response)
     }
 
-    pub(crate) fn shutdown(&self, deadline: Duration) -> bool {
+    pub fn shutdown(&self, deadline: Duration) -> bool {
         let deadline = Instant::now() + deadline;
         {
             let mut store = match self.store.0.lock() {
@@ -378,7 +380,7 @@ impl TaskPool {
         drained
     }
 
-    pub(crate) fn stats_response(&self) -> DaemonResponse {
+    pub fn stats_response(&self) -> DaemonResponse {
         let (queued, running, retained_bytes) = self
             .store
             .0
@@ -408,7 +410,7 @@ impl TaskPool {
         }
     }
 
-    pub(crate) fn task_response(&self, task_id: &str, task: TaskRecord) -> DaemonResponse {
+    pub fn task_response(&self, task_id: &str, task: TaskRecord) -> DaemonResponse {
         let mut response = self.stats_response();
         response.task_id = Some(task_id.to_owned());
         response.state = Some(task.state);
@@ -418,6 +420,19 @@ impl TaskPool {
         response.started_at_ms = task.started_at_ms;
         response.finished_at_ms = task.finished_at_ms;
         response
+    }
+
+    pub fn spool(&self) -> Option<Arc<SpoolManager>> {
+        self.spool.clone()
+    }
+
+    fn cleanup_spools(&self, task_ids: Vec<String>) {
+        let Some(spool) = &self.spool else {
+            return;
+        };
+        for task_id in task_ids {
+            spool.cleanup_task(&task_id);
+        }
     }
 }
 
@@ -431,6 +446,8 @@ fn spawn_worker(
     retention: Duration,
     retained_bytes_limit: usize,
     result_bytes_limit: usize,
+    spool: Option<Arc<SpoolManager>>,
+    spool_threshold_bytes: usize,
 ) -> Result<JoinHandle<()>> {
     thread::Builder::new()
         .name(format!("helix-broker-worker-{index}"))
@@ -445,7 +462,9 @@ fn spawn_worker(
                 let Work::Execute { task_id, request } = (match work {
                     Ok(Work::Stop) | Err(RecvTimeoutError::Disconnected) => return,
                     Err(RecvTimeoutError::Timeout) => {
-                        cleanup_finished(&store, clock.monotonic_ms(), retention);
+                        let removed =
+                            cleanup_finished(&store, clock.monotonic_ms(), retention);
+                        cleanup_spool_files(&spool, removed);
                         continue;
                     }
                     Ok(work) => work,
@@ -493,6 +512,13 @@ fn spawn_worker(
                             BrokerResponse::failure(format!("{error:#}"))
                         }
                     };
+                    spill_to_spool(
+                        &spool,
+                        &task_id,
+                        &mut response,
+                        spool_threshold_bytes,
+                        &mut task.spooled,
+                    );
                     bound_response(&mut response, result_bytes_limit);
                     task.result_bytes = serde_json::to_vec(&response)
                         .map(|bytes| bytes.len())
@@ -502,11 +528,57 @@ fn spawn_worker(
                 task.finished_at_ms = Some(clock.wall_ms());
                 task.finished_mono_ms = Some(clock.monotonic_ms());
                 recompute_retained_bytes(&mut task_store);
-                evict_to_budget(&mut task_store, retained_bytes_limit);
+                let removed = evict_to_budget(&mut task_store, retained_bytes_limit);
+                drop(task_store);
+                cleanup_spool_files(&spool, removed);
                 store.1.notify_all();
             }
         })
         .with_context(|| format!("failed to start credential broker worker thread {index}"))
+}
+
+/// Spills large combined output to a spool file and replaces inline streams
+/// with spool references plus byte sizes. Small results stay inline.
+fn spill_to_spool(
+    spool: &Option<Arc<SpoolManager>>,
+    task_id: &str,
+    response: &mut BrokerResponse,
+    threshold: usize,
+    spooled: &mut bool,
+) {
+    let Some(spool) = spool else {
+        return;
+    };
+    let stdout = response.stdout.clone().unwrap_or_default();
+    let stderr = response.stderr.clone().unwrap_or_default();
+    if stdout.len() + stderr.len() <= threshold {
+        return;
+    }
+    match spool.maybe_spill(task_id, stdout, stderr, threshold) {
+        Ok(Some(refs)) => {
+            response.stdout = None;
+            response.stderr = None;
+            response.stdout_ref = refs.stdout_ref;
+            response.stderr_ref = refs.stderr_ref;
+            response.stdout_size = Some(refs.stdout_size);
+            response.stderr_size = Some(refs.stderr_size);
+            *spooled = true;
+        }
+        Ok(None) => {}
+        Err(_) => {
+            // Spooling is best-effort: keep the inline result when the disk
+            // spool is unavailable so the task never loses its output.
+        }
+    }
+}
+
+fn cleanup_spool_files(spool: &Option<Arc<SpoolManager>>, task_ids: Vec<String>) {
+    let Some(spool) = spool else {
+        return;
+    };
+    for task_id in task_ids {
+        spool.cleanup_task(&task_id);
+    }
 }
 
 fn bound_response(response: &mut BrokerResponse, limit: usize) {
@@ -535,26 +607,33 @@ fn cleanup_finished(
     store: &Arc<(Mutex<TaskStore>, Condvar)>,
     now_mono_ms: u128,
     retention: Duration,
-) {
+) -> Vec<String> {
     let Ok(mut store) = store.0.lock() else {
-        return;
+        return Vec::new();
     };
     let cutoff = now_mono_ms.saturating_sub(retention.as_millis());
-    store.records.retain(|_, task| {
-        !task.state.is_terminal()
+    let mut removed = Vec::new();
+    store.records.retain(|task_id, task| {
+        let keep = !task.state.is_terminal()
             || task
                 .finished_mono_ms
                 .map(|finished| finished >= cutoff)
-                .unwrap_or(true)
+                .unwrap_or(true);
+        if !keep {
+            removed.push(task_id.clone());
+        }
+        keep
     });
     recompute_retained_bytes(&mut store);
+    removed
 }
 
 fn recompute_retained_bytes(store: &mut TaskStore) {
     store.retained_bytes = store.records.values().map(|task| task.result_bytes).sum();
 }
 
-fn evict_to_budget(store: &mut TaskStore, limit: usize) {
+fn evict_to_budget(store: &mut TaskStore, limit: usize) -> Vec<String> {
+    let mut removed = Vec::new();
     while store.retained_bytes > limit {
         let oldest = store
             .records
@@ -573,8 +652,10 @@ fn evict_to_budget(store: &mut TaskStore, limit: usize) {
         };
         if let Some(task) = store.records.remove(&task_id) {
             store.retained_bytes = store.retained_bytes.saturating_sub(task.result_bytes);
+            removed.push(task_id);
         }
     }
+    removed
 }
 
 fn lock_error<T>(_: std::sync::PoisonError<T>) -> anyhow::Error {
@@ -676,6 +757,8 @@ mod tests {
             budget,
             executor,
             clock,
+            None,
+            DEFAULT_SPOOL_THRESHOLD_BYTES,
         )
         .unwrap()
     }
@@ -832,4 +915,58 @@ mod tests {
         assert_eq!(pool.stats_response().retained_result_bytes, Some(0));
         assert!(pool.shutdown(Duration::from_secs(1)));
     }
+
+    struct SpillExecutor {
+        payload: String,
+    }
+
+    impl TaskExecutor for SpillExecutor {
+        fn execute(
+            &self,
+            _request: BrokerRequest,
+            _cancellation: &CancellationToken,
+        ) -> Result<BrokerResponse> {
+            Ok(BrokerResponse {
+                ok: true,
+                stdout: Some(self.payload.clone()),
+                ..BrokerResponse::success()
+            })
+        }
+    }
+
+    #[test]
+    fn large_result_spills_to_spool_and_inline_is_cleared() {
+        let dir = std::env::temp_dir().join(format!(
+            "helix-task-spool-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let spool = Arc::new(SpoolManager::at(dir.join("spool")).unwrap());
+        let pool = TaskPool::with_components(
+            1,
+            1,
+            Duration::from_millis(500),
+            1024 * 1024,
+            Arc::new(SpillExecutor {
+                payload: "x".repeat(128 * 1024),
+            }),
+            Arc::new(FakeClock::new(0)),
+            Some(spool),
+            64,
+        )
+        .unwrap();
+        let id = pool.submit(BrokerRequest::Ping).unwrap();
+        let record = wait_terminal(&pool, &id);
+        let result = record.result.unwrap();
+        assert!(result.stdout.is_none(), "large stdout must be spooled");
+        assert_eq!(result.stdout_size, Some(128 * 1024));
+        assert!(result.stdout_ref.as_deref().unwrap().starts_with("spool://"));
+        assert!(pool.shutdown(Duration::from_secs(1)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
+
