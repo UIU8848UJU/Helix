@@ -42,7 +42,26 @@
   - 大命令输出：超过 IPC 有界缓冲的输出走 spool 分块读，确认完整返回。
 - 凭证弹窗：`credential_enroll` 触发 Windows 原生 Credential UI，确认前台弹窗、取消/输入密码两条路径正常。
 
-## 4. beta 发布流程
+## 4. 基准测试
+
+本地可直接跑的基准（无需 SSH 目标）：
+
+```powershell
+node scripts/bench.mjs
+```
+
+覆盖：MCP bundle 启动→initialize 延迟、daemon IPC ping RTT、64 并发 ping 吞吐、task submit→succeeded 往返、daemon 空闲 RSS。
+
+SSH 阶段（需可达目标，用环境变量指定）：
+
+```powershell
+$env:HELIX_BENCH_SSH_HOST="<host>"; $env:HELIX_BENCH_SSH_USER="<user>"
+node scripts/bench.mjs --ssh
+```
+
+可选：`HELIX_BENCH_SSH_PORT`、`HELIX_BENCH_SSH_IDENTITY`、`HELIX_BENCH_SSH_ROUNDS`。覆盖冷/热连接+exec 延迟与大输出往返。参数与产物覆盖见 `scripts/bench.mjs` 头部注释。
+
+## 5. beta 发布流程
 
 1. `.\scripts\build-beta.ps1 -Version 0.4.0-beta.1`（自动跑门禁 + 组装包 + SHA256SUMS + zip）。
 2. 按第 3 节沙箱验证离线安装与 bundle 冒烟。
