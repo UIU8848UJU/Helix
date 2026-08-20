@@ -305,24 +305,73 @@ export async function brokerSpoolSearch(
   return { matches: response.spool?.matches ?? [] };
 }
 
+const SPOOL_READ_CHUNK_BYTES = 256 * 1024;
+
+/** Reader callback used by spool resolution; defaults to the IPC reader. */
+type SpoolReader = (
+  settings: GlobalSettings,
+  resultRef: string,
+  cursor?: number,
+  maxBytes?: number,
+) => Promise<SpoolReadResult>;
+
 /** Resolve spooled stdout/stderr into inline content when refs are present. */
 export async function resolveSpoolRefs(
   settings: GlobalSettings,
   response: BrokerResponse,
+): Promise<BrokerResponse> {
+  return resolveSpoolRefsWithReader(settings, response, brokerSpoolRead);
+}
+
+/**
+ * Injectable-reader variant of resolveSpoolRefs, used by tests to simulate the
+ * daemon's cursor semantics without a live IPC connection.
+ */
+export async function resolveSpoolRefsWithReader(
+  settings: GlobalSettings,
+  response: BrokerResponse,
+  read: SpoolReader,
 ): Promise<BrokerResponse> {
   if (!response.stdoutRef && !response.stderrRef) {
     return response;
   }
   const resolved = { ...response };
   if (response.stdoutRef) {
-    const read = await brokerSpoolRead(settings, response.stdoutRef, 0, response.stdoutSize ?? 32 * 1024);
-    resolved.stdout = read.content;
+    const stream = await readSpoolChunked(settings, response.stdoutRef, read);
+    resolved.stdout = stream.content;
+    resolved.truncated = (resolved.truncated ?? false) || stream.truncated;
   }
   if (response.stderrRef) {
-    const read = await brokerSpoolRead(settings, response.stderrRef, 0, response.stderrSize ?? 32 * 1024);
-    resolved.stderr = read.content;
+    const stream = await readSpoolChunked(settings, response.stderrRef, read);
+    resolved.stderr = stream.content;
+    resolved.truncated = (resolved.truncated ?? false) || stream.truncated;
   }
   return resolved;
+}
+
+/**
+ * Pull a spooled stream in bounded cursor reads. Each IPC round trip returns
+ * at most one chunk, so outputs up to maxOutputBytes transfer reliably instead
+ * of depending on a single oversized IPC response.
+ */
+async function readSpoolChunked(
+  settings: GlobalSettings,
+  resultRef: string,
+  read: SpoolReader,
+): Promise<{ content: string; truncated: boolean }> {
+  const cap = settings.maxOutputBytes;
+  const chunk = Math.min(SPOOL_READ_CHUNK_BYTES, cap);
+  let cursor = 0;
+  let content = "";
+  let eof = false;
+  while (content.length < cap) {
+    const stream = await read(settings, resultRef, cursor, Math.min(chunk, cap - content.length));
+    content += stream.content;
+    cursor = stream.nextCursor;
+    eof = stream.eof;
+    if (eof || stream.content.length === 0) break;
+  }
+  return { content, truncated: !eof };
 }
 
 function sleep(milliseconds: number): Promise<void> {

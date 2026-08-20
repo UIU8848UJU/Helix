@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
-import { assertProtocolCompatible, buildBrokerSshPtyRequest, isCredentialError, withCredentialAutoEnroll } from "../src/broker.js";
-import type { GlobalSettings, HostConfig } from "../src/types.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { assertProtocolCompatible, buildBrokerSshPtyRequest, isCredentialError, resolveSpoolRefsWithReader, withCredentialAutoEnroll } from "../src/broker.js";
+import type { GlobalSettings, HostConfig, SpoolReadResult } from "../src/types.js";
 
 const settings: GlobalSettings = {
   defaultTimeoutSeconds: 60,
@@ -267,3 +267,71 @@ describe("broker daemon v3 capability contract", () => {
     })).toThrow(/missing required capabilities: spool_v1/);
   });
 });
+
+
+describe("broker spool resolution (large outputs)", () => {
+  const stdoutRef = "spool://broker-1-1/stdout";
+  const stderrRef = "spool://broker-1-1/stderr";
+
+  function fakeReader(contents: Record<string, string>) {
+    return vi.fn(async (_settings: GlobalSettings, resultRef: string, cursor = 0, maxBytes = 32 * 1024): Promise<SpoolReadResult> => {
+      const data = contents[resultRef] ?? "";
+      const start = Math.min(cursor, data.length);
+      const end = Math.min(start + maxBytes, data.length);
+      return {
+        content: data.slice(start, end),
+        nextCursor: end,
+        eof: end >= data.length,
+        size: data.length,
+      };
+    });
+  }
+
+  it("returns the response unchanged when no spool refs are present", async () => {
+    const reader = fakeReader({});
+    const response = { ok: true, stdout: "inline" };
+    await expect(resolveSpoolRefsWithReader(settings, response, reader)).resolves.toEqual(response);
+    expect(reader).not.toHaveBeenCalled();
+  });
+
+  it("pulls a large spooled stdout across multiple bounded reads", async () => {
+    const content = "y".repeat(600 * 1024);
+    const reader = fakeReader({ [stdoutRef]: content });
+    const resolved = await resolveSpoolRefsWithReader(settings, {
+      ok: true,
+      stdoutRef,
+      stdoutSize: content.length,
+    }, reader);
+    expect(resolved.stdout).toBe(content);
+    expect(resolved.truncated).toBe(false);
+    expect(reader).toHaveBeenCalledTimes(3);
+    expect(reader).toHaveBeenCalledWith(settings, stdoutRef, 0, 256 * 1024);
+    expect(reader).toHaveBeenLastCalledWith(settings, stdoutRef, 512 * 1024, 256 * 1024);
+  });
+
+  it("caps resolution at maxOutputBytes and flags truncation", async () => {
+    const content = "z".repeat(3 * 1024 * 1024);
+    const reader = fakeReader({ [stdoutRef]: content });
+    const resolved = await resolveSpoolRefsWithReader(settings, {
+      ok: true,
+      stdoutRef,
+      stdoutSize: content.length,
+    }, reader);
+    expect(resolved.stdout?.length).toBe(settings.maxOutputBytes);
+    expect(resolved.truncated).toBe(true);
+  });
+
+  it("resolves stderr refs as well and keeps an existing truncated flag", async () => {
+    const reader = fakeReader({ [stdoutRef]: "ok", [stderrRef]: "warn" });
+    const resolved = await resolveSpoolRefsWithReader(settings, {
+      ok: true,
+      stdoutRef,
+      stderrRef,
+      truncated: true,
+    }, reader);
+    expect(resolved.stdout).toBe("ok");
+    expect(resolved.stderr).toBe("warn");
+    expect(resolved.truncated).toBe(true);
+  });
+});
+
