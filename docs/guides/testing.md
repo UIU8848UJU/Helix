@@ -42,24 +42,20 @@
   - 大命令输出：超过 IPC 有界缓冲的输出走 spool 分块读，确认完整返回。
 - 凭证弹窗：`credential_enroll` 触发 Windows 原生 Credential UI，确认前台弹窗、取消/输入密码两条路径正常。
 
-## 4. 基准测试
+## 4. 基准 / 压力 / 极限验证（tests/）
 
-本地可直接跑的基准（无需 SSH 目标）：
-
-```powershell
-node scripts/bench.mjs
-```
-
-覆盖：MCP bundle 启动→initialize 延迟、daemon IPC ping RTT、64 并发 ping 吞吐、task submit→succeeded 往返、daemon 空闲 RSS。
-
-SSH 阶段（需可达目标，用环境变量指定）：
+验证脚本统一放在 `tests/`，一键跑全部：
 
 ```powershell
-$env:HELIX_BENCH_SSH_HOST="<host>"; $env:HELIX_BENCH_SSH_USER="<user>"
-node scripts/bench.mjs --ssh
+node tests/run-all.mjs
 ```
 
-可选：`HELIX_BENCH_SSH_PORT`、`HELIX_BENCH_SSH_IDENTITY`、`HELIX_BENCH_SSH_ROUNDS`。覆盖冷/热连接+exec 延迟与大输出往返。参数与产物覆盖见 `scripts/bench.mjs` 头部注释。
+- `tests/bench.mjs`：基准（MCP 启动、IPC ping RTT、并发吞吐、task 往返、daemon 空闲 RSS）
+- `tests/stress.mjs`：压力（持续混合负载、慢客户端队头阻塞韧性、内存漂移）
+- `tests/max.mjs`：极限（连接容量 64、请求 4MiB 边界、突发 task 吞吐、饱和下关机）
+
+SSH 阶段（需可达目标）：`$env:HELIX_BENCH_SSH_HOST="<host>"` 后 `node tests/bench.mjs --ssh`。
+详见 `tests/README.md`。
 
 ## 5. beta 发布流程
 
