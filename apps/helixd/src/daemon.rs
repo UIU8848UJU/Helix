@@ -34,7 +34,16 @@ const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 const MAX_IPC_CONNECTIONS: usize = 64;
 const IPC_TIMEOUT: Duration = Duration::from_secs(5);
 const IPC_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const IPC_WRITE_CHUNK_BYTES: usize = 512 * 1024;
+// Interprocess creates named-pipe instances with a 512-byte output buffer by
+// default. In nonblocking mode a write larger than the free buffer space
+// returns zero without delivering a single byte, so responses above that size
+// would stall forever. The output buffer is therefore raised to 128 KiB and
+// responses are written in 64 KiB chunks so every write fits. The input buffer
+// keeps its default: raising both buffers to 1 MiB (or the output alone to
+// 256 KiB+) previously caused the daemon to stall under 64 simultaneous
+// large-request connections.
+const IPC_OUTPUT_BUFFER_BYTES: u32 = 128 * 1024;
+const IPC_WRITE_CHUNK_BYTES: usize = 64 * 1024;
 
 #[cfg(windows)]
 type ServerListener = PipeListener<Bytes, Bytes>;
@@ -140,6 +149,7 @@ fn create_listener(endpoint: &str) -> Result<ServerListener> {
         .context("broker IPC endpoint contains NUL")?;
     let mut options = PipeListenerOptions::new();
     options.path = Cow::Owned(path);
+    options.output_buffer_size_hint = IPC_OUTPUT_BUFFER_BYTES;
     options.security_descriptor = Some(descriptor);
     Ok(options.create_duplex::<Bytes>()?)
 }

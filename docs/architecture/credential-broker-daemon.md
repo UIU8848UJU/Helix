@@ -45,9 +45,13 @@ access only to LocalSystem and the current user SID; Unix creates the socket wit
 The daemon enforces the 4 MiB request limit while reading, before an oversized payload can be
 accumulated in memory. IPC connections are handled independently and each request has a five-second
 read and response-write deadline. Unix sockets use native I/O timeouts. The Windows named-pipe
-backend has no timeout API, so handlers use nonblocking I/O with the same deadline. At most 64 IPC handlers may be active,
-bounding thread usage; an already accepted 65th connection waits for a bounded handler slot instead
-of being dropped, so saturation cannot permanently exclude a shutdown request.
+backend has no timeout API, so handlers use nonblocking I/O with the same deadline. On Windows the
+named-pipe output buffer is raised to 128 KiB and responses are written in 64 KiB chunks: with the
+interprocess default 512-byte buffer, nonblocking writes larger than the free buffer space return
+zero without delivering a byte, which would stall every response above that size. At most 64 IPC
+handlers may be active, bounding thread usage; an already accepted 65th connection waits for a
+bounded handler slot instead of being dropped, so saturation cannot permanently exclude a shutdown
+request.
 
 The TypeScript MCP process auto-starts the daemon on first use when the endpoint is unavailable. The daemon is detached from the MCP client and remains alive when one MCP process exits.
 
