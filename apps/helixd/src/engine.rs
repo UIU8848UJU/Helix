@@ -1,4 +1,4 @@
-﻿use helix_core::{
+use helix_core::{
     protocol::{BrokerRequest, BrokerResponse},
     sandbox::SandboxPolicy,
     task_pool::CancellationToken,
@@ -7,7 +7,6 @@
     },
 };
 use helix_credential::credential;
-use helix_transport_ssh::adapter::SshTransport;
 use anyhow::Result;
 use std::sync::Arc;
 
@@ -17,18 +16,8 @@ pub struct BrokerEngine {
 }
 
 impl BrokerEngine {
-    pub fn new(
-        session_idle_seconds: u64,
-        max_idle_sessions_per_key: usize,
-        policy: SandboxPolicy,
-    ) -> Self {
-        Self {
-            transport: Arc::new(SshTransport::new(
-                session_idle_seconds,
-                max_idle_sessions_per_key,
-            )),
-            policy,
-        }
+    pub fn new(transport: Arc<dyn Transport>, policy: SandboxPolicy) -> Self {
+        Self { transport, policy }
     }
 
     pub fn pooled_sessions(&self) -> usize {
@@ -50,7 +39,7 @@ impl BrokerEngine {
                 exists: Some(credential::exists(&credential_ref)),
                 ..BrokerResponse::success()
             }),
-            BrokerRequest::SshExecute {
+            BrokerRequest::Execute {
                 credential_ref,
                 host,
                 port,
@@ -76,7 +65,7 @@ impl BrokerEngine {
                 };
                 self.transport.execute(request, cancellation)
             }
-            BrokerRequest::SshPty {
+            BrokerRequest::Pty {
                 credential_ref,
                 host,
                 port,
@@ -135,7 +124,7 @@ impl BrokerEngine {
                 };
                 self.transport.sudo_execute(request, cancellation)
             }
-            BrokerRequest::SftpUpload {
+            BrokerRequest::Upload {
                 credential_ref,
                 host,
                 port,
@@ -165,7 +154,7 @@ impl BrokerEngine {
                 self.transport.upload(request)?;
                 Ok(BrokerResponse::success())
             }
-            BrokerRequest::SftpDownload {
+            BrokerRequest::Download {
                 credential_ref,
                 host,
                 port,

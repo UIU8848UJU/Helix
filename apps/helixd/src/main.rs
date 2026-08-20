@@ -1,4 +1,4 @@
-﻿mod daemon;
+mod daemon;
 mod engine;
 mod ipc_security;
 
@@ -8,11 +8,14 @@ use engine::BrokerEngine;
 use helix_core::{
     protocol::{BrokerRequest, BrokerResponse},
     sandbox::{ExecutionMode, SandboxPolicy},
+    transport::Transport,
 };
 use helix_credential::{credential, ui};
+use helix_transport_ssh::adapter::SshTransport;
 use std::{
     collections::HashSet,
     io::{self, Read},
+    sync::Arc,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -171,7 +174,7 @@ fn serve_once() -> Result<()> {
     io::stdin().read_to_string(&mut input)?;
     let request: BrokerRequest =
         serde_json::from_str(input.trim()).context("invalid broker request JSON")?;
-    let engine = BrokerEngine::new(1, 1, SandboxPolicy::harness());
+    let engine = BrokerEngine::new(Arc::new(SshTransport::new(1, 1)), SandboxPolicy::harness());
     let response = match engine.handle(request) {
         Ok(response) => response,
         Err(error) => BrokerResponse::failure(format!("{error:#}")),
@@ -218,13 +221,16 @@ fn main() -> Result<()> {
                 allowed_local_paths,
                 allowed_commands,
             );
+            let transport: Arc<dyn Transport> = Arc::new(SshTransport::new(
+                session_idle_seconds,
+                max_idle_sessions_per_key,
+            ));
             daemon::serve_daemon(
                 &endpoint,
                 workers,
                 queue_capacity,
                 task_retention_seconds,
-                session_idle_seconds,
-                max_idle_sessions_per_key,
+                transport,
                 policy,
             )
         }
@@ -308,11 +314,11 @@ mod tests {
     #[test]
     fn ssh_pty_protocol_round_trip_with_all_fields() {
         let request: BrokerRequest = serde_json::from_str(
-            r#"{"op":"ssh_pty","credential_ref":"Helix/ssh/u/login","host":"192.168.110.128","port":22,"username":"xxx","command":"top","timeout_seconds":30,"max_output_bytes":1048576,"strict_host_key_checking":false,"cols":120,"rows":40,"input":"hello"}"#,
+            r#"{"op":"pty","credential_ref":"Helix/ssh/u/login","host":"192.168.110.128","port":22,"username":"xxx","command":"top","timeout_seconds":30,"max_output_bytes":1048576,"strict_host_key_checking":false,"cols":120,"rows":40,"input":"hello"}"#,
         )
         .unwrap();
         match request {
-            BrokerRequest::SshPty {
+            BrokerRequest::Pty {
                 cols,
                 rows,
                 input,
@@ -324,25 +330,25 @@ mod tests {
                 assert_eq!(input.as_deref(), Some("hello"));
                 assert_eq!(command, "top");
             }
-            _ => panic!("expected SshPty"),
+            _ => panic!("expected Pty"),
         }
     }
 
     #[test]
     fn ssh_pty_protocol_omits_optional_fields() {
         let request: BrokerRequest = serde_json::from_str(
-            r#"{"op":"ssh_pty","credential_ref":"a","host":"h","port":22,"command":"top","timeout_seconds":5,"max_output_bytes":1024,"strict_host_key_checking":false}"#,
+            r#"{"op":"pty","credential_ref":"a","host":"h","port":22,"command":"top","timeout_seconds":5,"max_output_bytes":1024,"strict_host_key_checking":false}"#,
         )
         .unwrap();
         match request {
-            BrokerRequest::SshPty {
+            BrokerRequest::Pty {
                 cols, rows, input, ..
             } => {
                 assert_eq!(cols, None);
                 assert_eq!(rows, None);
                 assert_eq!(input, None);
             }
-            _ => panic!("expected SshPty"),
+            _ => panic!("expected Pty"),
         }
     }
 
@@ -358,18 +364,18 @@ mod tests {
     fn ssh_pty_contract_json_parses_in_serve_once() {
         // Fixture mirrors the exact JSON emitted by the TS brokerSshPty builder.
         let request: BrokerRequest = serde_json::from_str(
-            r#"{"op":"ssh_pty","credential_ref":"Helix/ssh/Ubuntu22.04_developer/login","host":"192.168.110.128","port":22,"username":"xxx","command":"test -t 0 && echo PTY_OK","timeout_seconds":30,"max_output_bytes":1048576,"strict_host_key_checking":false,"cols":120,"rows":40,"input":"hello"}"#,
+            r#"{"op":"pty","credential_ref":"Helix/ssh/Ubuntu22.04_developer/login","host":"192.168.110.128","port":22,"username":"xxx","command":"test -t 0 && echo PTY_OK","timeout_seconds":30,"max_output_bytes":1048576,"strict_host_key_checking":false,"cols":120,"rows":40,"input":"hello"}"#,
         )
         .unwrap();
-        assert!(matches!(request, BrokerRequest::SshPty { .. }));
+        assert!(matches!(request, BrokerRequest::Pty { .. }));
     }
 
     #[test]
     fn harness_policy_allows_exec_and_blocks_destructive_commands() {
         use helix_core::protocol::BrokerRequest as Request;
-        let engine = BrokerEngine::new(1, 1, SandboxPolicy::harness());
+        let engine = BrokerEngine::new(Arc::new(SshTransport::new(1, 1)), SandboxPolicy::harness());
         let denied = engine.handle_with_cancellation(
-            Request::SshExecute {
+            Request::Execute {
                 credential_ref: "x".into(),
                 host: "h".into(),
                 port: 22,
@@ -530,13 +536,13 @@ mod tests {
             None => return,
         };
         let request: BrokerRequest = serde_json::from_str(&format!(
-            r#"{{"op":"ssh_pty","credential_ref":"{credential_ref}","host":"{host}","port":{port},"username":"{user}","command":"test -t 0 && echo ENGINE_PTY_OK","timeout_seconds":30,"max_output_bytes":1048576,"strict_host_key_checking":{strict},"cols":120,"rows":40,"input":"hello"}}"#
+            r#"{{"op":"pty","credential_ref":"{credential_ref}","host":"{host}","port":{port},"username":"{user}","command":"test -t 0 && echo ENGINE_PTY_OK","timeout_seconds":30,"max_output_bytes":1048576,"strict_host_key_checking":{strict},"cols":120,"rows":40,"input":"hello"}}"#
         ))
         .expect("engine pty request should parse");
-        let engine = BrokerEngine::new(1, 1, SandboxPolicy::harness());
+        let engine = BrokerEngine::new(Arc::new(SshTransport::new(1, 1)), SandboxPolicy::harness());
         let response = engine
             .handle(request)
-            .expect("engine should dispatch ssh_pty");
+            .expect("engine should dispatch pty");
         assert!(response.ok, "engine pty command failed: {response:?}");
         assert_eq!(response.exit_code, Some(0));
         let out = response.stdout.unwrap_or_default();

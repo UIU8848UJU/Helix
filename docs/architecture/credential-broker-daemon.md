@@ -58,8 +58,8 @@ The TypeScript MCP process auto-starts the daemon on first use when the endpoint
 ## Protocol
 
 Heavy Broker operations are no longer synchronous one-shot stdin RPCs. The daemon protocol has an
-explicit `protocolVersion` plus capabilities. The `ssh_pty` request-set change was protocol v2;
-protocol v3 adds `spool_v1` (large-output spooling) and Harness/Sandbox execution policy, so clients require version 3 and the capabilities they use. The endpoint name remains stable so a new
+explicit `protocolVersion` plus capabilities. The PTY request-set change was protocol v2;
+protocol v3 adds `spool_v1` (large-output spooling) and Harness/Sandbox execution policy; protocol v4 generalizes the wire ops (`execute`/`pty`/`upload`/`download`) so helix-core is transport-agnostic. Clients require version 4 and the capabilities they use. The endpoint name remains stable so a new
 client can find and shut down an incompatible resident daemon.
 
 ### Submit
@@ -68,7 +68,7 @@ client can find and shut down an incompatible resident daemon.
 {
   "op": "submit",
   "request": {
-    "op": "ssh_execute",
+    "op": "execute",
     "credential_ref": "Helix/ssh/dev/login",
     "host": "192.168.49.128",
     "port": 22,
@@ -86,8 +86,8 @@ The daemon immediately returns a TaskID and state:
 ```json
 {
   "ok": true,
-  "protocolVersion": 3,
-  "capabilities": ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "ssh_pty", "spool_v1"],
+  "protocolVersion": 4,
+  "capabilities": ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "spool_v1"],
   "taskId": "broker-...",
   "state": "queued"
 }

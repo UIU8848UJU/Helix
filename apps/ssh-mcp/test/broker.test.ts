@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { assertProtocolCompatible, buildBrokerSshPtyRequest, isCredentialError, resolveSpoolRefsWithReader, withCredentialAutoEnroll } from "../src/broker.js";
+import { assertProtocolCompatible, buildBrokerPtyRequest, isCredentialError, resolveSpoolRefsWithReader, withCredentialAutoEnroll } from "../src/broker.js";
 import type { GlobalSettings, HostConfig, SpoolReadResult } from "../src/types.js";
 
 const settings: GlobalSettings = {
@@ -200,16 +200,16 @@ describe("broker credential auto-enrollment", () => {
   });
 });
 
-describe("broker ssh_pty request builder (TDD PTY-001)", () => {
-  it("builds the ssh_pty request with defaults from settings", () => {
-    const request = buildBrokerSshPtyRequest({
+describe("broker pty request builder (TDD PTY-001)", () => {
+  it("builds the pty request with defaults from settings", () => {
+    const request = buildBrokerPtyRequest({
       credentialRef: "Helix/ssh/test/login",
       host: passwordHost,
       command: "top",
       settings,
     });
     expect(request).toMatchObject({
-      op: "ssh_pty",
+      op: "pty",
       credential_ref: "Helix/ssh/test/login",
       host: "192.0.2.10",
       port: 22,
@@ -225,7 +225,7 @@ describe("broker ssh_pty request builder (TDD PTY-001)", () => {
   });
 
   it("honors overrides and optional fields", () => {
-    const request = buildBrokerSshPtyRequest({
+    const request = buildBrokerPtyRequest({
       credentialRef: "Helix/ssh/test/login",
       host: passwordHost,
       command: "read x; echo got:$x",
@@ -242,28 +242,28 @@ describe("broker ssh_pty request builder (TDD PTY-001)", () => {
   });
 });
 
-describe("broker daemon v3 capability contract", () => {
-  it("accepts the v3 capability set", () => {
+describe("broker daemon v4 capability contract", () => {
+  it("accepts the v4 capability set", () => {
     expect(() => assertProtocolCompatible({
       ok: true,
-      protocolVersion: 3,
-      capabilities: ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "ssh_pty", "spool_v1"],
+      protocolVersion: 4,
+      capabilities: ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "spool_v1"],
     })).not.toThrow();
   });
 
-  it("rejects a same-version daemon without ssh_pty", () => {
+  it("rejects a same-version daemon without pty_v1", () => {
     expect(() => assertProtocolCompatible({
       ok: true,
-      protocolVersion: 3,
+      protocolVersion: 4,
       capabilities: ["task_pool_v2", "bounded_ipc", "owner_only_ipc"],
-    })).toThrow(/missing required capabilities: ssh_pty/);
+    })).toThrow(/missing required capabilities: pty_v1/);
   });
 
   it("rejects a same-version daemon without spool_v1", () => {
     expect(() => assertProtocolCompatible({
       ok: true,
-      protocolVersion: 3,
-      capabilities: ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "ssh_pty"],
+      protocolVersion: 4,
+      capabilities: ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1"],
     })).toThrow(/missing required capabilities: spool_v1/);
   });
 });

@@ -13,8 +13,8 @@ import type {
 import { getCredentialBrokerPath } from "./paths.js";
 import { newRequestId, writeAudit } from "./audit.js";
 
-const BROKER_PROTOCOL_VERSION = 3;
-const REQUIRED_BROKER_CAPABILITIES = ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "ssh_pty", "spool_v1"] as const;
+const BROKER_PROTOCOL_VERSION = 4;
+const REQUIRED_BROKER_CAPABILITIES = ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "spool_v1"] as const;
 const BROKER_ENDPOINT = process.platform === "win32"
   ? "\\\\.\\pipe\\helix-credential-broker-v1"
   : "/tmp/helix-credential-broker-v1.sock";
@@ -600,7 +600,7 @@ function passwordAuth(host: HostConfig): { credentialRef: string } {
   return { credentialRef: host.auth.credentialRef };
 }
 
-export async function brokerSshExecute(input: {
+export async function brokerExecute(input: {
   settings: GlobalSettings;
   hostAlias: string;
   host: HostConfig;
@@ -611,7 +611,7 @@ export async function brokerSshExecute(input: {
     const auth = passwordAuth(input.host);
     const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
     const response = await runBroker(input.settings, {
-      op: "ssh_execute",
+      op: "execute",
       credential_ref: auth.credentialRef,
       host: input.host.hostname,
       port: input.host.port ?? 22,
@@ -625,7 +625,7 @@ export async function brokerSshExecute(input: {
   });
 }
 
-export function buildBrokerSshPtyRequest(input: {
+export function buildBrokerPtyRequest(input: {
   credentialRef: string;
   host: HostConfig;
   command: string;
@@ -637,7 +637,7 @@ export function buildBrokerSshPtyRequest(input: {
 }): Record<string, unknown> {
   const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
   const request: Record<string, unknown> = {
-    op: "ssh_pty",
+    op: "pty",
     credential_ref: input.credentialRef,
     host: input.host.hostname,
     port: input.host.port ?? 22,
@@ -653,7 +653,7 @@ export function buildBrokerSshPtyRequest(input: {
   return request;
 }
 
-export async function brokerSshPty(input: {
+export async function brokerPty(input: {
   settings: GlobalSettings;
   hostAlias: string;
   host: HostConfig;
@@ -668,7 +668,7 @@ export async function brokerSshPty(input: {
     const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
     const response = await runBroker(
       input.settings,
-      buildBrokerSshPtyRequest({
+      buildBrokerPtyRequest({
         credentialRef: auth.credentialRef,
         host: input.host,
         command: input.command,

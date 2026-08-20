@@ -14,7 +14,7 @@ import {
 } from "@helix/jobs";
 import type { TaskExecutor, TaskSpec, TaskState, TaskType } from "@helix/jobs";
 import { newRequestId, writeAudit } from "./audit.js";
-import { brokerSshExecute, brokerSudoExecute } from "./broker.js";
+import { brokerExecute, brokerSudoExecute } from "./broker.js";
 import type { ConfigStore } from "./config.js";
 import { assertRemotePathAllowed } from "./policy.js";
 import { assertCommandSafe } from "./safety.js";
@@ -400,7 +400,7 @@ export function registerJobTools(server: McpServer, store: ConfigStore): void {
           });
         }
       } else if (host.auth.type === "windows-credential") {
-        result = await brokerSshExecute({
+        result = await brokerExecute({
           settings: config.settings,
           hostAlias: input.hostAlias,
           host,

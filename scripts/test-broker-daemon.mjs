@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createConnection } from "node:net";
 import path from "node:path";
 
-const PROTOCOL_VERSION = 3;
+const PROTOCOL_VERSION = 4;
 const root = process.cwd();
 const executable = path.join(
   root,
@@ -58,7 +58,7 @@ function assertProtocol(response) {
   if (response.protocolVersion !== PROTOCOL_VERSION) {
     throw new Error(`expected protocolVersion=${PROTOCOL_VERSION}, got ${response.protocolVersion}`);
   }
-  for (const capability of ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "ssh_pty", "spool_v1"]) {
+  for (const capability of ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "spool_v1"]) {
     if (!response.capabilities?.includes(capability)) {
       throw new Error(`missing daemon capability: ${capability}`);
     }

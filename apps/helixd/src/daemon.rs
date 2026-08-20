@@ -4,6 +4,7 @@ use helix_core::{
     sandbox::SandboxPolicy,
     spool::SpoolManager,
     task_pool::TaskPool,
+    transport::Transport,
 };
 use anyhow::{Context, Result, anyhow};
 use interprocess::local_socket::{GenericFilePath, prelude::*};
@@ -60,8 +61,7 @@ pub fn serve_daemon(
     workers: usize,
     queue_capacity: usize,
     retention_seconds: u64,
-    session_idle_seconds: u64,
-    max_idle_sessions_per_key: usize,
+    transport: Arc<dyn Transport>,
     policy: SandboxPolicy,
 ) -> Result<()> {
     let listener = match create_listener(endpoint) {
@@ -77,11 +77,7 @@ pub fn serve_daemon(
     };
 
     let spool = Arc::new(SpoolManager::at_default_root()?);
-    let engine = Arc::new(BrokerEngine::new(
-        session_idle_seconds,
-        max_idle_sessions_per_key,
-        policy,
-    ));
+    let engine = Arc::new(BrokerEngine::new(transport, policy));
     let pool = Arc::new(TaskPool::new(
         workers,
         queue_capacity,

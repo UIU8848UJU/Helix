@@ -4,8 +4,8 @@ import { z } from "zod";
 import { newRequestId, writeAudit } from "./audit.js";
 import {
   brokerCredentialExists,
-  brokerSshExecute,
-  brokerSshPty,
+  brokerExecute,
+  brokerPty,
   brokerSudoExecute,
   brokerTransfer,
 } from "./broker.js";
@@ -109,7 +109,7 @@ export function createServer(store = new ConfigStore()): McpServer {
     try {
       const result = host.auth.type === "windows-credential"
         ? input.pty
-          ? await brokerSshPty({
+          ? await brokerPty({
               settings: config.settings,
               hostAlias: input.hostAlias,
               host,
@@ -119,7 +119,7 @@ export function createServer(store = new ConfigStore()): McpServer {
               rows: input.pty.rows,
               input: input.pty.input,
             })
-          : await brokerSshExecute({
+          : await brokerExecute({
               settings: config.settings,
               hostAlias: input.hostAlias,
               host,

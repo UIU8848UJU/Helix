@@ -52,7 +52,7 @@ describe("ssh_pty tool registration and routing (TDD PTY-001)", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    vi.mocked(broker.brokerSshPty).mockResolvedValue(executionResult);
+    vi.mocked(broker.brokerPty).mockResolvedValue(executionResult);
     vi.mocked(ssh.runSshPty).mockResolvedValue(executionResult);
 
     dir = mkdtempSync(path.join(os.tmpdir(), "ssh-mcp-pty-"));
@@ -81,19 +81,19 @@ describe("ssh_pty tool registration and routing (TDD PTY-001)", () => {
     expect(names).toContain("ssh_pty");
   });
 
-  it("routes windows-credential hosts to brokerSshPty", async () => {
+  it("routes windows-credential hosts to brokerPty", async () => {
     const result = await client.callTool({
       name: "ssh_pty",
       arguments: { host: "win", command: "top", input: "hello", cols: 120, rows: 40 },
     });
     expect(result.isError).toBeFalsy();
-    expect(broker.brokerSshPty).toHaveBeenCalledTimes(1);
+    expect(broker.brokerPty).toHaveBeenCalledTimes(1);
     expect(ssh.runSshPty).not.toHaveBeenCalled();
   });
 
   it("routes openssh hosts to runSshPty", async () => {
     await client.callTool({ name: "ssh_pty", arguments: { host: "key", command: "top" } });
     expect(ssh.runSshPty).toHaveBeenCalledTimes(1);
-    expect(broker.brokerSshPty).not.toHaveBeenCalled();
+    expect(broker.brokerPty).not.toHaveBeenCalled();
   });
 });

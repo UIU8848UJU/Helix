@@ -1,12 +1,12 @@
-﻿use crate::spool::SpoolMatch;
+use crate::spool::SpoolMatch;
 use serde::{Deserialize, Serialize};
 
-pub const DAEMON_PROTOCOL_VERSION: u32 = 3;
+pub const DAEMON_PROTOCOL_VERSION: u32 = 4;
 pub const DAEMON_CAPABILITIES: &[&str] = &[
     "task_pool_v2",
     "bounded_ipc",
     "owner_only_ipc",
-    "ssh_pty",
+    "pty_v1",
     "spool_v1",
 ];
 
@@ -17,7 +17,7 @@ pub enum BrokerRequest {
     CredentialExists {
         credential_ref: String,
     },
-    SshExecute {
+    Execute {
         credential_ref: String,
         host: String,
         port: u16,
@@ -27,7 +27,7 @@ pub enum BrokerRequest {
         max_output_bytes: usize,
         strict_host_key_checking: bool,
     },
-    SshPty {
+    Pty {
         credential_ref: String,
         host: String,
         port: u16,
@@ -51,7 +51,7 @@ pub enum BrokerRequest {
         max_output_bytes: usize,
         strict_host_key_checking: bool,
     },
-    SftpUpload {
+    Upload {
         credential_ref: String,
         host: String,
         port: u16,
@@ -62,7 +62,7 @@ pub enum BrokerRequest {
         timeout_seconds: u64,
         strict_host_key_checking: bool,
     },
-    SftpDownload {
+    Download {
         credential_ref: String,
         host: String,
         port: u16,
