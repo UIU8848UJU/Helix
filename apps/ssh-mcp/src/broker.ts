@@ -9,12 +9,16 @@ import type {
   SpoolReadResult,
   SpoolSearchResult,
   SpoolTailResult,
+  TerminalReadResult,
+  TerminalState,
+  TerminalStatusResult,
+  TerminalTailResult,
 } from "./types.js";
 import { getCredentialBrokerPath } from "./paths.js";
 import { newRequestId, writeAudit } from "./audit.js";
 
-const BROKER_PROTOCOL_VERSION = 4;
-const REQUIRED_BROKER_CAPABILITIES = ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "spool_v1"] as const;
+const BROKER_PROTOCOL_VERSION = 5;
+const REQUIRED_BROKER_CAPABILITIES = ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "terminal_v1", "spool_v1"] as const;
 const BROKER_ENDPOINT = process.platform === "win32"
   ? "\\\\.\\pipe\\helix-credential-broker-v1"
   : "/tmp/helix-credential-broker-v1.sock";
@@ -25,6 +29,25 @@ interface BrokerDaemonResponse {
   ok: boolean;
   protocolVersion?: number;
   capabilities?: string[];
+  terminal?: {
+    terminalId?: string;
+    state?: TerminalState;
+    exitCode?: number;
+    content?: string;
+    nextCursor?: number;
+    eof?: boolean;
+    size?: number;
+    tail?: string;
+    matches?: Array<{
+      line: number;
+      text: string;
+      before?: string[];
+      after?: string[];
+    }>;
+    createdAtMs?: number;
+    lastActivityAtMs?: number;
+    durationMs?: number;
+  };
   taskId?: string;
   state?: BrokerTaskState;
   result?: BrokerResponse;
@@ -727,6 +750,190 @@ export async function brokerSudoExecute(input: {
     });
     return result;
   });
+}
+
+function terminalStatusFrom(response: BrokerDaemonResponse): TerminalStatusResult {
+  const terminal = response.terminal;
+  if (!terminal?.terminalId) {
+    throw new Error("credential broker terminal response is missing terminalId");
+  }
+  return {
+    terminalId: terminal.terminalId,
+    state: terminal.state ?? "running",
+    exitCode: terminal.exitCode,
+    size: terminal.size ?? 0,
+    tail: terminal.tail ?? "",
+    createdAtMs: terminal.createdAtMs ?? 0,
+    lastActivityAtMs: terminal.lastActivityAtMs ?? 0,
+    durationMs: terminal.durationMs ?? 0,
+  };
+}
+
+export function buildBrokerTerminalOpenRequest(input: {
+  settings: GlobalSettings;
+  credentialRef: string;
+  host: HostConfig;
+  command: string;
+  cols?: number;
+  rows?: number;
+  idleSeconds?: number;
+  maxHistoryBytes?: number;
+}): Record<string, unknown> {
+  const request: Record<string, unknown> = {
+    op: "terminal_open",
+    credential_ref: input.credentialRef,
+    host: input.host.hostname,
+    port: input.host.port ?? 22,
+    username: input.host.username,
+    command: input.command,
+    strict_host_key_checking: input.settings.strictHostKeyChecking,
+    idle_seconds: input.idleSeconds ?? 600,
+    max_history_bytes: input.maxHistoryBytes ?? 16 * 1024 * 1024,
+  };
+  if (input.cols !== undefined) request.cols = input.cols;
+  if (input.rows !== undefined) request.rows = input.rows;
+  return request;
+}
+
+/** Opens a persistent interactive PTY session and returns its summary. */
+export async function brokerTerminalOpen(input: {
+  settings: GlobalSettings;
+  hostAlias: string;
+  host: HostConfig;
+  command: string;
+  cols?: number;
+  rows?: number;
+  idleSeconds?: number;
+  maxHistoryBytes?: number;
+}): Promise<TerminalStatusResult> {
+  return withCredentialAutoEnroll(input, async () => {
+    const auth = passwordAuth(input.host);
+    await ensureBrokerDaemon(input.settings);
+    const response = await daemonRpc(
+      buildBrokerTerminalOpenRequest({
+        credentialRef: auth.credentialRef,
+        host: input.host,
+        command: input.command,
+        cols: input.cols,
+        rows: input.rows,
+        idleSeconds: input.idleSeconds,
+        maxHistoryBytes: input.maxHistoryBytes,
+        settings: input.settings,
+      }),
+      30_000,
+    );
+    assertProtocolCompatible(response);
+    return terminalStatusFrom(response);
+  });
+}
+
+export async function brokerTerminalWrite(
+  settings: GlobalSettings,
+  terminalId: string,
+  input: string,
+): Promise<void> {
+  await ensureBrokerDaemon(settings);
+  const response = await daemonRpc(
+    { op: "terminal_write", terminal_id: terminalId, input },
+    10_000,
+  );
+  assertProtocolCompatible(response);
+}
+
+export async function brokerTerminalRead(
+  settings: GlobalSettings,
+  terminalId: string,
+  cursor = 0,
+  maxBytes = 32 * 1024,
+): Promise<TerminalReadResult> {
+  await ensureBrokerDaemon(settings);
+  const response = await daemonRpc(
+    { op: "terminal_read", terminal_id: terminalId, cursor, max_bytes: maxBytes },
+    10_000,
+  );
+  assertProtocolCompatible(response);
+  return {
+    content: response.terminal?.content ?? "",
+    nextCursor: response.terminal?.nextCursor ?? 0,
+    eof: response.terminal?.eof ?? false,
+    size: response.terminal?.size ?? 0,
+  };
+}
+
+export async function brokerTerminalTail(
+  settings: GlobalSettings,
+  terminalId: string,
+  maxBytes = 32 * 1024,
+): Promise<TerminalTailResult> {
+  await ensureBrokerDaemon(settings);
+  const response = await daemonRpc(
+    { op: "terminal_tail", terminal_id: terminalId, max_bytes: maxBytes },
+    10_000,
+  );
+  assertProtocolCompatible(response);
+  return {
+    content: response.terminal?.content ?? "",
+    size: response.terminal?.size ?? 0,
+  };
+}
+
+export async function brokerTerminalSearch(
+  settings: GlobalSettings,
+  terminalId: string,
+  pattern: string,
+  regex = false,
+  before = 0,
+  after = 0,
+  maxMatches = 20,
+): Promise<SpoolSearchResult> {
+  await ensureBrokerDaemon(settings);
+  const response = await daemonRpc(
+    {
+      op: "terminal_search",
+      terminal_id: terminalId,
+      pattern,
+      regex,
+      before,
+      after,
+      max_matches: maxMatches,
+    },
+    10_000,
+  );
+  assertProtocolCompatible(response);
+  return { matches: response.terminal?.matches ?? [] };
+}
+
+export async function brokerTerminalResize(
+  settings: GlobalSettings,
+  terminalId: string,
+  cols: number,
+  rows: number,
+): Promise<void> {
+  await ensureBrokerDaemon(settings);
+  const response = await daemonRpc(
+    { op: "terminal_resize", terminal_id: terminalId, cols, rows },
+    10_000,
+  );
+  assertProtocolCompatible(response);
+}
+
+export async function brokerTerminalStatus(
+  settings: GlobalSettings,
+  terminalId: string,
+): Promise<TerminalStatusResult> {
+  await ensureBrokerDaemon(settings);
+  const response = await daemonRpc({ op: "terminal_status", terminal_id: terminalId }, 10_000);
+  assertProtocolCompatible(response);
+  return terminalStatusFrom(response);
+}
+
+export async function brokerTerminalClose(
+  settings: GlobalSettings,
+  terminalId: string,
+): Promise<void> {
+  await ensureBrokerDaemon(settings);
+  const response = await daemonRpc({ op: "terminal_close", terminal_id: terminalId }, 10_000);
+  assertProtocolCompatible(response);
 }
 
 export async function brokerTransfer(input: {

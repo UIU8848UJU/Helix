@@ -148,6 +148,32 @@ export interface SpoolSearchResult {
   matches: SpoolMatch[];
 }
 
+export type TerminalState = "running" | "finished" | "closed";
+
+/** Summary-first envelope returned by terminal_open / terminal_status. */
+export interface TerminalStatusResult {
+  terminalId: string;
+  state: TerminalState;
+  exitCode?: number;
+  size: number;
+  tail: string;
+  createdAtMs: number;
+  lastActivityAtMs: number;
+  durationMs: number;
+}
+
+export interface TerminalReadResult {
+  content: string;
+  nextCursor: number;
+  eof: boolean;
+  size: number;
+}
+
+export interface TerminalTailResult {
+  content: string;
+  size: number;
+}
+
 export interface PendingApproval {
   version: 1;
   requestId: string;

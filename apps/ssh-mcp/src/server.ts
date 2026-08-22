@@ -7,6 +7,14 @@ import {
   brokerExecute,
   brokerPty,
   brokerSudoExecute,
+  brokerTerminalClose,
+  brokerTerminalOpen,
+  brokerTerminalRead,
+  brokerTerminalResize,
+  brokerTerminalSearch,
+  brokerTerminalStatus,
+  brokerTerminalTail,
+  brokerTerminalWrite,
   brokerTransfer,
 } from "./broker.js";
 import { ConfigStore, hostMutationAllowed, redactHost, validateHost } from "./config.js";
@@ -401,6 +409,109 @@ export function createServer(store = new ConfigStore()): McpServer {
         operation: command,
         pty: { input, cols, rows },
       }));
+    } catch (error) { throwInvalid(error); }
+  });
+
+  server.tool("terminal_open", "Open a persistent interactive terminal (PTY) on a remote host and return a summary envelope (terminalId, state, exitCode, size, tail). The session stays alive across requests until terminal_close or the idle timeout. Use for interactive shells, long-running build loops, or any workflow that needs stateful stdin/stdout. The summary keeps the first response small; use terminal_read / terminal_search to drill down.", {
+    host: z.string(),
+    command: z.string(),
+    cols: z.number().int().min(1).max(1000).optional(),
+    rows: z.number().int().min(1).max(1000).optional(),
+    idleSeconds: z.number().int().min(1).max(86400).optional(),
+    maxHistoryBytes: z.number().int().min(1024).max(1024 * 1024 * 1024).optional(),
+  }, async ({ host, command, cols, rows, idleSeconds, maxHistoryBytes }) => {
+    try {
+      assertCommandSafe(command);
+      const config = await store.read();
+      const hostConfig = config.hosts[host];
+      if (!hostConfig) throw new Error(`Unknown host alias: ${host}`);
+      return textResult(await brokerTerminalOpen({
+        settings: config.settings,
+        hostAlias: host,
+        host: hostConfig,
+        command,
+        cols,
+        rows,
+        idleSeconds,
+        maxHistoryBytes,
+      }));
+    } catch (error) { throwInvalid(error); }
+  });
+
+  server.tool("terminal_write", "Write input to a persistent terminal's stdin. Input is echoed back by the PTY in the terminal output, so never pass passwords or secrets through terminal_write.", {
+    terminalId: z.string(),
+    input: z.string(),
+  }, async ({ terminalId, input }) => {
+    try {
+      const config = await store.read();
+      await brokerTerminalWrite(config.settings, terminalId, input);
+      return textResult({ ok: true, terminalId });
+    } catch (error) { throwInvalid(error); }
+  });
+
+  server.tool("terminal_read", "Read a byte range from a persistent terminal's clean output log by cursor. Use the returned nextCursor for the next read and stop when eof is true.", {
+    terminalId: z.string(),
+    cursor: z.number().int().min(0).default(0),
+    maxBytes: z.number().int().min(1).max(1024 * 1024).default(32 * 1024),
+  }, async ({ terminalId, cursor, maxBytes }) => {
+    try {
+      const config = await store.read();
+      return textResult(await brokerTerminalRead(config.settings, terminalId, cursor, maxBytes));
+    } catch (error) { throwInvalid(error); }
+  });
+
+  server.tool("terminal_tail", "Read the newest bytes of a persistent terminal's clean output without a cursor.", {
+    terminalId: z.string(),
+    maxBytes: z.number().int().min(1).max(1024 * 1024).default(32 * 1024),
+  }, async ({ terminalId, maxBytes }) => {
+    try {
+      const config = await store.read();
+      return textResult(await brokerTerminalTail(config.settings, terminalId, maxBytes));
+    } catch (error) { throwInvalid(error); }
+  });
+
+  server.tool("terminal_search", "Search a persistent terminal's clean output log for matching lines with optional context. Prefer this over terminal_read for large outputs.", {
+    terminalId: z.string(),
+    pattern: z.string(),
+    regex: z.boolean().default(false),
+    before: z.number().int().min(0).max(100).default(0),
+    after: z.number().int().min(0).max(100).default(0),
+    maxMatches: z.number().int().min(1).max(200).default(20),
+  }, async ({ terminalId, pattern, regex, before, after, maxMatches }) => {
+    try {
+      const config = await store.read();
+      return textResult(await brokerTerminalSearch(config.settings, terminalId, pattern, regex, before, after, maxMatches));
+    } catch (error) { throwInvalid(error); }
+  });
+
+  server.tool("terminal_resize", "Resize a persistent terminal's PTY dimensions.", {
+    terminalId: z.string(),
+    cols: z.number().int().min(1).max(1000),
+    rows: z.number().int().min(1).max(1000),
+  }, async ({ terminalId, cols, rows }) => {
+    try {
+      const config = await store.read();
+      await brokerTerminalResize(config.settings, terminalId, cols, rows);
+      return textResult({ ok: true, terminalId });
+    } catch (error) { throwInvalid(error); }
+  });
+
+  server.tool("terminal_status", "Return the current summary envelope of a persistent terminal: state, exitCode, output size and tail. Use before deciding whether to read/search more.", {
+    terminalId: z.string(),
+  }, async ({ terminalId }) => {
+    try {
+      const config = await store.read();
+      return textResult(await brokerTerminalStatus(config.settings, terminalId));
+    } catch (error) { throwInvalid(error); }
+  });
+
+  server.tool("terminal_close", "Close a persistent terminal, terminating its remote process and freeing its resources.", {
+    terminalId: z.string(),
+  }, async ({ terminalId }) => {
+    try {
+      const config = await store.read();
+      await brokerTerminalClose(config.settings, terminalId);
+      return textResult({ ok: true, terminalId });
     } catch (error) { throwInvalid(error); }
   });
 

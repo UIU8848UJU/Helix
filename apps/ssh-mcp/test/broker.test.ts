@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { assertProtocolCompatible, buildBrokerPtyRequest, isCredentialError, resolveSpoolRefsWithReader, withCredentialAutoEnroll } from "../src/broker.js";
+import { assertProtocolCompatible, buildBrokerPtyRequest, buildBrokerTerminalOpenRequest, isCredentialError, resolveSpoolRefsWithReader, withCredentialAutoEnroll } from "../src/broker.js";
 import type { GlobalSettings, HostConfig, SpoolReadResult } from "../src/types.js";
 
 const settings: GlobalSettings = {
@@ -242,19 +242,19 @@ describe("broker pty request builder (TDD PTY-001)", () => {
   });
 });
 
-describe("broker daemon v4 capability contract", () => {
-  it("accepts the v4 capability set", () => {
+describe("broker daemon v5 capability contract", () => {
+  it("accepts the v5 capability set", () => {
     expect(() => assertProtocolCompatible({
       ok: true,
-      protocolVersion: 4,
-      capabilities: ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "spool_v1"],
+      protocolVersion: 5,
+      capabilities: ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "terminal_v1", "spool_v1"],
     })).not.toThrow();
   });
 
   it("rejects a same-version daemon without pty_v1", () => {
     expect(() => assertProtocolCompatible({
       ok: true,
-      protocolVersion: 4,
+      protocolVersion: 5,
       capabilities: ["task_pool_v2", "bounded_ipc", "owner_only_ipc"],
     })).toThrow(/missing required capabilities: pty_v1/);
   });
@@ -262,9 +262,50 @@ describe("broker daemon v4 capability contract", () => {
   it("rejects a same-version daemon without spool_v1", () => {
     expect(() => assertProtocolCompatible({
       ok: true,
-      protocolVersion: 4,
-      capabilities: ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1"],
+      protocolVersion: 5,
+      capabilities: ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "terminal_v1"],
     })).toThrow(/missing required capabilities: spool_v1/);
+  });
+});
+
+describe("broker terminal open request", () => {
+  it("builds the terminal_open request with defaults", () => {
+    const request = buildBrokerTerminalOpenRequest({
+      credentialRef: "Helix/ssh/test/login",
+      host: passwordHost,
+      command: "bash -i",
+      settings,
+    });
+    expect(request).toMatchObject({
+      op: "terminal_open",
+      credential_ref: "Helix/ssh/test/login",
+      host: "192.0.2.10",
+      port: 22,
+      username: "developer",
+      command: "bash -i",
+      strict_host_key_checking: false,
+      idle_seconds: 600,
+      max_history_bytes: 16 * 1024 * 1024,
+    });
+    expect(request.cols).toBeUndefined();
+    expect(request.rows).toBeUndefined();
+  });
+
+  it("honors cols, rows and history overrides", () => {
+    const request = buildBrokerTerminalOpenRequest({
+      credentialRef: "Helix/ssh/test/login",
+      host: passwordHost,
+      command: "bash -i",
+      cols: 160,
+      rows: 40,
+      idleSeconds: 120,
+      maxHistoryBytes: 1024 * 1024,
+      settings,
+    });
+    expect(request.cols).toBe(160);
+    expect(request.rows).toBe(40);
+    expect(request.idle_seconds).toBe(120);
+    expect(request.max_history_bytes).toBe(1024 * 1024);
   });
 });
 
