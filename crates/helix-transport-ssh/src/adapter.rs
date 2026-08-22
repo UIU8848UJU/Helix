@@ -2,15 +2,18 @@
 //! It owns the SSH session pool and the credential plumbing, so the daemon
 //! engine never touches `ssh2` or the pool directly.
 
-use crate::{pool::SessionPool, ssh};
+use crate::{pool::SessionPool, ssh, terminal};
 use anyhow::Result;
 use helix_core::{
     protocol::BrokerResponse,
     task_pool::CancellationToken,
-    transport::{ExecRequest, PtyRequest, SudoRequest, TransferRequest, Transport},
+    transport::{
+        ExecRequest, PtyRequest, SudoRequest, TerminalOpenRequest, TerminalSession, TransferRequest,
+        Transport,
+    },
 };
 use helix_credential::credential;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use zeroize::Zeroizing;
 
 pub struct SshTransport {
@@ -97,6 +100,13 @@ impl Transport for SshTransport {
             self.sessions.release(key, session);
         }
         result
+    }
+
+    fn open_terminal(
+        &self,
+        request: TerminalOpenRequest,
+    ) -> Result<Arc<dyn TerminalSession>> {
+        Ok(terminal::open_terminal(&request.target, &request)?)
     }
 
     fn sudo_execute(

@@ -4,3 +4,4 @@
 pub mod adapter;
 pub mod pool;
 pub mod ssh;
+pub mod terminal;
