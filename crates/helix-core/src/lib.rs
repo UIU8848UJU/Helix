@@ -6,4 +6,5 @@ pub mod protocol;
 pub mod sandbox;
 pub mod spool;
 pub mod task_pool;
+pub mod terminal;
 pub mod transport;

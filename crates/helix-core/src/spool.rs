@@ -21,7 +21,7 @@ pub fn stderr_ref(task_id: &str) -> String {
     format!("spool://{task_id}/stderr")
 }
 
-fn runtime_dir() -> Result<PathBuf> {
+pub fn runtime_dir() -> Result<PathBuf> {
     #[cfg(windows)]
     {
         if let Some(local) = std::env::var_os("LOCALAPPDATA") {
@@ -150,11 +150,46 @@ impl SpoolManager {
         after: usize,
         max_matches: usize,
     ) -> Result<Vec<SpoolMatch>> {
+        let data = self.read_ref(result_ref)?;
+        let text = String::from_utf8_lossy(&data);
+        search_text(&text, pattern, regex, before, after, max_matches)
+    }
+
+    pub fn cleanup_task(&self, task_id: &str) {
+        if validate_task_id(task_id).is_err() {
+            return;
+        }
+        let _ = fs::remove_file(self.root.join(format!("{task_id}{SPOOL_STDOUT_SUFFIX}")));
+        let _ = fs::remove_file(self.root.join(format!("{task_id}{SPOOL_STDERR_SUFFIX}")));
+    }
+
+    fn read_ref(&self, result_ref: &str) -> Result<Vec<u8>> {
+        let (task_id, stream) = parse_result_ref(result_ref)?;
+        let suffix = match stream {
+            SpoolStream::Stdout => SPOOL_STDOUT_SUFFIX,
+            SpoolStream::Stderr => SPOOL_STDERR_SUFFIX,
+        };
+        let path = self.root.join(format!("{task_id}{suffix}"));
+        if !path.starts_with(&self.root) {
+            return Err(anyhow!("spool reference escapes the spool directory"));
+        }
+        fs::read(&path).with_context(|| format!("failed to read spool file {}", path.display()))
+    }
+}
+
+/// Line-wise search over already-materialized text. Shared by spool files and
+/// terminal clean logs so both expose the same match semantics.
+pub fn search_text(
+    text: &str,
+    pattern: &str,
+    regex: bool,
+    before: usize,
+    after: usize,
+    max_matches: usize,
+) -> Result<Vec<SpoolMatch>> {
         if pattern.is_empty() {
             return Err(anyhow!("spool search pattern must not be empty"));
         }
-        let data = self.read_ref(result_ref)?;
-        let text = String::from_utf8_lossy(&data);
         let matcher: Box<dyn Fn(&str) -> bool> = if regex {
             let compiled = regex::Regex::new(pattern)
                 .map_err(|error| anyhow!("invalid spool search regex: {error}"))?;
@@ -192,28 +227,6 @@ impl SpoolManager {
             }
         }
         Ok(matches)
-    }
-
-    pub fn cleanup_task(&self, task_id: &str) {
-        if validate_task_id(task_id).is_err() {
-            return;
-        }
-        let _ = fs::remove_file(self.root.join(format!("{task_id}{SPOOL_STDOUT_SUFFIX}")));
-        let _ = fs::remove_file(self.root.join(format!("{task_id}{SPOOL_STDERR_SUFFIX}")));
-    }
-
-    fn read_ref(&self, result_ref: &str) -> Result<Vec<u8>> {
-        let (task_id, stream) = parse_result_ref(result_ref)?;
-        let suffix = match stream {
-            SpoolStream::Stdout => SPOOL_STDOUT_SUFFIX,
-            SpoolStream::Stderr => SPOOL_STDERR_SUFFIX,
-        };
-        let path = self.root.join(format!("{task_id}{suffix}"));
-        if !path.starts_with(&self.root) {
-            return Err(anyhow!("spool reference escapes the spool directory"));
-        }
-        fs::read(&path).with_context(|| format!("failed to read spool file {}", path.display()))
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
