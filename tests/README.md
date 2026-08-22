@@ -17,6 +17,7 @@ node tests/run-all.mjs
 | `bench.mjs` | 基准：MCP 启动、IPC ping RTT、并发吞吐、task 往返、daemon 空闲 RSS | `node tests/bench.mjs` |
 | `stress.mjs` | 压力：持续混合负载、慢客户端队头阻塞韧性、内存漂移 | `node tests/stress.mjs` |
 | `max.mjs` | 极限：连接容量(64)、请求 4MiB 边界、突发 task 吞吐、饱和下关机 | `node tests/max.mjs` |
+| `terminal.mjs` | 持久终端：open/write/read/tail/search/resize/status/close 端到端（需可达 SSH 主机 + 凭据） | `node tests/terminal.mjs` |
 
 可选参数：`--bundle <path>`、`--helixd <path>`、`--workers <n>`，或环境变量 `HELIX_BUNDLE` / `HELIX_HELIXD`。
 
@@ -29,6 +30,17 @@ node tests/bench.mjs --ssh
 ```
 
 可选：`HELIX_BENCH_SSH_PORT`、`HELIX_BENCH_SSH_IDENTITY`、`HELIX_BENCH_SSH_ROUNDS`。
+
+## 持久终端阶段（terminal，需可达主机 + Windows 凭据）
+
+```powershell
+$env:HELIX_SSH_HOST="<host>"
+$env:HELIX_SSH_USER="<user>"
+$env:HELIX_SSH_CRED_REF="Helix/ssh/<host>/login"
+node tests/terminal.mjs
+```
+
+覆盖：协议 v5 + `terminal_v1` 能力、terminal_open 摘要信封、write→read 输出捕获、cursor 读、tail、search、resize、close 后会话移除。
 
 ## 压力/极限可调参数
 

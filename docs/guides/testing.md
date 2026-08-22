@@ -55,6 +55,7 @@ node tests/run-all.mjs
 - `tests/max.mjs`：极限（连接容量 64、请求 4MiB 边界、突发 task 吞吐、饱和下关机）
 
 SSH 阶段（需可达目标）：`$env:HELIX_BENCH_SSH_HOST="<host>"` 后 `node tests/bench.mjs --ssh`。
+持久终端验证（需可达目标 + Windows 凭据）：`node tests/terminal.mjs`，环境变量 `HELIX_SSH_HOST` / `HELIX_SSH_USER` / `HELIX_SSH_CRED_REF`。覆盖 open/write/read/tail/search/resize/status/close 全流程。
 详见 `tests/README.md`。
 
 ## 5. beta 发布流程
