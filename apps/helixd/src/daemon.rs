@@ -1,10 +1,11 @@
 use crate::{engine::BrokerEngine, ipc_security};
 use helix_core::{
-    protocol::{DaemonRequest, DaemonResponse, SpoolResult},
+    protocol::{DaemonRequest, DaemonResponse, SpoolResult, TerminalResult},
     sandbox::SandboxPolicy,
     spool::SpoolManager,
     task_pool::TaskPool,
-    transport::Transport,
+    terminal::{TerminalRegistry, TerminalSnapshot},
+    transport::{ExecTarget, TerminalOpenRequest, Transport},
 };
 use anyhow::{Context, Result, anyhow};
 use interprocess::local_socket::{GenericFilePath, prelude::*};
@@ -45,6 +46,7 @@ const IPC_POLL_INTERVAL: Duration = Duration::from_millis(10);
 // large-request connections.
 const IPC_OUTPUT_BUFFER_BYTES: u32 = 128 * 1024;
 const IPC_WRITE_CHUNK_BYTES: usize = 64 * 1024;
+const TERMINAL_REAP_INTERVAL: Duration = Duration::from_secs(5);
 
 #[cfg(windows)]
 type ServerListener = PipeListener<Bytes, Bytes>;
@@ -63,6 +65,8 @@ pub fn serve_daemon(
     retention_seconds: u64,
     transport: Arc<dyn Transport>,
     policy: SandboxPolicy,
+    max_terminals: usize,
+    terminal_idle_seconds: u64,
 ) -> Result<()> {
     let listener = match create_listener(endpoint) {
         Ok(listener) => listener,
@@ -77,7 +81,8 @@ pub fn serve_daemon(
     };
 
     let spool = Arc::new(SpoolManager::at_default_root()?);
-    let engine = Arc::new(BrokerEngine::new(transport, policy));
+    let terminals = Arc::new(TerminalRegistry::new(max_terminals, terminal_idle_seconds));
+    let engine = Arc::new(BrokerEngine::new(transport.clone(), policy));
     let pool = Arc::new(TaskPool::new(
         workers,
         queue_capacity,
@@ -89,11 +94,19 @@ pub fn serve_daemon(
     let active_connections = Arc::new(AtomicUsize::new(0));
 
     eprintln!(
-        "Helix credential broker daemon listening on {endpoint}; workers={}; queue_capacity={queue_capacity}",
+        "Helix credential broker daemon listening on {endpoint}; workers={}; queue_capacity={queue_capacity}; terminals={max_terminals}",
         workers.max(1)
     );
 
+    let mut last_reap = Instant::now();
     while !shutdown.load(Ordering::Acquire) {
+        if last_reap.elapsed() >= TERMINAL_REAP_INTERVAL {
+            let reaped = terminals.reap_idle();
+            if reaped > 0 {
+                eprintln!("reaped {reaped} idle terminal session(s)");
+            }
+            last_reap = Instant::now();
+        }
         match listener.accept() {
             Ok(stream) => {
                 if shutdown.load(Ordering::Acquire) {
@@ -104,12 +117,14 @@ pub fn serve_daemon(
                 let shutdown = Arc::clone(&shutdown);
                 let active_connections = Arc::clone(&active_connections);
                 let endpoint = endpoint.to_owned();
+                let transport = Arc::clone(&transport);
+                let terminals = Arc::clone(&terminals);
                 let connection_guard = ConnectionGuard(active_connections);
                 thread::Builder::new()
                     .name("helix-broker-ipc".to_owned())
                     .spawn(move || {
                         let _connection_guard = connection_guard;
-                        match handle_connection(stream, &pool) {
+                        match handle_connection(stream, &pool, &terminals, &transport) {
                             Ok(true) => {
                                 shutdown.store(true, Ordering::Release);
                                 if let Err(error) = wake_listener(&endpoint) {
@@ -240,12 +255,17 @@ pub fn stop_daemon(endpoint: &str) -> Result<()> {
     Ok(())
 }
 
-fn handle_connection(stream: ServerStream, pool: &TaskPool) -> Result<bool> {
+fn handle_connection(
+    stream: ServerStream,
+    pool: &TaskPool,
+    terminals: &TerminalRegistry,
+    transport: &Arc<dyn Transport>,
+) -> Result<bool> {
     configure_server_read(&stream)?;
     let mut reader = BufReader::new(stream);
     let (response, shutdown) = match read_request_line(&mut reader) {
         Ok(input) => match serde_json::from_slice::<DaemonRequest>(&input) {
-            Ok(request) => handle_request(request, pool),
+            Ok(request) => handle_request(request, pool, terminals, transport),
             Err(error) => (
                 DaemonResponse::failure(format!("invalid daemon request JSON: {error}")),
                 false,
@@ -375,7 +395,12 @@ fn configure_client_timeouts(stream: &interprocess::local_socket::Stream) -> Res
     Ok(())
 }
 
-fn handle_request(request: DaemonRequest, pool: &TaskPool) -> (DaemonResponse, bool) {
+fn handle_request(
+    request: DaemonRequest,
+    pool: &TaskPool,
+    terminals: &TerminalRegistry,
+    transport: &Arc<dyn Transport>,
+) -> (DaemonResponse, bool) {
     let response = match request {
         DaemonRequest::Ping => pool.stats_response(),
         DaemonRequest::Submit { request } => match pool.submit(request) {
@@ -446,9 +471,156 @@ fn handle_request(request: DaemonRequest, pool: &TaskPool) -> (DaemonResponse, b
             },
             None => DaemonResponse::failure("spool is not enabled on this daemon".to_owned()),
         },
+        DaemonRequest::TerminalOpen {
+            credential_ref,
+            host,
+            port,
+            username,
+            command,
+            strict_host_key_checking,
+            cols,
+            rows,
+            idle_seconds,
+            max_history_bytes,
+        } => {
+            let request = TerminalOpenRequest {
+                target: ExecTarget {
+                    credential_ref,
+                    host,
+                    port,
+                    username,
+                    strict_host_key_checking,
+                },
+                command,
+                cols,
+                rows,
+                idle_seconds,
+                max_history_bytes,
+            };
+            match transport.open_terminal(request) {
+                Ok(session) => match terminals.open(session) {
+                    Ok(terminal_id) => match terminals.status(&terminal_id) {
+                        Ok(snapshot) => terminal_response(snapshot_result(snapshot)),
+                        Err(error) => DaemonResponse::failure(format!("{error:#}")),
+                    },
+                    Err(error) => DaemonResponse::failure(format!("{error:#}")),
+                },
+                Err(error) => DaemonResponse::failure(format!("{error:#}")),
+            }
+        }
+        DaemonRequest::TerminalWrite { terminal_id, input } => {
+            match terminals.get(&terminal_id) {
+                Ok(session) => match session.write(&input) {
+                    Ok(()) => terminal_ok(terminal_id),
+                    Err(error) => DaemonResponse::failure(format!("{error:#}")),
+                },
+                Err(error) => DaemonResponse::failure(format!("{error:#}")),
+            }
+        }
+        DaemonRequest::TerminalRead {
+            terminal_id,
+            cursor,
+            max_bytes,
+        } => match terminals.get(&terminal_id) {
+            Ok(session) => match session.read(cursor, max_bytes) {
+                Ok(read) => terminal_response(TerminalResult {
+                    terminal_id: Some(terminal_id),
+                    content: Some(read.content),
+                    next_cursor: Some(read.next_cursor),
+                    eof: Some(read.eof),
+                    size: Some(read.size),
+                    ..Default::default()
+                }),
+                Err(error) => DaemonResponse::failure(format!("{error:#}")),
+            },
+            Err(error) => DaemonResponse::failure(format!("{error:#}")),
+        },
+        DaemonRequest::TerminalTail {
+            terminal_id,
+            max_bytes,
+        } => match terminals.get(&terminal_id) {
+            Ok(session) => match session.tail(max_bytes) {
+                Ok(tail) => terminal_response(TerminalResult {
+                    terminal_id: Some(terminal_id),
+                    content: Some(tail.content),
+                    size: Some(tail.size),
+                    ..Default::default()
+                }),
+                Err(error) => DaemonResponse::failure(format!("{error:#}")),
+            },
+            Err(error) => DaemonResponse::failure(format!("{error:#}")),
+        },
+        DaemonRequest::TerminalSearch {
+            terminal_id,
+            pattern,
+            regex,
+            before,
+            after,
+            max_matches,
+        } => match terminals.get(&terminal_id) {
+            Ok(session) => match session.search(&pattern, regex, before, after, max_matches) {
+                Ok(matches) => terminal_response(TerminalResult {
+                    terminal_id: Some(terminal_id),
+                    matches: Some(matches),
+                    ..Default::default()
+                }),
+                Err(error) => DaemonResponse::failure(format!("{error:#}")),
+            },
+            Err(error) => DaemonResponse::failure(format!("{error:#}")),
+        },
+        DaemonRequest::TerminalResize {
+            terminal_id,
+            cols,
+            rows,
+        } => match terminals.get(&terminal_id) {
+            Ok(session) => match session.resize(cols, rows) {
+                Ok(()) => terminal_ok(terminal_id),
+                Err(error) => DaemonResponse::failure(format!("{error:#}")),
+            },
+            Err(error) => DaemonResponse::failure(format!("{error:#}")),
+        },
+        DaemonRequest::TerminalStatus { terminal_id } => {
+            match terminals.status(&terminal_id) {
+                Ok(snapshot) => terminal_response(snapshot_result(snapshot)),
+                Err(error) => DaemonResponse::failure(format!("{error:#}")),
+            }
+        }
+        DaemonRequest::TerminalClose { terminal_id } => match terminals.close(&terminal_id) {
+            Ok(()) => terminal_ok(terminal_id),
+            Err(error) => DaemonResponse::failure(format!("{error:#}")),
+        },
         DaemonRequest::Shutdown => return (pool.stats_response(), true),
     };
     (response, false)
+}
+
+fn terminal_response(result: TerminalResult) -> DaemonResponse {
+    DaemonResponse {
+        ok: true,
+        terminal: Some(result),
+        ..DaemonResponse::success()
+    }
+}
+
+fn terminal_ok(terminal_id: String) -> DaemonResponse {
+    terminal_response(TerminalResult {
+        terminal_id: Some(terminal_id),
+        ..Default::default()
+    })
+}
+
+fn snapshot_result(snapshot: TerminalSnapshot) -> TerminalResult {
+    TerminalResult {
+        terminal_id: Some(snapshot.terminal_id),
+        state: Some(snapshot.state),
+        exit_code: snapshot.exit_code,
+        size: Some(snapshot.size),
+        tail: Some(snapshot.tail),
+        created_at_ms: Some(snapshot.created_at_ms),
+        last_activity_at_ms: Some(snapshot.last_activity_at_ms),
+        duration_ms: Some(snapshot.duration_ms),
+        ..Default::default()
+    }
 }
 
 fn spool_response(result: SpoolResult) -> DaemonResponse {

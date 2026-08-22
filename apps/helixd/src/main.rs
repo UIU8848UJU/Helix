@@ -51,6 +51,12 @@ enum Command {
         session_idle_seconds: u64,
         #[arg(long, default_value_t = 2)]
         max_idle_sessions_per_key: usize,
+        /// Maximum number of live persistent terminal sessions.
+        #[arg(long, default_value_t = 8)]
+        max_terminals: usize,
+        /// Seconds of inactivity after which a terminal is reaped.
+        #[arg(long, default_value_t = 600)]
+        terminal_idle_seconds: u64,
         /// Execution policy profile: harness (permissive) or sandbox (locked).
         #[arg(long, value_enum, default_value_t = ModeArg::Harness)]
         mode: ModeArg,
@@ -192,6 +198,8 @@ fn main() -> Result<()> {
         task_retention_seconds: 600,
         session_idle_seconds: 120,
         max_idle_sessions_per_key: 2,
+        max_terminals: 8,
+        terminal_idle_seconds: 600,
         mode: ModeArg::Harness,
         read_only: false,
         allow_sudo: false,
@@ -206,6 +214,8 @@ fn main() -> Result<()> {
             task_retention_seconds,
             session_idle_seconds,
             max_idle_sessions_per_key,
+            max_terminals,
+            terminal_idle_seconds,
             mode,
             read_only,
             allow_sudo,
@@ -232,6 +242,8 @@ fn main() -> Result<()> {
                 task_retention_seconds,
                 transport,
                 policy,
+                max_terminals,
+                terminal_idle_seconds,
             )
         }
         Command::DaemonStop { endpoint } => daemon::stop_daemon(&endpoint),
