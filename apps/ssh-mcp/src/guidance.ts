@@ -16,6 +16,7 @@ export const HELIX_SERVER_INSTRUCTIONS = [
   "Harness hosts default to allowedRemotePaths=['/'] and strictHostKeyChecking=false. Do not introduce a path-whitelist or known_hosts setup step unless the active configuration is explicitly locked down.",
   "All user commands pass through the Harness dangerous-command guard. Do not try to bypass a blocked rm, filesystem wipe, block-device write, power-control, PID-1 kill, or fork-bomb command.",
   "Prefer structured cwd, env, and sourceScripts fields for repeatable build and debugging workflows.",
+  "Use terminal_open for persistent interactive sessions (shells, REPLs, long build loops). terminal_open returns a small summary (state, exitCode, size, tail); use terminal_write to send input, terminal_status for the current summary, terminal_read/terminal_tail to page output, terminal_search to find error lines without reading everything, and terminal_close when done. Terminals idle out after the configured timeout.",
   "Each host can carry a persistent defaultWorkingDir (absolute, inside the allowlist). When cwd is omitted, ssh_exec, job_start, docker_exec and compose_exec fall back to it. View with get_working_dir and update with set_working_dir.",
 ].join("\n");
 
@@ -27,6 +28,7 @@ export const HELP_TOPICS = [
   "sudo",
   "transfer",
   "docker",
+  "terminal",
   "configuration",
   "troubleshooting",
 ] as const;
@@ -68,6 +70,22 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
     "Execute a short remote command with structured cwd, env, and source scripts. Use job_start instead when work may exceed roughly 30 seconds or must survive the MCP call.",
   ssh_pty:
     "Execute a remote command under an allocated PTY (xterm) for interactive flows; stdin input is passed through and the merged output is returned with a deadline.",
+  terminal_open:
+    "Open a persistent interactive PTY session on a remote host; returns a summary envelope (terminalId, state, exitCode, size, tail). Use terminal_write/terminal_read/terminal_search to interact and drill down.",
+  terminal_write:
+    "Write input to a persistent terminal stdin. PTY input is echoed back, so never pass passwords or secrets.",
+  terminal_read:
+    "Read a byte range from a persistent terminal clean output by cursor; continue with the returned nextCursor until eof.",
+  terminal_tail:
+    "Read the newest output of a persistent terminal without a cursor.",
+  terminal_search:
+    "Search a persistent terminal clean output for matching lines with optional context.",
+  terminal_resize:
+    "Resize a persistent terminal PTY dimensions.",
+  terminal_status:
+    "Return the current summary envelope of a persistent terminal.",
+  terminal_close:
+    "Close a persistent terminal and free its resources.",
   sudo_exec:
     "Execute a short command directly through sudo. No approval flow or expiry is used; use job_start(useSudo=true) for long privileged work.",
   job_start:
@@ -154,6 +172,22 @@ const HELP: Record<HelpTopic, object> = {
     ],
     types: ["build", "test", "docker-build", "compose-build", "deploy", "service", "data", "simulation", "run", "custom"],
     persistence: "State and logs live under /tmp/helix/jobs/<jobId>. They survive MCP/SSH sessions but not a remote reboot, and /tmp may be cleaned.",
+  },
+
+  terminal: {
+    chooseWhen: [
+      "The workflow needs stateful stdin/stdout across multiple requests.",
+      "An interactive shell, REPL, or long build loop should stay alive between calls.",
+      "Output is large and should be searched or tailed instead of dumped.",
+    ],
+    workflow: [
+      "Call terminal_open with host and command (e.g. bash --norc -i).",
+      "Save the returned terminalId; it stays alive until terminal_close or the idle timeout.",
+      "Send input with terminal_write; read output with terminal_status, terminal_tail, or terminal_read.",
+      "Find error lines with terminal_search instead of reading everything.",
+      "Call terminal_close when finished.",
+    ],
+    persistence: "Terminals are reaped after the configured idle timeout; close them explicitly when done.",
   },
   sudo: {
     workflow: [
