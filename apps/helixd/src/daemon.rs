@@ -1,27 +1,27 @@
 use crate::{engine::BrokerEngine, ipc_security};
+use anyhow::{anyhow, Context, Result};
 use helix_core::{
     protocol::{DaemonRequest, DaemonResponse, SpoolResult, TerminalResult},
     sandbox::SandboxPolicy,
     spool::SpoolManager,
     task_pool::TaskPool,
-    terminal::{TerminalRegistry, TerminalSnapshot},
+    terminal::{cleanup_orphaned_terminals, TerminalRegistry, TerminalSnapshot},
     transport::{ExecTarget, TerminalOpenRequest, Transport},
 };
-use anyhow::{Context, Result, anyhow};
-use interprocess::local_socket::{GenericFilePath, prelude::*};
 #[cfg(not(windows))]
 use interprocess::local_socket::ListenerOptions;
+use interprocess::local_socket::{prelude::*, GenericFilePath};
 #[cfg(windows)]
 use interprocess::os::windows::{
-    named_pipe::{PipeListener, PipeListenerOptions, PipeStream, pipe_mode::Bytes},
+    named_pipe::{pipe_mode::Bytes, PipeListener, PipeListenerOptions, PipeStream},
     security_descriptor::SecurityDescriptor,
 };
 use std::{
     borrow::Cow,
     io::{BufRead, BufReader, ErrorKind, Write},
     sync::{
-        Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
     },
     thread,
     time::{Duration, Instant},
@@ -47,6 +47,7 @@ const IPC_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const IPC_OUTPUT_BUFFER_BYTES: u32 = 128 * 1024;
 const IPC_WRITE_CHUNK_BYTES: usize = 64 * 1024;
 const TERMINAL_REAP_INTERVAL: Duration = Duration::from_secs(5);
+const MAX_TERMINAL_HISTORY_BYTES: usize = 256 * 1024 * 1024;
 
 #[cfg(windows)]
 type ServerListener = PipeListener<Bytes, Bytes>;
@@ -81,6 +82,15 @@ pub fn serve_daemon(
     };
 
     let spool = Arc::new(SpoolManager::at_default_root()?);
+    match cleanup_orphaned_terminals() {
+        Ok(count) if count > 0 => {
+            eprintln!("cleaned {count} orphaned terminal session directory(ies)");
+        }
+        Ok(_) => {}
+        Err(error) => {
+            eprintln!("failed to clean orphaned terminal directories: {error:#}");
+        }
+    }
     let terminals = Arc::new(TerminalRegistry::new(max_terminals, terminal_idle_seconds));
     let engine = Arc::new(BrokerEngine::new(transport.clone(), policy));
     let pool = Arc::new(TaskPool::new(
@@ -156,8 +166,8 @@ fn create_listener(endpoint: &str) -> Result<ServerListener> {
         .context("broker IPC security descriptor contains NUL")?;
     let descriptor = SecurityDescriptor::deserialize(&sddl)
         .context("failed to build owner-only broker pipe security descriptor")?;
-    let path = widestring::U16CString::from_str(endpoint)
-        .context("broker IPC endpoint contains NUL")?;
+    let path =
+        widestring::U16CString::from_str(endpoint).context("broker IPC endpoint contains NUL")?;
     let mut options = PipeListenerOptions::new();
     options.path = Cow::Owned(path);
     options.output_buffer_size_hint = IPC_OUTPUT_BUFFER_BYTES;
@@ -189,12 +199,14 @@ fn compatible_daemon_is_listening(endpoint: &str) -> bool {
             serde_json::from_slice(&read_request_line(BufReader::new(stream))?)?;
         Ok(response.ok
             && response.protocol_version == helix_core::protocol::DAEMON_PROTOCOL_VERSION
-            && helix_core::protocol::DAEMON_CAPABILITIES.iter().all(|required| {
-                response
-                    .capabilities
-                    .iter()
-                    .any(|actual| actual == required)
-            }))
+            && helix_core::protocol::DAEMON_CAPABILITIES
+                .iter()
+                .all(|required| {
+                    response
+                        .capabilities
+                        .iter()
+                        .any(|actual| actual == required)
+                }))
     })();
     result.unwrap_or(false)
 }
@@ -246,11 +258,9 @@ pub fn stop_daemon(endpoint: &str) -> Result<()> {
     let response = read_request_line(&mut reader)?;
     let response: DaemonResponse = serde_json::from_slice(&response)?;
     if !response.ok {
-        return Err(anyhow!(
-            response
-                .error
-                .unwrap_or_else(|| "daemon shutdown failed".to_owned())
-        ));
+        return Err(anyhow!(response
+            .error
+            .unwrap_or_else(|| "daemon shutdown failed".to_owned())));
     }
     Ok(())
 }
@@ -277,10 +287,7 @@ fn handle_connection(
     Ok(shutdown)
 }
 
-fn write_response(
-    mut stream: ServerStream,
-    response: &DaemonResponse,
-) -> Result<()> {
+fn write_response(mut stream: ServerStream, response: &DaemonResponse) -> Result<()> {
     let mut output = serde_json::to_vec(response)?;
     output.push(b'\n');
     let deadline = Instant::now() + IPC_TIMEOUT;
@@ -435,7 +442,10 @@ fn handle_request(
             },
             None => DaemonResponse::failure("spool is not enabled on this daemon".to_owned()),
         },
-        DaemonRequest::SpoolTail { result_ref, max_bytes } => match pool.spool() {
+        DaemonRequest::SpoolTail {
+            result_ref,
+            max_bytes,
+        } => match pool.spool() {
             Some(spool) => match spool.tail(&result_ref, max_bytes.max(1)) {
                 Ok(tail) => spool_response(SpoolResult {
                     content: Some(tail.content),
@@ -455,20 +465,15 @@ fn handle_request(
             after,
             max_matches,
         } => match pool.spool() {
-            Some(spool) => match spool.search(
-                &result_ref,
-                &pattern,
-                regex,
-                before,
-                after,
-                max_matches,
-            ) {
-                Ok(matches) => spool_response(SpoolResult {
-                    matches: Some(matches),
-                    ..Default::default()
-                }),
-                Err(error) => DaemonResponse::failure(format!("{error:#}")),
-            },
+            Some(spool) => {
+                match spool.search(&result_ref, &pattern, regex, before, after, max_matches) {
+                    Ok(matches) => spool_response(SpoolResult {
+                        matches: Some(matches),
+                        ..Default::default()
+                    }),
+                    Err(error) => DaemonResponse::failure(format!("{error:#}")),
+                }
+            }
             None => DaemonResponse::failure("spool is not enabled on this daemon".to_owned()),
         },
         DaemonRequest::TerminalOpen {
@@ -495,7 +500,7 @@ fn handle_request(
                 cols,
                 rows,
                 idle_seconds,
-                max_history_bytes,
+                max_history_bytes: max_history_bytes.clamp(1024, MAX_TERMINAL_HISTORY_BYTES),
             };
             match transport.open_terminal(request) {
                 Ok(session) => match terminals.open(session) {
@@ -508,15 +513,13 @@ fn handle_request(
                 Err(error) => DaemonResponse::failure(format!("{error:#}")),
             }
         }
-        DaemonRequest::TerminalWrite { terminal_id, input } => {
-            match terminals.get(&terminal_id) {
-                Ok(session) => match session.write(&input) {
-                    Ok(()) => terminal_ok(terminal_id),
-                    Err(error) => DaemonResponse::failure(format!("{error:#}")),
-                },
+        DaemonRequest::TerminalWrite { terminal_id, input } => match terminals.get(&terminal_id) {
+            Ok(session) => match session.write(&input) {
+                Ok(()) => terminal_ok(terminal_id),
                 Err(error) => DaemonResponse::failure(format!("{error:#}")),
-            }
-        }
+            },
+            Err(error) => DaemonResponse::failure(format!("{error:#}")),
+        },
         DaemonRequest::TerminalRead {
             terminal_id,
             cursor,
@@ -579,12 +582,10 @@ fn handle_request(
             },
             Err(error) => DaemonResponse::failure(format!("{error:#}")),
         },
-        DaemonRequest::TerminalStatus { terminal_id } => {
-            match terminals.status(&terminal_id) {
-                Ok(snapshot) => terminal_response(snapshot_result(snapshot)),
-                Err(error) => DaemonResponse::failure(format!("{error:#}")),
-            }
-        }
+        DaemonRequest::TerminalStatus { terminal_id } => match terminals.status(&terminal_id) {
+            Ok(snapshot) => terminal_response(snapshot_result(snapshot)),
+            Err(error) => DaemonResponse::failure(format!("{error:#}")),
+        },
         DaemonRequest::TerminalClose { terminal_id } => match terminals.close(&terminal_id) {
             Ok(()) => terminal_ok(terminal_id),
             Err(error) => DaemonResponse::failure(format!("{error:#}")),
@@ -619,6 +620,7 @@ fn snapshot_result(snapshot: TerminalSnapshot) -> TerminalResult {
         created_at_ms: Some(snapshot.created_at_ms),
         last_activity_at_ms: Some(snapshot.last_activity_at_ms),
         duration_ms: Some(snapshot.duration_ms),
+        log_error: snapshot.log_error,
         ..Default::default()
     }
 }
@@ -669,8 +671,3 @@ mod tests {
         assert_eq!(error.to_string(), "broker IPC request exceeds 4 MiB");
     }
 }
-
-
-
-
-

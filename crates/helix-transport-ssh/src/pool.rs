@@ -1,6 +1,6 @@
-﻿use crate::ssh;
-use helix_credential::credential;
+use crate::ssh;
 use anyhow::Result;
+use helix_credential::credential;
 use ssh2::Session;
 use std::{
     collections::HashMap,
@@ -135,7 +135,7 @@ fn retryable_connect_error(error: &anyhow::Error) -> bool {
     .any(|needle| text.contains(needle))
 }
 
-fn connect_with_retry(
+pub(crate) fn connect_with_retry(
     options: &ssh::ConnectOptions<'_>,
     credential: &credential::StoredCredential,
 ) -> Result<Session> {
@@ -172,4 +172,3 @@ mod tests {
         assert!(retryable_connect_error(&error));
     }
 }
-

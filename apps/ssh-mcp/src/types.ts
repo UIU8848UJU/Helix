@@ -160,6 +160,7 @@ export interface TerminalStatusResult {
   createdAtMs: number;
   lastActivityAtMs: number;
   durationMs: number;
+  logError?: string;
 }
 
 export interface TerminalReadResult {

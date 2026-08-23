@@ -1,14 +1,14 @@
-﻿//! Transport abstraction. `helix-core` only knows generic execution concepts:
+//! Transport abstraction. `helix-core` only knows generic execution concepts:
 //! exec / PTY / sudo / upload / download. Concrete adapters (SSH, Aliyun,
 //! SASS, ...) live in their own crates and implement this trait.
 
 use crate::{
     protocol::BrokerResponse,
     spool::{SpoolMatch, SpoolRead, SpoolTail},
-    terminal::TerminalSnapshot,
     task_pool::CancellationToken,
+    terminal::TerminalSnapshot,
 };
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -80,6 +80,10 @@ pub trait TerminalSession: Send + Sync + 'static {
     fn close(&self) -> Result<()>;
     /// Monotonic-millis timestamp of the last write/output activity.
     fn last_activity_at(&self) -> u128;
+    /// Per-session idle timeout in seconds. Zero means the registry default.
+    fn idle_timeout_seconds(&self) -> u64 {
+        0
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -108,10 +112,7 @@ pub trait Transport: Send + Sync + 'static {
 
     /// Opens a persistent interactive session. The default implementation
     /// rejects the request so transports without terminal support fail loudly.
-    fn open_terminal(
-        &self,
-        _request: TerminalOpenRequest,
-    ) -> Result<Arc<dyn TerminalSession>> {
+    fn open_terminal(&self, _request: TerminalOpenRequest) -> Result<Arc<dyn TerminalSession>> {
         Err(anyhow!("terminals are not supported by this transport"))
     }
 

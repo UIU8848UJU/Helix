@@ -47,6 +47,7 @@ interface BrokerDaemonResponse {
     createdAtMs?: number;
     lastActivityAtMs?: number;
     durationMs?: number;
+    logError?: string;
   };
   taskId?: string;
   state?: BrokerTaskState;
@@ -766,6 +767,7 @@ function terminalStatusFrom(response: BrokerDaemonResponse): TerminalStatusResul
     createdAtMs: terminal.createdAtMs ?? 0,
     lastActivityAtMs: terminal.lastActivityAtMs ?? 0,
     durationMs: terminal.durationMs ?? 0,
+    logError: terminal.logError,
   };
 }
 

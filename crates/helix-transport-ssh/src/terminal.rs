@@ -4,14 +4,15 @@
 //! All channel access is serialized through a mutex because libssh2 sessions
 //! are not safe for concurrent use.
 
+use crate::pool::connect_with_retry;
 use crate::ssh::{self, ConnectOptions};
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use helix_core::{
-    spool::{SpoolMatch, SpoolRead, SpoolTail},
     spool::runtime_dir,
+    spool::{SpoolMatch, SpoolRead, SpoolTail},
     terminal::{
-        self, TerminalOutput, TerminalSnapshot, TerminalState, clean_text, generate_terminal_id,
-        monotonic_ms,
+        self, generate_terminal_id, monotonic_ms, TerminalCleaner, TerminalOutput,
+        TerminalSnapshot, TerminalState,
     },
     transport::{ExecTarget, TerminalOpenRequest, TerminalSession},
 };
@@ -21,8 +22,8 @@ use std::{
     io::{ErrorKind, Read, Write},
     path::PathBuf,
     sync::{
-        Arc, Mutex,
         atomic::{AtomicU64, AtomicU8, Ordering},
+        Arc, Mutex,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -85,6 +86,7 @@ struct SessionShared {
     state: AtomicU8,
     exit_code: AtomicU64,
     last_activity: AtomicU64,
+    log_error: Mutex<Option<String>>,
 }
 
 impl SessionShared {
@@ -93,12 +95,21 @@ impl SessionShared {
             state: AtomicU8::new(STATE_RUNNING),
             exit_code: AtomicU64::new(u64::MAX),
             last_activity: AtomicU64::new(now as u64),
+            log_error: Mutex::new(None),
         }
     }
 
     fn touch(&self) {
         self.last_activity
             .store(monotonic_ms() as u64, Ordering::Relaxed);
+    }
+
+    fn record_log_error(&self, error: &anyhow::Error) {
+        if let Ok(mut log_error) = self.log_error.lock() {
+            if log_error.is_none() {
+                *log_error = Some(format!("{error:#}"));
+            }
+        }
     }
 }
 
@@ -108,6 +119,7 @@ pub struct SshTerminalSession {
     output: Arc<TerminalOutput>,
     shared: Arc<SessionShared>,
     created_at: u128,
+    idle_seconds: u64,
     handle: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -127,6 +139,15 @@ impl TerminalSession for SshTerminalSession {
     }
 
     fn write(&self, input: &str) -> Result<()> {
+        match self.state() {
+            TerminalState::Running => {}
+            TerminalState::Finished => {
+                return Err(anyhow!("terminal has finished; open a new terminal"));
+            }
+            TerminalState::Closed => {
+                return Err(anyhow!("terminal is closed"));
+            }
+        }
         let mut channel = self
             .channel
             .lock()
@@ -137,6 +158,15 @@ impl TerminalSession for SshTerminalSession {
     }
 
     fn resize(&self, cols: u16, rows: u16) -> Result<()> {
+        match self.state() {
+            TerminalState::Running => {}
+            TerminalState::Finished => {
+                return Err(anyhow!("terminal has finished; open a new terminal"));
+            }
+            TerminalState::Closed => {
+                return Err(anyhow!("terminal is closed"));
+            }
+        }
         let mut channel = self
             .channel
             .lock()
@@ -166,6 +196,12 @@ impl TerminalSession for SshTerminalSession {
             created_at_ms: self.created_at,
             last_activity_at_ms: last_activity,
             duration_ms: last_activity.saturating_sub(self.created_at),
+            log_error: self
+                .shared
+                .log_error
+                .lock()
+                .ok()
+                .and_then(|error| error.clone()),
         }
     }
 
@@ -185,7 +221,8 @@ impl TerminalSession for SshTerminalSession {
         after: usize,
         max_matches: usize,
     ) -> Result<Vec<SpoolMatch>> {
-        self.output.search(pattern, regex, before, after, max_matches)
+        self.output
+            .search(pattern, regex, before, after, max_matches)
     }
 
     fn close(&self) -> Result<()> {
@@ -215,6 +252,10 @@ impl TerminalSession for SshTerminalSession {
     fn last_activity_at(&self) -> u128 {
         self.shared.last_activity.load(Ordering::Relaxed) as u128
     }
+
+    fn idle_timeout_seconds(&self) -> u64 {
+        self.idle_seconds
+    }
 }
 
 /// Opens a persistent interactive PTY session against `target` and starts the
@@ -231,7 +272,8 @@ pub fn open_terminal(
         timeout_seconds: CONNECT_TIMEOUT_SECONDS,
         strict_host_key_checking: target.strict_host_key_checking,
     };
-    let session = ssh::connect(&options, &credential)?;
+    let session = connect_with_retry(&options, &credential)?;
+    session.set_keepalive(true, 30);
     // Create and exec the channel in blocking mode first; libssh2's
     // nonblocking mode would otherwise return EAGAIN for these handshakes.
     let mut channel = session.channel_session()?;
@@ -255,6 +297,7 @@ pub fn open_terminal(
     let drain_channel = Arc::clone(&channel);
     let drain_output = Arc::clone(&output);
     let drain_shared = Arc::clone(&shared);
+    let mut cleaner = TerminalCleaner::new();
     let handle = thread::Builder::new()
         .name(format!("helix-term-{id}"))
         .spawn(move || {
@@ -271,9 +314,13 @@ pub fn open_terminal(
                     Ok(0) => break, // remote EOF
                     Ok(count) => {
                         let chunk = &buffer[..count];
-                        let _ = drain_output.append_raw(chunk);
-                        let text = String::from_utf8_lossy(chunk);
-                        let _ = drain_output.append_clean(&clean_text(&text));
+                        if let Err(error) = drain_output.append_raw(chunk) {
+                            drain_shared.record_log_error(&error);
+                        }
+                        let cleaned = cleaner.push(chunk);
+                        if let Err(error) = drain_output.append_clean(&cleaned) {
+                            drain_shared.record_log_error(&error);
+                        }
                         drain_shared.touch();
                     }
                     Err(error) if error.kind() == ErrorKind::WouldBlock => {
@@ -283,12 +330,30 @@ pub fn open_terminal(
                     Err(_) => break,
                 }
             }
+            let flushed = cleaner.flush();
+            if !flushed.is_empty() {
+                if let Err(error) = drain_output.append_clean(&flushed) {
+                    drain_shared.record_log_error(&error);
+                }
+            }
             let exit_code = drain_channel
                 .lock()
                 .map(|channel| channel.exit_status().unwrap_or(-1))
                 .unwrap_or(-1);
-            drain_shared.exit_code.store(exit_code as u64, Ordering::Relaxed);
-            drain_shared.state.store(STATE_FINISHED, Ordering::Relaxed);
+            if drain_shared
+                .state
+                .compare_exchange(
+                    STATE_RUNNING,
+                    STATE_FINISHED,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                drain_shared
+                    .exit_code
+                    .store(exit_code as u64, Ordering::Relaxed);
+            }
         })
         .context("failed to start terminal drain thread")?;
 
@@ -298,6 +363,7 @@ pub fn open_terminal(
         output,
         shared,
         created_at: monotonic_ms(),
+        idle_seconds: request.idle_seconds,
         handle: Mutex::new(Some(handle)),
     }))
 }

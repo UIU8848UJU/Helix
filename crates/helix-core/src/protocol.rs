@@ -1,7 +1,4 @@
-use crate::{
-    spool::SpoolMatch,
-    terminal::TerminalState,
-};
+use crate::{spool::SpoolMatch, terminal::TerminalState};
 use serde::{Deserialize, Serialize};
 
 pub const DAEMON_PROTOCOL_VERSION: u32 = 5;
@@ -288,6 +285,8 @@ pub struct TerminalResult {
     pub created_at_ms: Option<u128>,
     pub last_activity_at_ms: Option<u128>,
     pub duration_ms: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_error: Option<String>,
 }
 
 impl Default for TerminalResult {
@@ -305,6 +304,7 @@ impl Default for TerminalResult {
             created_at_ms: None,
             last_activity_at_ms: None,
             duration_ms: None,
+            log_error: None,
         }
     }
 }
@@ -423,9 +423,10 @@ mod tests {
 
     #[test]
     fn terminal_io_requests_parse() {
-        let write: DaemonRequest =
-            serde_json::from_str(r#"{"op":"terminal_write","terminal_id":"term-1","input":"ls\n"}"#)
-                .unwrap();
+        let write: DaemonRequest = serde_json::from_str(
+            r#"{"op":"terminal_write","terminal_id":"term-1","input":"ls\n"}"#,
+        )
+        .unwrap();
         assert!(matches!(write, DaemonRequest::TerminalWrite { .. }));
 
         let read: DaemonRequest = serde_json::from_str(
@@ -470,6 +471,7 @@ mod tests {
             created_at_ms: Some(1),
             last_activity_at_ms: Some(2),
             duration_ms: Some(1),
+            log_error: None,
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("\"terminalId\":\"term-1\""));
