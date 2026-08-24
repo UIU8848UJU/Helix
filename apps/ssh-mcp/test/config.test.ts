@@ -44,6 +44,7 @@ describe("configuration", () => {
     expect(defaultConfig.settings.allowHostMutation).toBe(true);
     expect(defaultConfig.settings.allowPolicyMutation).toBe(true);
     expect(defaultConfig.settings.strictHostKeyChecking).toBe(false);
+    expect(defaultConfig.settings.allowPersistentTerminal).toBe(false);
     expect(safeLifecycleRemotePaths("developer")).toEqual(["/"]);
     expect(JSON.parse(await fs.readFile(store.filePath, "utf8"))).toEqual(defaultConfig);
   });

@@ -1,4 +1,4 @@
-﻿use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -128,6 +128,8 @@ impl SpoolManager {
             next_cursor: end,
             eof: end >= data.len(),
             size: data.len(),
+            earliest_cursor: 0,
+            end_cursor: data.len(),
         })
     }
 
@@ -138,6 +140,8 @@ impl SpoolManager {
             content: String::from_utf8_lossy(&data[start..]).into_owned(),
             size: data.len(),
             start,
+            earliest_cursor: 0,
+            end_cursor: data.len(),
         })
     }
 
@@ -187,46 +191,56 @@ pub fn search_text(
     after: usize,
     max_matches: usize,
 ) -> Result<Vec<SpoolMatch>> {
-        if pattern.is_empty() {
-            return Err(anyhow!("spool search pattern must not be empty"));
+    if pattern.is_empty() {
+        return Err(anyhow!("spool search pattern must not be empty"));
+    }
+    let matcher: Box<dyn Fn(&str) -> bool> = if regex {
+        let compiled = regex::Regex::new(pattern)
+            .map_err(|error| anyhow!("invalid spool search regex: {error}"))?;
+        Box::new(move |line| compiled.is_match(line))
+    } else {
+        let needle = pattern.to_lowercase();
+        Box::new(move |line| line.to_lowercase().contains(&needle))
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let mut matches = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if !matcher(line) {
+            continue;
         }
-        let matcher: Box<dyn Fn(&str) -> bool> = if regex {
-            let compiled = regex::Regex::new(pattern)
-                .map_err(|error| anyhow!("invalid spool search regex: {error}"))?;
-            Box::new(move |line| compiled.is_match(line))
+        let before_lines = if before > 0 {
+            let start = index.saturating_sub(before);
+            Some(
+                lines[start..index]
+                    .iter()
+                    .map(|s| (*s).to_owned())
+                    .collect(),
+            )
         } else {
-            let needle = pattern.to_lowercase();
-            Box::new(move |line| line.to_lowercase().contains(&needle))
+            None
         };
-        let lines: Vec<&str> = text.lines().collect();
-        let mut matches = Vec::new();
-        for (index, line) in lines.iter().enumerate() {
-            if !matcher(line) {
-                continue;
-            }
-            let before_lines = if before > 0 {
-                let start = index.saturating_sub(before);
-                Some(lines[start..index].iter().map(|s| (*s).to_owned()).collect())
-            } else {
-                None
-            };
-            let after_lines = if after > 0 {
-                let end = (index + 1 + after).min(lines.len());
-                Some(lines[index + 1..end].iter().map(|s| (*s).to_owned()).collect())
-            } else {
-                None
-            };
-            matches.push(SpoolMatch {
-                line: index + 1,
-                text: (*line).to_owned(),
-                before: before_lines,
-                after: after_lines,
-            });
-            if matches.len() >= max_matches.max(1) {
-                break;
-            }
+        let after_lines = if after > 0 {
+            let end = (index + 1 + after).min(lines.len());
+            Some(
+                lines[index + 1..end]
+                    .iter()
+                    .map(|s| (*s).to_owned())
+                    .collect(),
+            )
+        } else {
+            None
+        };
+        matches.push(SpoolMatch {
+            line: index + 1,
+            text: (*line).to_owned(),
+            before: before_lines,
+            after: after_lines,
+        });
+        if matches.len() >= max_matches.max(1) {
+            break;
         }
-        Ok(matches)
+    }
+    Ok(matches)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,6 +258,8 @@ pub struct SpoolRead {
     pub next_cursor: usize,
     pub eof: bool,
     pub size: usize,
+    pub earliest_cursor: usize,
+    pub end_cursor: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -252,6 +268,8 @@ pub struct SpoolTail {
     pub content: String,
     pub size: usize,
     pub start: usize,
+    pub earliest_cursor: usize,
+    pub end_cursor: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,6 +318,37 @@ fn validate_task_id(task_id: &str) -> Result<()> {
 }
 
 #[cfg(test)]
+struct TestTempDir(std::path::PathBuf);
+
+#[cfg(test)]
+impl TestTempDir {
+    fn new() -> Self {
+        let unique = format!(
+            "helix-spool-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestTempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -337,7 +386,9 @@ mod tests {
         assert_eq!(read.next_cursor, 100);
         assert!(!read.eof);
 
-        let read = spool.read("spool://broker-1-2/stdout", 900, 10_000).unwrap();
+        let read = spool
+            .read("spool://broker-1-2/stdout", 900, 10_000)
+            .unwrap();
         assert_eq!(read.content.len(), 100);
         assert!(read.eof);
         assert_eq!(read.size, 1000);
@@ -388,35 +439,3 @@ mod tests {
         assert!(spool.read("spool://broker-1-4/stdout", 0, 10).is_err());
     }
 }
-
-#[cfg(test)]
-struct TestTempDir(std::path::PathBuf);
-
-#[cfg(test)]
-impl TestTempDir {
-    fn new() -> Self {
-        let unique = format!(
-            "helix-spool-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        );
-        let path = std::env::temp_dir().join(unique);
-        std::fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn path(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-#[cfg(test)]
-impl Drop for TestTempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-

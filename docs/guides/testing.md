@@ -56,12 +56,13 @@ node tests/run-all.mjs
 
 SSH 阶段（需可达目标）：`$env:HELIX_BENCH_SSH_HOST="<host>"` 后 `node tests/bench.mjs --ssh`。
 持久终端验证（需可达目标 + Windows 凭据）：`node tests/terminal.mjs`，环境变量 `HELIX_SSH_HOST` / `HELIX_SSH_USER` / `HELIX_SSH_CRED_REF`。覆盖 open/write/read/tail/search/resize/status/close 全流程。
+该路径必须以 `helixd serve-daemon --allow-persistent-terminal` 显式授权；默认策略会在任何 transport 副作用前拒绝 `terminal_open`。终端历史 cursor 是绝对字节偏移，日志 trim 后旧 cursor 会得到明确的 expired 错误，而不会映射到新日志内容。
 详见 `tests/README.md`。
 
 ## 5. beta 发布流程
 
-1. `.\scripts\build-beta.ps1 -Version 0.4.0-beta.1`（自动跑门禁 + 组装包 + SHA256SUMS + zip）。
+1. `.\scripts\build-beta.ps1 -Version 0.4.0-beta.2`（自动跑门禁 + 组装包 + SHA256SUMS + zip）。
 2. 按第 3 节沙箱验证离线安装与 bundle 冒烟。
 3. 提交脚本与本文档：`scripts/build-beta.ps1`、`scripts/install-beta.ps1`、`docs/guides/testing.md`，分步 commit 并 push。
-4. 打标签：`git tag v0.4.0-beta.1` + `git push origin v0.4.0-beta.1`。
-5. GitHub Release（prerelease）：上传 `dist\helix-0.4.0-beta.1-win-x64.zip` 并附 SHA-256。beta 阶段仅 win-x64；Linux/macOS 安装走 `install.sh`，待后续提供 Linux 二进制。
+4. 打标签：`git tag v0.4.0-beta.2` + `git push origin v0.4.0-beta.2`。
+5. GitHub Release（prerelease）：上传 `dist\helix-0.4.0-beta.2-win-x64.zip` 并附 SHA-256。beta 阶段仅 win-x64；Linux/macOS 安装走 `install.sh`，待后续提供 Linux 二进制。

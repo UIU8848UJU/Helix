@@ -32,6 +32,7 @@ export interface GlobalSettings {
   maxOutputBytes: number;
   maxConcurrentCommands: number;
   strictHostKeyChecking: boolean;
+  allowPersistentTerminal: boolean;
   auditEnabled: boolean;
   auditCommandMode: AuditCommandMode;
   credentialBrokerPath?: string | null;
@@ -168,11 +169,16 @@ export interface TerminalReadResult {
   nextCursor: number;
   eof: boolean;
   size: number;
+  earliestCursor: number;
+  endCursor: number;
 }
 
 export interface TerminalTailResult {
   content: string;
   size: number;
+  earliestCursor: number;
+  endCursor: number;
+  startCursor: number;
 }
 
 export interface PendingApproval {

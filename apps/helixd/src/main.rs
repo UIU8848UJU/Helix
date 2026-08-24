@@ -63,6 +63,9 @@ enum Command {
         /// Force read-only remote access (denies sudo and uploads).
         #[arg(long)]
         read_only: bool,
+        /// Explicitly authorize persistent interactive terminals.
+        #[arg(long)]
+        allow_persistent_terminal: bool,
         /// Allow sudo in sandbox mode.
         #[arg(long)]
         allow_sudo: bool,
@@ -140,6 +143,7 @@ fn normalize_targets(targets: Vec<String>) -> Result<Vec<String>> {
 fn build_policy(
     mode: ModeArg,
     read_only: bool,
+    allow_persistent_terminal: bool,
     allow_sudo: bool,
     allowed_remote_paths: Vec<String>,
     allowed_local_paths: Vec<String>,
@@ -150,6 +154,7 @@ fn build_policy(
             mode: ExecutionMode::Harness,
             read_only_remote: read_only,
             allow_sudo: allow_sudo || !read_only,
+            allow_persistent_terminal,
             allowed_remote_paths: non_empty(allowed_remote_paths),
             allowed_local_paths: non_empty(allowed_local_paths),
             allowed_command_prefixes: non_empty(allowed_commands),
@@ -159,6 +164,7 @@ fn build_policy(
             mode: ExecutionMode::Sandbox,
             read_only_remote: read_only || !allow_sudo,
             allow_sudo,
+            allow_persistent_terminal,
             allowed_remote_paths: non_empty(allowed_remote_paths),
             allowed_local_paths: non_empty(allowed_local_paths),
             allowed_command_prefixes: non_empty(allowed_commands),
@@ -202,6 +208,7 @@ fn main() -> Result<()> {
         terminal_idle_seconds: 600,
         mode: ModeArg::Harness,
         read_only: false,
+        allow_persistent_terminal: false,
         allow_sudo: false,
         allowed_remote_paths: Vec::new(),
         allowed_local_paths: Vec::new(),
@@ -218,6 +225,7 @@ fn main() -> Result<()> {
             terminal_idle_seconds,
             mode,
             read_only,
+            allow_persistent_terminal,
             allow_sudo,
             allowed_remote_paths,
             allowed_local_paths,
@@ -226,6 +234,7 @@ fn main() -> Result<()> {
             let policy = build_policy(
                 mode,
                 read_only,
+                allow_persistent_terminal,
                 allow_sudo,
                 allowed_remote_paths,
                 allowed_local_paths,
@@ -236,14 +245,16 @@ fn main() -> Result<()> {
                 max_idle_sessions_per_key,
             ));
             daemon::serve_daemon(
-                &endpoint,
-                workers,
-                queue_capacity,
-                task_retention_seconds,
+                daemon::DaemonConfig {
+                    endpoint: &endpoint,
+                    workers,
+                    queue_capacity,
+                    retention_seconds: task_retention_seconds,
+                    max_terminals,
+                    terminal_idle_seconds,
+                },
                 transport,
                 policy,
-                max_terminals,
-                terminal_idle_seconds,
             )
         }
         Command::DaemonStop { endpoint } => daemon::stop_daemon(&endpoint),
@@ -552,9 +563,7 @@ mod tests {
         ))
         .expect("engine pty request should parse");
         let engine = BrokerEngine::new(Arc::new(SshTransport::new(1, 1)), SandboxPolicy::harness());
-        let response = engine
-            .handle(request)
-            .expect("engine should dispatch pty");
+        let response = engine.handle(request).expect("engine should dispatch pty");
         assert!(response.ok, "engine pty command failed: {response:?}");
         assert_eq!(response.exit_code, Some(0));
         let out = response.stdout.unwrap_or_default();

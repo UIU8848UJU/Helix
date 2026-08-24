@@ -31,8 +31,9 @@ function buildSettings(): GlobalSettings {
     allowPolicyMutation: false,
     defaultTimeoutSeconds: 30,
     maxOutputBytes: 1024 * 1024,
-    maxConcurrentCommands: 4,
-    strictHostKeyChecking: false,
+      maxConcurrentCommands: 4,
+      strictHostKeyChecking: false,
+      allowPersistentTerminal: false,
     auditEnabled: false,
     auditCommandMode: "plain",
   };

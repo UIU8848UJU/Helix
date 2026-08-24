@@ -1,7 +1,7 @@
-﻿use helix_core::task_pool::CancellationToken;
-use helix_core::protocol::BrokerResponse;
-use helix_credential::credential::StoredCredential;
 use anyhow::{Context, Result, anyhow};
+use helix_core::protocol::BrokerResponse;
+use helix_core::task_pool::CancellationToken;
+use helix_credential::credential::StoredCredential;
 use ssh2::{CheckResult, KnownHostFileKind, Session, Sftp};
 use std::{
     fs::{self, File},
@@ -504,5 +504,3 @@ mod output_tests {
         assert_eq!(stdout.len() + stderr.len(), 1024);
     }
 }
-
-

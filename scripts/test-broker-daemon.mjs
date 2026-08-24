@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createConnection } from "node:net";
 import path from "node:path";
 
-const PROTOCOL_VERSION = 4;
+const PROTOCOL_VERSION = 5;
 const root = process.cwd();
 const executable = path.join(
   root,
@@ -58,7 +58,10 @@ function assertProtocol(response) {
   if (response.protocolVersion !== PROTOCOL_VERSION) {
     throw new Error(`expected protocolVersion=${PROTOCOL_VERSION}, got ${response.protocolVersion}`);
   }
-  for (const capability of ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "spool_v1"]) {
+  for (const capability of [
+    "task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "terminal_v1",
+    "terminal_policy_v2", "terminal_cursor_v2", "spool_v1",
+  ]) {
     if (!response.capabilities?.includes(capability)) {
       throw new Error(`missing daemon capability: ${capability}`);
     }
@@ -134,6 +137,43 @@ async function assertOwnerOnlyPipeAcl() {
   }
 }
 
+async function assertTerminalPolicyProcess(extraArgs, expectedEnabled, expectedFingerprint) {
+  const policyChild = spawn(executable, [
+    "serve-daemon",
+    "--endpoint", endpoint,
+    "--workers", "1",
+    "--queue-capacity", "2",
+    ...extraArgs,
+  ], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+  let policyStderr = "";
+  policyChild.stderr.setEncoding("utf8");
+  policyChild.stderr.on("data", (chunk) => { policyStderr += chunk; });
+  try {
+    const ping = await waitForDaemon();
+    if (ping.persistentTerminalEnabled !== expectedEnabled) {
+      throw new Error(
+        `expected policy enabled=${expectedEnabled}, got ${ping.persistentTerminalEnabled}`,
+      );
+    }
+    if (ping.persistentTerminalPolicyFingerprint !== expectedFingerprint) {
+      throw new Error(
+        `expected policy fingerprint ${expectedFingerprint}, got ${ping.persistentTerminalPolicyFingerprint}`,
+      );
+    }
+    await rpc({ op: "shutdown" });
+    await Promise.race([
+      new Promise((resolve) => policyChild.once("exit", resolve)),
+      sleep(2000),
+    ]);
+    if (policyChild.exitCode === null) throw new Error("policy probe daemon did not shut down");
+    if (policyChild.exitCode !== 0) {
+      throw new Error(`policy probe daemon exited with ${policyChild.exitCode}: ${policyStderr}`);
+    }
+  } finally {
+    if (policyChild.exitCode === null) policyChild.kill();
+  }
+}
+
 const child = spawn(executable, [
   "serve-daemon",
   "--endpoint", endpoint,
@@ -157,6 +197,13 @@ child.stderr.on("data", (chunk) => { childStderr += chunk; });
 try {
   const ping = await waitForDaemon();
   if (ping.workers !== 2) throw new Error(`expected workers=2, got ${ping.workers}`);
+  if (ping.persistentTerminalEnabled !== false) {
+    throw new Error(`expected persistent terminals disabled, got ${ping.persistentTerminalEnabled}`);
+  }
+  if (ping.persistentTerminalPolicyFingerprint !==
+      "terminal-policy-v1;allow=false;read-only=false;command-allowlist=false") {
+    throw new Error(`unexpected disabled terminal policy fingerprint: ${ping.persistentTerminalPolicyFingerprint}`);
+  }
   await assertOwnerOnlyPipeAcl();
 
   const [slowClient] = await openSlowClients(1);
@@ -208,9 +255,17 @@ try {
     "--endpoint", endpoint,
     "--workers", "2",
     "--queue-capacity", "8",
+    "--allow-persistent-terminal",
   ], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
   writeSaturationChild.stderr.on("data", (chunk) => { childStderr += chunk; });
-  await waitForDaemon();
+  const terminalEnabledPing = await waitForDaemon();
+  if (terminalEnabledPing.persistentTerminalEnabled !== true) {
+    throw new Error("daemon did not expose its effective persistent-terminal authorization");
+  }
+  if (terminalEnabledPing.persistentTerminalPolicyFingerprint !==
+      "terminal-policy-v1;allow=true;read-only=false;command-allowlist=false") {
+    throw new Error(`unexpected enabled terminal policy fingerprint: ${terminalEnabledPing.persistentTerminalPolicyFingerprint}`);
+  }
   const nonReaders = await openNonReadingLargeResponseClients(64);
   const shutdown = await rpc({ op: "shutdown" }, 8000);
   assertProtocol(shutdown);
@@ -227,6 +282,17 @@ try {
   if (writeSaturationChild.exitCode !== 0) {
     throw new Error(`write saturation daemon exited with ${writeSaturationChild.exitCode}: ${childStderr}`);
   }
+
+  await assertTerminalPolicyProcess(
+    ["--allow-persistent-terminal", "--read-only"],
+    false,
+    "terminal-policy-v1;allow=true;read-only=true;command-allowlist=false",
+  );
+  await assertTerminalPolicyProcess(
+    ["--allow-persistent-terminal", "--allowed-command", "bash"],
+    false,
+    "terminal-policy-v1;allow=true;read-only=false;command-allowlist=true",
+  );
 
   for (let index = 0; index < 2; index += 1) {
     startupRaceChildren.push(spawn(executable, [

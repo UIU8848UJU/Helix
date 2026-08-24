@@ -43,6 +43,7 @@ const settingsSchema = z.object({
   maxOutputBytes: z.number().int().min(1024).max(100 * 1024 * 1024).default(1024 * 1024),
   maxConcurrentCommands: z.number().int().min(1).max(64).default(4),
   strictHostKeyChecking: z.boolean().default(false),
+  allowPersistentTerminal: z.boolean().default(false),
   auditEnabled: z.boolean().default(true),
   auditCommandMode: z.enum(["plain", "hash"]).default("plain"),
   credentialBrokerPath: z.string().min(1).nullable().optional(),

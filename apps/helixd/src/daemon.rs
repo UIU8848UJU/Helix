@@ -1,27 +1,27 @@
 use crate::{engine::BrokerEngine, ipc_security};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use helix_core::{
     protocol::{DaemonRequest, DaemonResponse, SpoolResult, TerminalResult},
     sandbox::SandboxPolicy,
     spool::SpoolManager,
     task_pool::TaskPool,
-    terminal::{cleanup_orphaned_terminals, TerminalRegistry, TerminalSnapshot},
+    terminal::{TerminalReadError, TerminalRuntime, TerminalSnapshot, cleanup_orphaned_terminals},
     transport::{ExecTarget, TerminalOpenRequest, Transport},
 };
 #[cfg(not(windows))]
 use interprocess::local_socket::ListenerOptions;
-use interprocess::local_socket::{prelude::*, GenericFilePath};
+use interprocess::local_socket::{GenericFilePath, prelude::*};
 #[cfg(windows)]
 use interprocess::os::windows::{
-    named_pipe::{pipe_mode::Bytes, PipeListener, PipeListenerOptions, PipeStream},
+    named_pipe::{PipeListener, PipeListenerOptions, PipeStream, pipe_mode::Bytes},
     security_descriptor::SecurityDescriptor,
 };
 use std::{
     borrow::Cow,
     io::{BufRead, BufReader, ErrorKind, Write},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -35,6 +35,7 @@ pub const DEFAULT_ENDPOINT: &str = "/tmp/helix-credential-broker-v1.sock";
 const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 const MAX_IPC_CONNECTIONS: usize = 64;
 const IPC_TIMEOUT: Duration = Duration::from_secs(5);
+const HANDLER_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 const IPC_POLL_INTERVAL: Duration = Duration::from_millis(10);
 // Interprocess creates named-pipe instances with a 512-byte output buffer by
 // default. In nonblocking mode a write larger than the free buffer space
@@ -59,16 +60,28 @@ type ServerListener = interprocess::local_socket::Listener;
 #[cfg(not(windows))]
 type ServerStream = interprocess::local_socket::Stream;
 
+pub struct DaemonConfig<'a> {
+    pub endpoint: &'a str,
+    pub workers: usize,
+    pub queue_capacity: usize,
+    pub retention_seconds: u64,
+    pub max_terminals: usize,
+    pub terminal_idle_seconds: u64,
+}
+
 pub fn serve_daemon(
-    endpoint: &str,
-    workers: usize,
-    queue_capacity: usize,
-    retention_seconds: u64,
+    config: DaemonConfig<'_>,
     transport: Arc<dyn Transport>,
     policy: SandboxPolicy,
-    max_terminals: usize,
-    terminal_idle_seconds: u64,
 ) -> Result<()> {
+    let DaemonConfig {
+        endpoint,
+        workers,
+        queue_capacity,
+        retention_seconds,
+        max_terminals,
+        terminal_idle_seconds,
+    } = config;
     let listener = match create_listener(endpoint) {
         Ok(listener) => listener,
         Err(_bind_error) if compatible_daemon_is_listening(endpoint) => {
@@ -91,7 +104,12 @@ pub fn serve_daemon(
             eprintln!("failed to clean orphaned terminal directories: {error:#}");
         }
     }
-    let terminals = Arc::new(TerminalRegistry::new(max_terminals, terminal_idle_seconds));
+    let terminals = Arc::new(TerminalRuntime::new(
+        transport.clone(),
+        policy.clone(),
+        max_terminals,
+        terminal_idle_seconds,
+    ));
     let engine = Arc::new(BrokerEngine::new(transport.clone(), policy));
     let pool = Arc::new(TaskPool::new(
         workers,
@@ -108,15 +126,8 @@ pub fn serve_daemon(
         workers.max(1)
     );
 
-    let mut last_reap = Instant::now();
+    terminals.start_janitor(TERMINAL_REAP_INTERVAL)?;
     while !shutdown.load(Ordering::Acquire) {
-        if last_reap.elapsed() >= TERMINAL_REAP_INTERVAL {
-            let reaped = terminals.reap_idle();
-            if reaped > 0 {
-                eprintln!("reaped {reaped} idle terminal session(s)");
-            }
-            last_reap = Instant::now();
-        }
         match listener.accept() {
             Ok(stream) => {
                 if shutdown.load(Ordering::Acquire) {
@@ -127,14 +138,13 @@ pub fn serve_daemon(
                 let shutdown = Arc::clone(&shutdown);
                 let active_connections = Arc::clone(&active_connections);
                 let endpoint = endpoint.to_owned();
-                let transport = Arc::clone(&transport);
                 let terminals = Arc::clone(&terminals);
                 let connection_guard = ConnectionGuard(active_connections);
                 thread::Builder::new()
                     .name("helix-broker-ipc".to_owned())
                     .spawn(move || {
                         let _connection_guard = connection_guard;
-                        match handle_connection(stream, &pool, &terminals, &transport) {
+                        match handle_connection(stream, &pool, &terminals) {
                             Ok(true) => {
                                 shutdown.store(true, Ordering::Release);
                                 if let Err(error) = wake_listener(&endpoint) {
@@ -152,10 +162,15 @@ pub fn serve_daemon(
             Err(error) => eprintln!("broker IPC accept failed: {error}"),
         }
     }
+    let closed_terminals = terminals.shutdown();
+    wait_for_connections(&active_connections, HANDLER_DRAIN_TIMEOUT);
     if !pool.shutdown(IPC_TIMEOUT) {
         eprintln!(
             "credential broker shutdown deadline elapsed; process exit will stop remaining work"
         );
+    }
+    if closed_terminals > 0 {
+        eprintln!("closed {closed_terminals} terminal session(s) on shutdown");
     }
     Ok(())
 }
@@ -236,6 +251,13 @@ fn acquire_connection_slot(active_connections: &AtomicUsize) {
     }
 }
 
+fn wait_for_connections(active_connections: &AtomicUsize, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while active_connections.load(Ordering::Acquire) > 0 && Instant::now() < deadline {
+        thread::sleep(IPC_POLL_INTERVAL);
+    }
+}
+
 fn wake_listener(endpoint: &str) -> Result<()> {
     let endpoint_name = endpoint
         .to_fs_name::<GenericFilePath>()
@@ -258,9 +280,11 @@ pub fn stop_daemon(endpoint: &str) -> Result<()> {
     let response = read_request_line(&mut reader)?;
     let response: DaemonResponse = serde_json::from_slice(&response)?;
     if !response.ok {
-        return Err(anyhow!(response
-            .error
-            .unwrap_or_else(|| "daemon shutdown failed".to_owned())));
+        return Err(anyhow!(
+            response
+                .error
+                .unwrap_or_else(|| "daemon shutdown failed".to_owned())
+        ));
     }
     Ok(())
 }
@@ -268,14 +292,13 @@ pub fn stop_daemon(endpoint: &str) -> Result<()> {
 fn handle_connection(
     stream: ServerStream,
     pool: &TaskPool,
-    terminals: &TerminalRegistry,
-    transport: &Arc<dyn Transport>,
+    terminals: &TerminalRuntime,
 ) -> Result<bool> {
     configure_server_read(&stream)?;
     let mut reader = BufReader::new(stream);
     let (response, shutdown) = match read_request_line(&mut reader) {
         Ok(input) => match serde_json::from_slice::<DaemonRequest>(&input) {
-            Ok(request) => handle_request(request, pool, terminals, transport),
+            Ok(request) => handle_request(request, pool, terminals),
             Err(error) => (
                 DaemonResponse::failure(format!("invalid daemon request JSON: {error}")),
                 false,
@@ -405,11 +428,16 @@ fn configure_client_timeouts(stream: &interprocess::local_socket::Stream) -> Res
 fn handle_request(
     request: DaemonRequest,
     pool: &TaskPool,
-    terminals: &TerminalRegistry,
-    transport: &Arc<dyn Transport>,
+    terminals: &TerminalRuntime,
 ) -> (DaemonResponse, bool) {
     let response = match request {
-        DaemonRequest::Ping => pool.stats_response(),
+        DaemonRequest::Ping => {
+            let mut response = pool.stats_response();
+            response.persistent_terminal_enabled = Some(terminals.persistent_terminal_enabled());
+            response.persistent_terminal_policy_fingerprint =
+                Some(terminals.persistent_terminal_policy_fingerprint());
+            response
+        }
         DaemonRequest::Submit { request } => match pool.submit(request) {
             Ok(task_id) => match pool.task(&task_id) {
                 Ok(task) => pool.task_response(&task_id, task),
@@ -502,12 +530,9 @@ fn handle_request(
                 idle_seconds,
                 max_history_bytes: max_history_bytes.clamp(1024, MAX_TERMINAL_HISTORY_BYTES),
             };
-            match transport.open_terminal(request) {
-                Ok(session) => match terminals.open(session) {
-                    Ok(terminal_id) => match terminals.status(&terminal_id) {
-                        Ok(snapshot) => terminal_response(snapshot_result(snapshot)),
-                        Err(error) => DaemonResponse::failure(format!("{error:#}")),
-                    },
+            match terminals.open(request) {
+                Ok(terminal_id) => match terminals.status(&terminal_id) {
+                    Ok(snapshot) => terminal_response(snapshot_result(snapshot)),
                     Err(error) => DaemonResponse::failure(format!("{error:#}")),
                 },
                 Err(error) => DaemonResponse::failure(format!("{error:#}")),
@@ -530,11 +555,13 @@ fn handle_request(
                     terminal_id: Some(terminal_id),
                     content: Some(read.content),
                     next_cursor: Some(read.next_cursor),
+                    earliest_cursor: Some(read.earliest_cursor),
+                    end_cursor: Some(read.end_cursor),
                     eof: Some(read.eof),
                     size: Some(read.size),
                     ..Default::default()
                 }),
-                Err(error) => DaemonResponse::failure(format!("{error:#}")),
+                Err(error) => terminal_read_failure(error),
             },
             Err(error) => DaemonResponse::failure(format!("{error:#}")),
         },
@@ -547,6 +574,9 @@ fn handle_request(
                     terminal_id: Some(terminal_id),
                     content: Some(tail.content),
                     size: Some(tail.size),
+                    earliest_cursor: Some(tail.earliest_cursor),
+                    end_cursor: Some(tail.end_cursor),
+                    start_cursor: Some(tail.start),
                     ..Default::default()
                 }),
                 Err(error) => DaemonResponse::failure(format!("{error:#}")),
@@ -590,7 +620,10 @@ fn handle_request(
             Ok(()) => terminal_ok(terminal_id),
             Err(error) => DaemonResponse::failure(format!("{error:#}")),
         },
-        DaemonRequest::Shutdown => return (pool.stats_response(), true),
+        DaemonRequest::Shutdown => {
+            terminals.begin_shutdown();
+            return (pool.stats_response(), true);
+        }
     };
     (response, false)
 }
@@ -601,6 +634,53 @@ fn terminal_response(result: TerminalResult) -> DaemonResponse {
         terminal: Some(result),
         ..DaemonResponse::success()
     }
+}
+
+fn terminal_read_failure(error: anyhow::Error) -> DaemonResponse {
+    let mut response = DaemonResponse::failure(format!("{error:#}"));
+    let Some(read_error) = error.downcast_ref::<TerminalReadError>() else {
+        return response;
+    };
+    match read_error {
+        TerminalReadError::CursorExpired {
+            earliest_cursor,
+            end_cursor,
+            ..
+        } => {
+            response.error_code = Some("terminal_cursor_expired".to_owned());
+            response.earliest_cursor = Some(*earliest_cursor);
+            response.end_cursor = Some(*end_cursor);
+        }
+        TerminalReadError::CursorBeyondEnd {
+            earliest_cursor,
+            end_cursor,
+            ..
+        } => {
+            response.error_code = Some("terminal_cursor_beyond_end".to_owned());
+            response.earliest_cursor = Some(*earliest_cursor);
+            response.end_cursor = Some(*end_cursor);
+        }
+        TerminalReadError::InvalidUtf8Boundary {
+            earliest_cursor,
+            end_cursor,
+            ..
+        } => {
+            response.error_code = Some("terminal_cursor_invalid_boundary".to_owned());
+            response.earliest_cursor = Some(*earliest_cursor);
+            response.end_cursor = Some(*end_cursor);
+        }
+        TerminalReadError::InsufficientWindow {
+            required_min_bytes,
+            earliest_cursor,
+            end_cursor,
+        } => {
+            response.error_code = Some("terminal_insufficient_window".to_owned());
+            response.required_min_bytes = Some(*required_min_bytes);
+            response.earliest_cursor = Some(*earliest_cursor);
+            response.end_cursor = Some(*end_cursor);
+        }
+    }
+    response
 }
 
 fn terminal_ok(terminal_id: String) -> DaemonResponse {

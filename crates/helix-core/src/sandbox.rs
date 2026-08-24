@@ -1,4 +1,4 @@
-﻿//! Execution policies. Harness mode is a permissive developer profile that
+//! Execution policies. Harness mode is a permissive developer profile that
 //! still blocks host-destructive commands; Sandbox mode is a locked-down
 //! diagnostic profile (read-only by default, path and command restrictions,
 //! sudo and uploads disabled unless explicitly allowed).
@@ -30,6 +30,10 @@ pub struct SandboxPolicy {
     pub allow_sudo: bool,
     pub allow_upload: bool,
     pub allow_download: bool,
+    /// Explicitly authorizes persistent interactive terminals. This is a
+    /// separate capability because shell input cannot be reliably constrained
+    /// by command parsing once a PTY is open.
+    pub allow_persistent_terminal: bool,
 }
 
 impl Default for SandboxPolicy {
@@ -52,6 +56,7 @@ impl SandboxPolicy {
             allow_sudo: true,
             allow_upload: true,
             allow_download: true,
+            allow_persistent_terminal: false,
         }
     }
 
@@ -68,6 +73,7 @@ impl SandboxPolicy {
             allow_sudo: false,
             allow_upload: false,
             allow_download: true,
+            allow_persistent_terminal: false,
         }
     }
 
@@ -97,6 +103,38 @@ impl SandboxPolicy {
             }
         }
         Ok(())
+    }
+
+    pub fn check_persistent_terminal(&self) -> Result<()> {
+        if !self.allow_persistent_terminal {
+            return Err(anyhow!(
+                "sandbox policy: persistent terminals are not authorized"
+            ));
+        }
+        if self.read_only_remote {
+            return Err(anyhow!(
+                "sandbox policy: persistent terminals are incompatible with read-only mode"
+            ));
+        }
+        if self.allowed_command_prefixes.is_some() {
+            return Err(anyhow!(
+                "sandbox policy: persistent terminals are incompatible with command allowlists"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Stable compatibility key for the policy inputs that govern persistent
+    /// terminal admission. Bump the schema version when that admission rule
+    /// gains another input so clients never reuse a daemon under a policy they
+    /// did not request.
+    pub fn persistent_terminal_policy_fingerprint(&self) -> String {
+        format!(
+            "terminal-policy-v1;allow={};read-only={};command-allowlist={}",
+            self.allow_persistent_terminal,
+            self.read_only_remote,
+            self.allowed_command_prefixes.is_some()
+        )
     }
 
     pub fn check_remote_path(&self, path: &str) -> Result<()> {
@@ -194,7 +232,11 @@ mod tests {
         assert!(policy.check_command("reboot").is_err());
         assert!(policy.check_command("shutdown -h now").is_err());
         assert!(policy.check_command("mkfs.ext4 /dev/sdb1").is_err());
-        assert!(policy.check_command("dd if=/dev/zero of=/dev/sda bs=1M").is_err());
+        assert!(
+            policy
+                .check_command("dd if=/dev/zero of=/dev/sda bs=1M")
+                .is_err()
+        );
     }
 
     #[test]
@@ -229,5 +271,39 @@ mod tests {
         assert!(policy.check_remote_path("/etc/passwd").is_err());
         assert!(policy.check_remote_path("/srv/diag-other/x").is_err());
     }
-}
 
+    #[test]
+    fn persistent_terminal_requires_explicit_capability() {
+        assert!(
+            SandboxPolicy::harness()
+                .check_persistent_terminal()
+                .unwrap_err()
+                .to_string()
+                .contains("not authorized")
+        );
+
+        let mut authorized = SandboxPolicy::harness();
+        authorized.allow_persistent_terminal = true;
+        assert!(authorized.check_persistent_terminal().is_ok());
+
+        let mut read_only = authorized.clone();
+        read_only.read_only_remote = true;
+        assert!(
+            read_only
+                .check_persistent_terminal()
+                .unwrap_err()
+                .to_string()
+                .contains("read-only")
+        );
+
+        let mut allowlisted = authorized;
+        allowlisted.allowed_command_prefixes = Some(vec!["ls".to_owned()]);
+        assert!(
+            allowlisted
+                .check_persistent_terminal()
+                .unwrap_err()
+                .to_string()
+                .contains("allowlists")
+        );
+    }
+}

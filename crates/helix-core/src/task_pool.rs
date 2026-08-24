@@ -1,4 +1,4 @@
-﻿use crate::{
+use crate::{
     protocol::{BrokerRequest, BrokerResponse, DaemonResponse, TaskState},
     spool::SpoolManager,
 };
@@ -462,8 +462,7 @@ fn spawn_worker(
                 let Work::Execute { task_id, request } = (match work {
                     Ok(Work::Stop) | Err(RecvTimeoutError::Disconnected) => return,
                     Err(RecvTimeoutError::Timeout) => {
-                        let removed =
-                            cleanup_finished(&store, clock.monotonic_ms(), retention);
+                        let removed = cleanup_finished(&store, clock.monotonic_ms(), retention);
                         cleanup_spool_files(&spool, removed);
                         continue;
                     }
@@ -964,9 +963,14 @@ mod tests {
         let result = record.result.unwrap();
         assert!(result.stdout.is_none(), "large stdout must be spooled");
         assert_eq!(result.stdout_size, Some(128 * 1024));
-        assert!(result.stdout_ref.as_deref().unwrap().starts_with("spool://"));
+        assert!(
+            result
+                .stdout_ref
+                .as_deref()
+                .unwrap()
+                .starts_with("spool://")
+        );
         assert!(pool.shutdown(Duration::from_secs(1)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
-

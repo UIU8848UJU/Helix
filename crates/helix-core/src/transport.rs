@@ -8,7 +8,7 @@ use crate::{
     task_pool::CancellationToken,
     terminal::TerminalSnapshot,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]

@@ -6,13 +6,13 @@
 
 use crate::pool::connect_with_retry;
 use crate::ssh::{self, ConnectOptions};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use helix_core::{
     spool::runtime_dir,
     spool::{SpoolMatch, SpoolRead, SpoolTail},
     terminal::{
-        self, generate_terminal_id, monotonic_ms, TerminalCleaner, TerminalOutput,
-        TerminalSnapshot, TerminalState,
+        self, TerminalCleaner, TerminalOutput, TerminalSnapshot, TerminalState,
+        generate_terminal_id, monotonic_ms,
     },
     transport::{ExecTarget, TerminalOpenRequest, TerminalSession},
 };
@@ -22,8 +22,8 @@ use std::{
     io::{ErrorKind, Read, Write},
     path::PathBuf,
     sync::{
-        atomic::{AtomicU64, AtomicU8, Ordering},
         Arc, Mutex,
+        atomic::{AtomicU8, AtomicU64, Ordering},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -66,6 +66,9 @@ fn write_all_nonblocking(channel: &mut Channel, data: &[u8], timeout: Duration) 
     let mut written = 0;
     while written < data.len() {
         match channel.write(&data[written..]) {
+            Ok(0) => {
+                return Err(anyhow!("terminal input made no progress"));
+            }
             Ok(count) => written += count,
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
                 if Instant::now() >= deadline {

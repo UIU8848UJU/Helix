@@ -5,7 +5,7 @@ import { tempEndpoint, row, sleep, startDaemon } from "./helpers.mjs";
 // manager entry). Overrides:
 //   HELIX_SSH_HOST / HELIX_SSH_PORT / HELIX_SSH_USER
 //   HELIX_SSH_CRED_REF   (default Helix/ssh/build-password/login)
-// Without a host the protocol-level checks (v5 + terminal_v1) still run.
+// Without a host the protocol-level checks (v5 + terminal cursor/policy) still run.
 
 const HOST = process.env.HELIX_SSH_HOST ?? "192.168.0.110";
 const PORT = Number(process.env.HELIX_SSH_PORT ?? "22");
@@ -13,7 +13,10 @@ const USER = process.env.HELIX_SSH_USER ?? "nvidia";
 const CRED = process.env.HELIX_SSH_CRED_REF ?? "Helix/ssh/build-password/login";
 
 const endpoint = tempEndpoint("terminal");
-const { daemon, rpc, waitForReady } = startDaemon(endpoint, { workers: 4 });
+const { daemon, rpc, waitForReady } = startDaemon(endpoint, {
+  workers: 4,
+  allowPersistentTerminal: true,
+});
 let failed = 0;
 let terminalId = null;
 
@@ -32,6 +35,9 @@ try {
   row("daemon", `v${hello.protocolVersion}`);
   check(hello.protocolVersion === 5, "protocol v5", `got ${hello.protocolVersion}`);
   check(hello.capabilities.includes("terminal_v1"), "terminal_v1 capability");
+  check(hello.capabilities.includes("terminal_policy_v2"), "terminal_policy_v2 capability");
+  check(hello.capabilities.includes("terminal_cursor_v2"), "terminal_cursor_v2 capability");
+  check(hello.persistentTerminalEnabled === true, "effective terminal authorization exposed");
 
   // 1. open a persistent bash session
   console.log(`\n[1] terminal_open -> ${USER}@${HOST}:${PORT}`);
@@ -83,6 +89,8 @@ try {
   const first = await rpc({ op: "terminal_read", terminal_id: terminalId, cursor: 0, max_bytes: 16 }, 10_000);
   const nextCursor = first.terminal?.nextCursor ?? 0;
   check(nextCursor > 0, "read returns nextCursor", String(nextCursor));
+  check(first.terminal?.earliestCursor === 0, "read returns earliestCursor");
+  check((first.terminal?.endCursor ?? 0) >= nextCursor, "read returns endCursor");
   const second = await rpc({ op: "terminal_read", terminal_id: terminalId, cursor: nextCursor, max_bytes: 16 }, 10_000);
   check(second.ok, "cursor read continues");
 
@@ -90,6 +98,7 @@ try {
   console.log(`\n[5] terminal_tail`);
   const tail = await rpc({ op: "terminal_tail", terminal_id: terminalId, max_bytes: 1024 }, 10_000);
   check(tail.ok && (tail.terminal?.content?.length ?? 0) > 0, "tail returns content");
+  check(typeof tail.terminal?.startCursor === "number", "tail returns startCursor");
 
   // 6. search
   console.log(`\n[6] terminal_search`);

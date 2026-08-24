@@ -18,7 +18,10 @@ import { getCredentialBrokerPath } from "./paths.js";
 import { newRequestId, writeAudit } from "./audit.js";
 
 const BROKER_PROTOCOL_VERSION = 5;
-const REQUIRED_BROKER_CAPABILITIES = ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "terminal_v1", "spool_v1"] as const;
+const REQUIRED_BROKER_CAPABILITIES = [
+  "task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "terminal_v1",
+  "terminal_policy_v2", "terminal_cursor_v2", "spool_v1",
+] as const;
 const BROKER_ENDPOINT = process.platform === "win32"
   ? "\\\\.\\pipe\\helix-credential-broker-v1"
   : "/tmp/helix-credential-broker-v1.sock";
@@ -29,12 +32,21 @@ interface BrokerDaemonResponse {
   ok: boolean;
   protocolVersion?: number;
   capabilities?: string[];
+  persistentTerminalEnabled?: boolean;
+  persistentTerminalPolicyFingerprint?: string;
+  errorCode?: string;
+  earliestCursor?: number;
+  endCursor?: number;
+  requiredMinBytes?: number;
   terminal?: {
     terminalId?: string;
     state?: TerminalState;
     exitCode?: number;
     content?: string;
     nextCursor?: number;
+    earliestCursor?: number;
+    endCursor?: number;
+    startCursor?: number;
     eof?: boolean;
     size?: number;
     tail?: string;
@@ -71,6 +83,19 @@ interface BrokerDaemonResponse {
   runningTasks?: number;
   pooledSessions?: number;
   error?: string;
+}
+
+export class BrokerDaemonError extends Error {
+  constructor(
+    message: string,
+    readonly code?: string,
+    readonly earliestCursor?: number,
+    readonly endCursor?: number,
+    readonly requiredMinBytes?: number,
+  ) {
+    super(message);
+    this.name = "BrokerDaemonError";
+  }
 }
 
 let daemonStartInFlight: Promise<void> | null = null;
@@ -434,7 +459,13 @@ function daemonRpc(
         try {
           const response = JSON.parse(payload) as BrokerDaemonResponse;
           if (!response.ok) {
-            reject(new Error(response.error ?? "Credential broker daemon request failed"));
+            reject(new BrokerDaemonError(
+              response.error ?? "Credential broker daemon request failed",
+              response.errorCode,
+              response.earliestCursor,
+              response.endCursor,
+              response.requiredMinBytes,
+            ));
             return;
           }
           resolve(response);
@@ -518,7 +549,7 @@ async function startBrokerDaemon(settings: GlobalSettings): Promise<void> {
 
   const workers = Math.max(1, settings.maxConcurrentCommands);
   const queueCapacity = Math.max(32, workers * 16);
-  const child = spawn(executable, [
+  const daemonArgs = [
     "serve-daemon",
     "--endpoint", BROKER_ENDPOINT,
     "--workers", String(workers),
@@ -526,7 +557,9 @@ async function startBrokerDaemon(settings: GlobalSettings): Promise<void> {
     "--task-retention-seconds", "600",
     "--session-idle-seconds", "120",
     "--max-idle-sessions-per-key", "2",
-  ], {
+  ];
+  if (settings.allowPersistentTerminal) daemonArgs.push("--allow-persistent-terminal");
+  const child = spawn(executable, daemonArgs, {
     shell: false,
     windowsHide: true,
     detached: true,
@@ -538,8 +571,12 @@ async function startBrokerDaemon(settings: GlobalSettings): Promise<void> {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 40; attempt += 1) {
     try {
-      await pingDaemon(500);
-      return;
+      const response = await pingDaemon(500);
+      if (isBrokerDaemonPolicyCompatible(response, settings)) return;
+      lastError = new Error(
+        "Credential broker persistent-terminal authorization does not match current settings",
+      );
+      await sleep(100);
     } catch (error) {
       lastError = error;
       await sleep(100);
@@ -557,12 +594,7 @@ async function ensureBrokerDaemon(settings: GlobalSettings): Promise<void> {
   }
 
   if (existing) {
-    try {
-      assertProtocolCompatible(existing);
-      return;
-    } catch {
-      // A same-version daemon can still be incompatible when a capability is absent.
-    }
+    if (isBrokerDaemonPolicyCompatible(existing, settings)) return;
     await stopIncompatibleDaemon(existing);
   }
 
@@ -753,6 +785,33 @@ export async function brokerSudoExecute(input: {
   });
 }
 
+export function assertPersistentTerminalEnabled(settings: GlobalSettings): void {
+  if (!settings.allowPersistentTerminal) {
+    throw new Error(
+      "Persistent terminals are disabled by settings.allowPersistentTerminal",
+    );
+  }
+}
+
+export function isBrokerDaemonPolicyCompatible(
+  response: BrokerDaemonResponse,
+  settings: GlobalSettings,
+): boolean {
+  try {
+    assertProtocolCompatible(response);
+  } catch {
+    return false;
+  }
+  const expectedFingerprint = [
+    "terminal-policy-v1",
+    `allow=${settings.allowPersistentTerminal}`,
+    "read-only=false",
+    "command-allowlist=false",
+  ].join(";");
+  return response.persistentTerminalEnabled === settings.allowPersistentTerminal
+    && response.persistentTerminalPolicyFingerprint === expectedFingerprint;
+}
+
 function terminalStatusFrom(response: BrokerDaemonResponse): TerminalStatusResult {
   const terminal = response.terminal;
   if (!terminal?.terminalId) {
@@ -808,6 +867,7 @@ export async function brokerTerminalOpen(input: {
   idleSeconds?: number;
   maxHistoryBytes?: number;
 }): Promise<TerminalStatusResult> {
+  assertPersistentTerminalEnabled(input.settings);
   return withCredentialAutoEnroll(input, async () => {
     const auth = passwordAuth(input.host);
     await ensureBrokerDaemon(input.settings);
@@ -859,6 +919,8 @@ export async function brokerTerminalRead(
     nextCursor: response.terminal?.nextCursor ?? 0,
     eof: response.terminal?.eof ?? false,
     size: response.terminal?.size ?? 0,
+    earliestCursor: response.terminal?.earliestCursor ?? 0,
+    endCursor: response.terminal?.endCursor ?? 0,
   };
 }
 
@@ -876,6 +938,9 @@ export async function brokerTerminalTail(
   return {
     content: response.terminal?.content ?? "",
     size: response.terminal?.size ?? 0,
+    earliestCursor: response.terminal?.earliestCursor ?? 0,
+    endCursor: response.terminal?.endCursor ?? 0,
+    startCursor: response.terminal?.startCursor ?? 0,
   };
 }
 

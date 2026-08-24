@@ -40,7 +40,7 @@ $env:HELIX_SSH_CRED_REF="Helix/ssh/<host>/login"
 node tests/terminal.mjs
 ```
 
-覆盖：协议 v5 + `terminal_v1` 能力、terminal_open 摘要信封、write→read 输出捕获、cursor 读、tail、search、resize、close 后会话移除。
+覆盖：协议 v5 + `terminal_v1` / `terminal_policy_v2` / `terminal_cursor_v2` 能力、effective authorization、terminal_open 摘要信封、write→read 输出捕获、absolute cursor 恢复元数据、tail、search、resize、close 后会话移除。
 
 ## 压力/极限可调参数
 

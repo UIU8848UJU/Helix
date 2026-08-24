@@ -54,6 +54,7 @@ describe("ssh pty argument builder (TDD PTY-001)", () => {
     maxOutputBytes: 1024 * 1024,
     maxConcurrentCommands: 4,
     strictHostKeyChecking: false,
+    allowPersistentTerminal: false,
     auditEnabled: false,
   };
 

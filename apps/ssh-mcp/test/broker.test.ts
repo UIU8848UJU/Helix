@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { assertProtocolCompatible, buildBrokerPtyRequest, buildBrokerTerminalOpenRequest, isCredentialError, resolveSpoolRefsWithReader, withCredentialAutoEnroll } from "../src/broker.js";
+import { assertPersistentTerminalEnabled, assertProtocolCompatible, buildBrokerPtyRequest, buildBrokerTerminalOpenRequest, isBrokerDaemonPolicyCompatible, isCredentialError, resolveSpoolRefsWithReader, withCredentialAutoEnroll } from "../src/broker.js";
 import type { GlobalSettings, HostConfig, SpoolReadResult } from "../src/types.js";
 
 const settings: GlobalSettings = {
@@ -7,6 +7,7 @@ const settings: GlobalSettings = {
   maxOutputBytes: 1024 * 1024,
   maxConcurrentCommands: 4,
   strictHostKeyChecking: false,
+  allowPersistentTerminal: false,
   auditEnabled: false,
 };
 
@@ -247,7 +248,10 @@ describe("broker daemon v5 capability contract", () => {
     expect(() => assertProtocolCompatible({
       ok: true,
       protocolVersion: 5,
-      capabilities: ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "terminal_v1", "spool_v1"],
+      capabilities: [
+        "task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "terminal_v1",
+        "terminal_policy_v2", "terminal_cursor_v2", "spool_v1",
+      ],
     })).not.toThrow();
   });
 
@@ -263,8 +267,72 @@ describe("broker daemon v5 capability contract", () => {
     expect(() => assertProtocolCompatible({
       ok: true,
       protocolVersion: 5,
-      capabilities: ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "terminal_v1"],
+      capabilities: [
+        "task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "terminal_v1",
+        "terminal_policy_v2", "terminal_cursor_v2",
+      ],
     })).toThrow(/missing required capabilities: spool_v1/);
+  });
+});
+
+describe("persistent terminal authorization contract", () => {
+  const compatible = {
+    ok: true,
+    protocolVersion: 5,
+    capabilities: [
+      "task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1",
+      "terminal_v1", "terminal_policy_v2", "terminal_cursor_v2", "spool_v1",
+    ],
+  };
+
+  it("does not reuse a daemon whose effective terminal authorization differs", () => {
+    expect(isBrokerDaemonPolicyCompatible(
+      {
+        ...compatible,
+        persistentTerminalEnabled: false,
+        persistentTerminalPolicyFingerprint:
+          "terminal-policy-v1;allow=false;read-only=false;command-allowlist=false",
+      },
+      { ...settings, allowPersistentTerminal: true },
+    )).toBe(false);
+    expect(isBrokerDaemonPolicyCompatible(
+      {
+        ...compatible,
+        persistentTerminalEnabled: true,
+        persistentTerminalPolicyFingerprint:
+          "terminal-policy-v1;allow=true;read-only=false;command-allowlist=false",
+      },
+      { ...settings, allowPersistentTerminal: false },
+    )).toBe(false);
+    expect(isBrokerDaemonPolicyCompatible(
+      {
+        ...compatible,
+        persistentTerminalEnabled: true,
+        persistentTerminalPolicyFingerprint:
+          "terminal-policy-v1;allow=true;read-only=false;command-allowlist=false",
+      },
+      { ...settings, allowPersistentTerminal: true },
+    )).toBe(true);
+  });
+
+  it("does not reuse a daemon with a different terminal policy fingerprint", () => {
+    expect(isBrokerDaemonPolicyCompatible(
+      {
+        ...compatible,
+        persistentTerminalEnabled: false,
+        persistentTerminalPolicyFingerprint:
+          "terminal-policy-v1;allow=true;read-only=true;command-allowlist=false",
+      },
+      { ...settings, allowPersistentTerminal: true },
+    )).toBe(false);
+  });
+
+  it("rejects terminal open locally when the current client disabled it", () => {
+    expect(() => assertPersistentTerminalEnabled(settings)).toThrow(/disabled/i);
+    expect(() => assertPersistentTerminalEnabled({
+      ...settings,
+      allowPersistentTerminal: true,
+    })).not.toThrow();
   });
 });
 

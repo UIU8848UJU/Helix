@@ -59,7 +59,7 @@ describe("ssh_pty tool registration and routing (TDD PTY-001)", () => {
     const store = new ConfigStore(path.join(dir, "config.json"));
     await store.write({
       version: 1,
-      settings: {},
+      settings: { auditEnabled: false },
       hosts: { win: winCredHost, key: openSshHost },
     });
     server = createServer(store);
@@ -86,7 +86,7 @@ describe("ssh_pty tool registration and routing (TDD PTY-001)", () => {
       name: "ssh_pty",
       arguments: { host: "win", command: "top", input: "hello", cols: 120, rows: 40 },
     });
-    expect(result.isError).toBeFalsy();
+    expect(result.isError, JSON.stringify(result)).toBeFalsy();
     expect(broker.brokerPty).toHaveBeenCalledTimes(1);
     expect(ssh.runSshPty).not.toHaveBeenCalled();
   });

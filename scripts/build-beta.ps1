@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "0.4.0-beta.1",
-    [string]$OutDir = (Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")).Path "dist")
+    [string]$Version = "0.4.0-beta.2",
+    [string]$OutDir = ""
 )
 
 # Builds the Helix beta offline package:
@@ -14,6 +14,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 $RootDir = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+
+if ([string]::IsNullOrWhiteSpace($OutDir)) {
+    $OutDir = Join-Path $RootDir "dist"
+}
 
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     throw "Missing dependency: cargo (Rust toolchain)"
@@ -71,6 +75,14 @@ if (-not (Test-Path -LiteralPath $Helixd)) { throw "Missing build output: $Helix
 if (-not (Test-Path -LiteralPath $Bundle)) { throw "Missing bundle output: $Bundle" }
 
 Write-Host "== Assembling $PackageName =="
+$ExpectedPackageDir = [System.IO.Path]::GetFullPath((Join-Path $OutDir $PackageName))
+if ([System.IO.Path]::GetFullPath($PackageDir) -ne $ExpectedPackageDir -or
+    [System.IO.Path]::GetDirectoryName($ExpectedPackageDir) -ne $OutDir) {
+    throw "Refusing to replace package directory outside the requested output directory: $PackageDir"
+}
+if (Test-Path -LiteralPath $PackageDir) {
+    Remove-Item -LiteralPath $PackageDir -Recurse -Force
+}
 New-Item -ItemType Directory -Force -Path $PackageDir | Out-Null
 
 $Files = @(
@@ -96,52 +108,58 @@ $InstallMd = Join-Path $PackageDir "INSTALL.md"
 $InstallDoc = @"
 # Helix $Version (beta)
 
-面向 AI Agent 的远程执行与会话 Runtime：SSH/PTY/SFTP、凭据、任务队列、Docker/Compose、远端持久作业。
+Remote execution and persistent-session runtime for AI agents: SSH, PTY,
+SFTP, credentials, task queues, Docker/Compose, and durable remote jobs.
 
-## 前置条件
+## Requirements
 
-- Windows 10/11 x64（本包为 win-x64）
+- Windows 10/11 x64
 - Node.js 20+
-- ssh / scp（Windows 自带 OpenSSH 客户端）
+- ssh and scp (the Windows OpenSSH client is supported)
 
-不需要 Rust 工具链、不需要 npm install、不需要编译。
+No Rust toolchain, npm install, or local compilation is required.
 
-## 安装
+## Install
 
 ```powershell
-# 解压后，在包目录内执行
+# Run from the extracted package directory.
 .\install.ps1
 
-# 或跳过 MCP 客户端自动注册，只安装并打印配置
+# Install without automatically registering an MCP client.
 .\install.ps1 -RegisterClient None
 ```
 
-脚本会把 helixd（内容寻址命名）、MCP 服务端、配置、AI 指南、Skill、运维脚本
-安装到 %APPDATA%\Helix\，并尝试注册到已安装的 Claude Code / Codex。
+The script installs helixd, the MCP server, configuration, AI guide, skill,
+and administration scripts under %APPDATA%\Helix\. It can register the
+helix-ssh MCP server with installed Claude Code and Codex clients.
 
-## MCP 客户端
+## MCP client
 
-- 安装脚本注册名为 helix-ssh 的 MCP server（node 运行 helix-ssh-mcp.bundle.mjs）。
-- 手动配置（-RegisterClient None 时输出）：
+- Registered server name: helix-ssh
+- Manual configuration (also printed with -RegisterClient None):
   - command: node
-  - args: <安装目录>\bin\helix-ssh-mcp.mjs
+  - args: <install-directory>\bin\helix-ssh-mcp.mjs
   - env: HELIX_SSH_CONFIG / HELIX_CREDENTIAL_BROKER / HELIX_AI_GUIDE / HELIX_ADMIN_SCRIPT
 
-## 校验
+## Verify
 
-SHA256SUMS.txt 中列出了包内每个文件的 SHA-256。
+SHA256SUMS.txt lists the SHA-256 digest of every other file in the package.
 
-## 使用
+## Use
 
-配置主机后（host_add / 编辑 ssh-mcp.json），即可使用 ssh_exec / ssh_check /
-sudo_exec / ssh_upload / ssh_download / job_* / docker_* / compose_* 等工具。
-首次密码主机连接会自动弹出 Windows 凭据窗口录入密码。
+Add a host with host_add or edit ssh-mcp.json, then use ssh_exec, ssh_check,
+sudo_exec, ssh_upload, ssh_download, job_*, docker_*, compose_*, and terminal_*
+tools. A Windows credential prompt records a password on first connection to a
+password-authenticated host.
 "@
 [System.IO.File]::WriteAllText($InstallMd, $InstallDoc, (New-Object System.Text.UTF8Encoding($false)))
 
 Write-Host "== Checksums =="
 $ChecksumLines = @()
-Get-ChildItem -LiteralPath $PackageDir -File | Sort-Object Name | ForEach-Object {
+Get-ChildItem -LiteralPath $PackageDir -File |
+    Where-Object { $_.Name -ne "SHA256SUMS.txt" } |
+    Sort-Object Name |
+    ForEach-Object {
     $Hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     $ChecksumLines += "$Hash  $($_.Name)"
 }

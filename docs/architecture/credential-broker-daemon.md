@@ -150,6 +150,15 @@ cooperatively cancels/drains running tasks for a five-second deadline. Work is n
 restart; a blocking operation that misses the deadline is stopped by process exit and its local
 TaskID must be treated as lost.
 
+After terminal admission is closed, the daemon also gives active IPC handlers a one-second
+best-effort response drain. Handlers that miss that bound are not joined indefinitely; process
+exit terminates them. Clients must therefore treat a connection closed during shutdown as an
+unknown delivery outcome and retry only idempotent operations after the replacement daemon is ready.
+
+Ping compatibility includes `terminal_policy_v2`: the daemon reports both effective persistent
+terminal authorization and a versioned fingerprint of every policy input used by terminal
+admission. MCP clients restart a daemon when that fingerprint differs from the policy they request.
+
 ## Worker Pool and Queue
 
 The separate `TaskPool` component uses a fixed-size blocking worker pool plus a bounded queue.

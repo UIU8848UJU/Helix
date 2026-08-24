@@ -8,6 +8,8 @@ pub const DAEMON_CAPABILITIES: &[&str] = &[
     "owner_only_ipc",
     "pty_v1",
     "terminal_v1",
+    "terminal_policy_v2",
+    "terminal_cursor_v2",
     "spool_v1",
 ];
 
@@ -234,6 +236,18 @@ pub struct DaemonResponse {
     pub protocol_version: u32,
     pub capabilities: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub persistent_terminal_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persistent_terminal_policy_fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub earliest_cursor: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_cursor: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_min_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal: Option<TerminalResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
@@ -270,7 +284,7 @@ pub struct DaemonResponse {
 /// Payload for terminal_* responses. Mirrors the summary-first envelope: a
 /// status/open call returns state/exitCode/size/tail; read/tail/search fill
 /// content/nextCursor/eof/matches.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalResult {
     pub terminal_id: Option<String>,
@@ -278,6 +292,9 @@ pub struct TerminalResult {
     pub exit_code: Option<i32>,
     pub content: Option<String>,
     pub next_cursor: Option<usize>,
+    pub earliest_cursor: Option<usize>,
+    pub end_cursor: Option<usize>,
+    pub start_cursor: Option<usize>,
     pub eof: Option<bool>,
     pub size: Option<usize>,
     pub tail: Option<String>,
@@ -289,26 +306,6 @@ pub struct TerminalResult {
     pub log_error: Option<String>,
 }
 
-impl Default for TerminalResult {
-    fn default() -> Self {
-        Self {
-            terminal_id: None,
-            state: None,
-            exit_code: None,
-            content: None,
-            next_cursor: None,
-            eof: None,
-            size: None,
-            tail: None,
-            matches: None,
-            created_at_ms: None,
-            last_activity_at_ms: None,
-            duration_ms: None,
-            log_error: None,
-        }
-    }
-}
-
 impl DaemonResponse {
     pub fn success() -> Self {
         Self {
@@ -318,6 +315,12 @@ impl DaemonResponse {
                 .iter()
                 .map(|capability| (*capability).to_owned())
                 .collect(),
+            persistent_terminal_enabled: None,
+            persistent_terminal_policy_fingerprint: None,
+            error_code: None,
+            earliest_cursor: None,
+            end_cursor: None,
+            required_min_bytes: None,
             terminal: None,
             task_id: None,
             state: None,
@@ -348,7 +351,7 @@ impl DaemonResponse {
 
 /// Spool operation result envelope used for `SpoolRead`, `SpoolTail` and
 /// `SpoolSearch` daemon responses.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpoolResult {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -371,27 +374,15 @@ impl Default for BrokerResponse {
     }
 }
 
-impl Default for SpoolResult {
-    fn default() -> Self {
-        Self {
-            content: None,
-            next_cursor: None,
-            eof: None,
-            size: None,
-            start: None,
-            matches: None,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn capabilities_include_terminal_v1() {
+    fn capabilities_include_terminal_policy_v2() {
         assert_eq!(DAEMON_PROTOCOL_VERSION, 5);
         assert!(DAEMON_CAPABILITIES.contains(&"terminal_v1"));
+        assert!(DAEMON_CAPABILITIES.contains(&"terminal_policy_v2"));
     }
 
     #[test]
@@ -464,6 +455,9 @@ mod tests {
             exit_code: None,
             content: Some("hello".into()),
             next_cursor: Some(5),
+            earliest_cursor: Some(0),
+            end_cursor: Some(11),
+            start_cursor: None,
             eof: Some(false),
             size: Some(11),
             tail: Some("world".into()),
@@ -476,6 +470,8 @@ mod tests {
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("\"terminalId\":\"term-1\""));
         assert!(json.contains("\"nextCursor\":5"));
+        assert!(json.contains("\"earliestCursor\":0"));
+        assert!(json.contains("\"endCursor\":11"));
         assert!(json.contains("\"lastActivityAtMs\":2"));
     }
 }

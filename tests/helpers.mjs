@@ -102,8 +102,9 @@ export function startDaemon(endpoint, options = {}) {
     sessionIdleSeconds = 120,
     maxIdleSessions = 2,
     mode = "harness",
+    allowPersistentTerminal = false,
   } = options;
-  const daemon = spawn(helixdPath(), [
+  const daemonArgs = [
     "serve-daemon",
     "--endpoint", endpoint,
     "--workers", String(workers),
@@ -112,7 +113,9 @@ export function startDaemon(endpoint, options = {}) {
     "--session-idle-seconds", String(sessionIdleSeconds),
     "--max-idle-sessions-per-key", String(maxIdleSessions),
     "--mode", mode,
-  ], { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+  ];
+  if (allowPersistentTerminal) daemonArgs.push("--allow-persistent-terminal");
+  const daemon = spawn(helixdPath(), daemonArgs, { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
   let stderr = "";
   daemon.stderr.setEncoding("utf8");
   daemon.stderr.on("data", (chunk) => { stderr += chunk; });

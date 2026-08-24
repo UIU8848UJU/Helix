@@ -1,13 +1,11 @@
+use anyhow::Result;
 use helix_core::{
     protocol::{BrokerRequest, BrokerResponse},
     sandbox::SandboxPolicy,
     task_pool::CancellationToken,
-    transport::{
-        ExecRequest, ExecTarget, PtyRequest, SudoRequest, TransferRequest, Transport,
-    },
+    transport::{ExecRequest, ExecTarget, PtyRequest, SudoRequest, TransferRequest, Transport},
 };
 use helix_credential::credential;
-use anyhow::Result;
 use std::sync::Arc;
 
 pub struct BrokerEngine {
@@ -201,4 +199,3 @@ impl helix_core::task_pool::TaskExecutor for BrokerEngine {
         self.pooled_sessions()
     }
 }
-

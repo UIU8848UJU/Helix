@@ -1,4 +1,4 @@
-﻿//! `SshTransport`: the SSH adapter implementing `helix_core::transport::Transport`.
+//! `SshTransport`: the SSH adapter implementing `helix_core::transport::Transport`.
 //! It owns the SSH session pool and the credential plumbing, so the daemon
 //! engine never touches `ssh2` or the pool directly.
 
@@ -8,8 +8,8 @@ use helix_core::{
     protocol::BrokerResponse,
     task_pool::CancellationToken,
     transport::{
-        ExecRequest, PtyRequest, SudoRequest, TerminalOpenRequest, TerminalSession, TransferRequest,
-        Transport,
+        ExecRequest, PtyRequest, SudoRequest, TerminalOpenRequest, TerminalSession,
+        TransferRequest, Transport,
     },
 };
 use helix_credential::credential;
@@ -53,9 +53,7 @@ impl Transport for SshTransport {
             request.timeout_seconds,
             request.target.strict_host_key_checking,
         )?;
-        let stdin_secret = request
-            .stdin_secret
-            .map(|secret| Zeroizing::new(secret));
+        let stdin_secret = request.stdin_secret.map(Zeroizing::new);
         let result = ssh::execute(
             &session,
             &request.command,
@@ -102,10 +100,7 @@ impl Transport for SshTransport {
         result
     }
 
-    fn open_terminal(
-        &self,
-        request: TerminalOpenRequest,
-    ) -> Result<Arc<dyn TerminalSession>> {
+    fn open_terminal(&self, request: TerminalOpenRequest) -> Result<Arc<dyn TerminalSession>> {
         Ok(terminal::open_terminal(&request.target, &request)?)
     }
 
