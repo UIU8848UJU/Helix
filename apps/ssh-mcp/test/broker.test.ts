@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { assertPersistentTerminalEnabled, assertProtocolCompatible, buildBrokerPtyRequest, buildBrokerTerminalOpenRequest, isBrokerDaemonPolicyCompatible, isCredentialError, resolveSpoolRefsWithReader, withCredentialAutoEnroll } from "../src/broker.js";
+import { assertPersistentTerminalEnabled, assertProtocolCompatible, buildBrokerCredentialExistsRequest, buildBrokerExecuteRequest, buildBrokerPtyRequest, buildBrokerSudoExecuteRequest, buildBrokerTerminalOpenRequest, buildBrokerTransferRequest, isBrokerDaemonPolicyCompatible, isCredentialError, resolveSpoolRefsWithReader, withCredentialAutoEnroll } from "../src/broker.js";
 import type { GlobalSettings, HostConfig, SpoolReadResult } from "../src/types.js";
 
 const settings: GlobalSettings = {
@@ -272,6 +272,46 @@ describe("broker daemon v5 capability contract", () => {
         "terminal_policy_v2", "terminal_cursor_v2",
       ],
     })).toThrow(/missing required capabilities: spool_v1/);
+  });
+});
+
+describe("broker protocol request builders", () => {
+  it("uses the Rust serde operation names for every broker request", () => {
+    expect(buildBrokerCredentialExistsRequest("credential")).toEqual({
+      op: "credential_exists",
+      credential_ref: "credential",
+    });
+    expect(buildBrokerExecuteRequest({
+      credentialRef: "credential",
+      host: passwordHost,
+      command: "true",
+      settings,
+    }).op).toBe("execute");
+    expect(buildBrokerSudoExecuteRequest({
+      loginCredentialRef: "credential",
+      sudoCredentialRef: "sudo",
+      host: passwordHost,
+      command: "true",
+      settings,
+    }).op).toBe("sudo_execute");
+    expect(buildBrokerTransferRequest({
+      credentialRef: "credential",
+      host: passwordHost,
+      direction: "upload",
+      localPath: "local",
+      remotePath: "remote",
+      recursive: false,
+      settings,
+    })).toMatchObject({ op: "upload", local_path: "local", remote_path: "remote" });
+    expect(buildBrokerTransferRequest({
+      credentialRef: "credential",
+      host: passwordHost,
+      direction: "download",
+      localPath: "local",
+      remotePath: "remote",
+      recursive: false,
+      settings,
+    }).op).toBe("download");
   });
 });
 

@@ -11,6 +11,30 @@ permissions:
   contents: read
 
 jobs:
+  protocol-contract:
+    name: protocol contract (TS -> Rust serde)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript protocol producer
+        run: npm run build --workspace @helix/ssh-mcp
+
+      - name: Run cross-language protocol contract gate
+        run: npm run protocol:contract
+
   ssh-mcp:
     runs-on: ubuntu-latest
     strategy:

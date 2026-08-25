@@ -161,7 +161,7 @@ function credentialRefsForEnrollment(host: HostConfig, error: unknown): string[]
 async function credentialExists(settings: GlobalSettings, credentialRef: string): Promise<boolean> {
   const response = await runBroker(
     settings,
-    { op: "credential_exists", credential_ref: credentialRef },
+    buildBrokerCredentialExistsRequest(credentialRef),
     10,
   );
   return response.exists === true;
@@ -656,6 +656,31 @@ function passwordAuth(host: HostConfig): { credentialRef: string } {
   return { credentialRef: host.auth.credentialRef };
 }
 
+export function buildBrokerCredentialExistsRequest(credentialRef: string): Record<string, unknown> {
+  return { op: "credential_exists", credential_ref: credentialRef };
+}
+
+export function buildBrokerExecuteRequest(input: {
+  credentialRef: string;
+  host: HostConfig;
+  command: string;
+  timeoutSeconds?: number;
+  settings: GlobalSettings;
+}): Record<string, unknown> {
+  const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
+  return {
+    op: "execute",
+    credential_ref: input.credentialRef,
+    host: input.host.hostname,
+    port: input.host.port ?? 22,
+    username: input.host.username,
+    command: input.command,
+    timeout_seconds: timeout,
+    max_output_bytes: input.settings.maxOutputBytes,
+    strict_host_key_checking: input.settings.strictHostKeyChecking,
+  };
+}
+
 export async function brokerExecute(input: {
   settings: GlobalSettings;
   hostAlias: string;
@@ -666,17 +691,17 @@ export async function brokerExecute(input: {
   return withCredentialAutoEnroll(input, async () => {
     const auth = passwordAuth(input.host);
     const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
-    const response = await runBroker(input.settings, {
-      op: "execute",
-      credential_ref: auth.credentialRef,
-      host: input.host.hostname,
-      port: input.host.port ?? 22,
-      username: input.host.username,
-      command: input.command,
-      timeout_seconds: timeout,
-      max_output_bytes: input.settings.maxOutputBytes,
-      strict_host_key_checking: input.settings.strictHostKeyChecking,
-    }, timeout + 5);
+    const response = await runBroker(
+      input.settings,
+      buildBrokerExecuteRequest({
+        credentialRef: auth.credentialRef,
+        host: input.host,
+        command: input.command,
+        timeoutSeconds: timeout,
+        settings: input.settings,
+      }),
+      timeout + 5,
+    );
     return responseToExecution(response);
   });
 }
@@ -740,6 +765,29 @@ export async function brokerPty(input: {
   });
 }
 
+export function buildBrokerSudoExecuteRequest(input: {
+  loginCredentialRef: string;
+  sudoCredentialRef: string;
+  host: HostConfig;
+  command: string;
+  timeoutSeconds?: number;
+  settings: GlobalSettings;
+}): Record<string, unknown> {
+  const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
+  return {
+    op: "sudo_execute",
+    login_credential_ref: input.loginCredentialRef,
+    sudo_credential_ref: input.sudoCredentialRef,
+    host: input.host.hostname,
+    port: input.host.port ?? 22,
+    username: input.host.username,
+    command: input.command,
+    timeout_seconds: timeout,
+    max_output_bytes: input.settings.maxOutputBytes,
+    strict_host_key_checking: input.settings.strictHostKeyChecking,
+  };
+}
+
 export async function brokerSudoExecute(input: {
   settings: GlobalSettings;
   hostAlias: string;
@@ -755,18 +803,18 @@ export async function brokerSudoExecute(input: {
     const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
     const requestId = newRequestId();
     const startedAt = Date.now();
-    const response = await runBroker(input.settings, {
-      op: "sudo_execute",
-      login_credential_ref: auth.credentialRef,
-      sudo_credential_ref: input.host.sudo.credentialRef,
-      host: input.host.hostname,
-      port: input.host.port ?? 22,
-      username: input.host.username,
-      command: input.command,
-      timeout_seconds: timeout,
-      max_output_bytes: input.settings.maxOutputBytes,
-      strict_host_key_checking: input.settings.strictHostKeyChecking,
-    }, timeout + 5);
+    const response = await runBroker(
+      input.settings,
+      buildBrokerSudoExecuteRequest({
+        loginCredentialRef: auth.credentialRef,
+        sudoCredentialRef: input.host.sudo.credentialRef,
+        host: input.host,
+        command: input.command,
+        timeoutSeconds: timeout,
+        settings: input.settings,
+      }),
+      timeout + 5,
+    );
     const result = responseToExecution(response);
     await writeAudit(input.settings, {
       timestamp: new Date().toISOString(),
@@ -1003,6 +1051,31 @@ export async function brokerTerminalClose(
   assertProtocolCompatible(response);
 }
 
+export function buildBrokerTransferRequest(input: {
+  credentialRef: string;
+  host: HostConfig;
+  direction: "upload" | "download";
+  localPath: string;
+  remotePath: string;
+  recursive: boolean;
+  timeoutSeconds?: number;
+  settings: GlobalSettings;
+}): Record<string, unknown> {
+  const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
+  return {
+    op: input.direction,
+    credential_ref: input.credentialRef,
+    host: input.host.hostname,
+    port: input.host.port ?? 22,
+    username: input.host.username,
+    local_path: input.localPath,
+    remote_path: input.remotePath,
+    recursive: input.recursive,
+    timeout_seconds: timeout,
+    strict_host_key_checking: input.settings.strictHostKeyChecking,
+  };
+}
+
 export async function brokerTransfer(input: {
   settings: GlobalSettings;
   host: HostConfig;
@@ -1019,18 +1092,20 @@ export async function brokerTransfer(input: {
       const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
       const requestId = newRequestId();
       const startedAt = Date.now();
-    const response = await runBroker(input.settings, {
-      op: input.direction === "upload" ? "sftp_upload" : "sftp_download",
-      credential_ref: auth.credentialRef,
-      host: input.host.hostname,
-      port: input.host.port ?? 22,
-      username: input.host.username,
-      local_path: input.localPath,
-      remote_path: input.remotePath,
-      recursive: input.recursive,
-      timeout_seconds: timeout,
-      strict_host_key_checking: input.settings.strictHostKeyChecking,
-    }, timeout + 5);
+      const response = await runBroker(
+        input.settings,
+        buildBrokerTransferRequest({
+          credentialRef: auth.credentialRef,
+          host: input.host,
+          direction: input.direction,
+          localPath: input.localPath,
+          remotePath: input.remotePath,
+          recursive: input.recursive,
+          timeoutSeconds: timeout,
+          settings: input.settings,
+        }),
+        timeout + 5,
+      );
     const result = responseToExecution(response);
     await writeAudit(input.settings, {
       timestamp: new Date().toISOString(),
@@ -1053,9 +1128,6 @@ export async function brokerCredentialExists(
   settings: GlobalSettings,
   credentialRef: string,
 ): Promise<boolean> {
-  const response = await runBroker(settings, {
-    op: "credential_exists",
-    credential_ref: credentialRef,
-  }, 15);
+  const response = await runBroker(settings, buildBrokerCredentialExistsRequest(credentialRef), 15);
   return response.exists ?? false;
 }

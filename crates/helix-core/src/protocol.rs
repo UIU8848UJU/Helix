@@ -14,7 +14,7 @@ pub const DAEMON_CAPABILITIES: &[&str] = &[
 ];
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BrokerRequest {
     Ping,
     CredentialExists {
@@ -137,7 +137,7 @@ impl BrokerResponse {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DaemonRequest {
     Ping,
     Submit {
@@ -473,5 +473,137 @@ mod tests {
         assert!(json.contains("\"earliestCursor\":0"));
         assert!(json.contains("\"endCursor\":11"));
         assert!(json.contains("\"lastActivityAtMs\":2"));
+    }
+
+    #[test]
+    #[ignore = "executed by the cross-language protocol contract CI gate"]
+    fn protocol_contract_fixture() {
+        use std::collections::BTreeSet;
+
+        let path = std::env::var("HELIX_PROTOCOL_CONTRACT_FIXTURE")
+            .expect("HELIX_PROTOCOL_CONTRACT_FIXTURE must point to a JSONL fixture");
+        let input = std::fs::read_to_string(path).expect("read protocol contract fixture");
+        let mut accepted = 0usize;
+        let mut daemon_variants = BTreeSet::new();
+        let mut broker_variants = BTreeSet::new();
+        for (line_number, line) in input.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let request = serde_json::from_str::<DaemonRequest>(line).unwrap_or_else(|error| {
+                panic!(
+                    "protocol contract rejected fixture line {}: {error}\n{line}",
+                    line_number + 1
+                )
+            });
+            match request {
+                DaemonRequest::Ping => {
+                    daemon_variants.insert("ping");
+                }
+                DaemonRequest::Submit { request } => {
+                    daemon_variants.insert("submit");
+                    broker_variants.insert(match request {
+                        BrokerRequest::Ping => "ping",
+                        BrokerRequest::CredentialExists { .. } => "credential_exists",
+                        BrokerRequest::Execute { .. } => "execute",
+                        BrokerRequest::Pty { .. } => "pty",
+                        BrokerRequest::SudoExecute { .. } => "sudo_execute",
+                        BrokerRequest::Upload { .. } => "upload",
+                        BrokerRequest::Download { .. } => "download",
+                    });
+                }
+                DaemonRequest::TaskStatus { .. } => {
+                    daemon_variants.insert("task_status");
+                }
+                DaemonRequest::TaskCancel { .. } => {
+                    daemon_variants.insert("task_cancel");
+                }
+                DaemonRequest::SpoolRead { .. } => {
+                    daemon_variants.insert("spool_read");
+                }
+                DaemonRequest::SpoolTail { .. } => {
+                    daemon_variants.insert("spool_tail");
+                }
+                DaemonRequest::SpoolSearch { .. } => {
+                    daemon_variants.insert("spool_search");
+                }
+                DaemonRequest::TerminalOpen { .. } => {
+                    daemon_variants.insert("terminal_open");
+                }
+                DaemonRequest::TerminalWrite { .. } => {
+                    daemon_variants.insert("terminal_write");
+                }
+                DaemonRequest::TerminalRead { .. } => {
+                    daemon_variants.insert("terminal_read");
+                }
+                DaemonRequest::TerminalTail { .. } => {
+                    daemon_variants.insert("terminal_tail");
+                }
+                DaemonRequest::TerminalSearch { .. } => {
+                    daemon_variants.insert("terminal_search");
+                }
+                DaemonRequest::TerminalResize { .. } => {
+                    daemon_variants.insert("terminal_resize");
+                }
+                DaemonRequest::TerminalStatus { .. } => {
+                    daemon_variants.insert("terminal_status");
+                }
+                DaemonRequest::TerminalClose { .. } => {
+                    daemon_variants.insert("terminal_close");
+                }
+                DaemonRequest::Shutdown => {
+                    daemon_variants.insert("shutdown");
+                }
+            }
+            accepted += 1;
+        }
+        assert_eq!(
+            daemon_variants,
+            BTreeSet::from([
+                "ping",
+                "submit",
+                "task_status",
+                "task_cancel",
+                "spool_read",
+                "spool_tail",
+                "spool_search",
+                "terminal_open",
+                "terminal_write",
+                "terminal_read",
+                "terminal_tail",
+                "terminal_search",
+                "terminal_resize",
+                "terminal_status",
+                "terminal_close",
+                "shutdown",
+            ]),
+            "TS fixture must cover every DaemonRequest variant",
+        );
+        assert_eq!(
+            broker_variants,
+            BTreeSet::from([
+                "ping",
+                "credential_exists",
+                "execute",
+                "pty",
+                "sudo_execute",
+                "upload",
+                "download",
+            ]),
+            "TS fixture must cover every BrokerRequest variant",
+        );
+        assert_eq!(
+            accepted, 22,
+            "fixture must contain one request per contract case"
+        );
+    }
+
+    #[test]
+    fn unknown_protocol_fields_are_rejected() {
+        let error = serde_json::from_str::<DaemonRequest>(
+            r#"{"op":"task_status","task_id":"task-1","unexpected":true}"#,
+        )
+        .expect_err("unknown protocol fields must fail closed");
+        assert!(error.to_string().contains("unknown field"));
     }
 }
