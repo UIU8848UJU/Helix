@@ -7,8 +7,6 @@ CONFIG_FILE="${HELIX_SSH_CONFIG:-$CONFIG_DIR/ssh-mcp.json}"
 BROWSER_CONFIG_FILE="${BROWSER_MCP_CONFIG:-$CONFIG_DIR/browser-mcp.json}"
 RUNTIME_DIR="$(dirname "$CONFIG_FILE")"
 GUIDE_FILE="$RUNTIME_DIR/HELIX_AI_GUIDE.md"
-SKILL_DIR="$RUNTIME_DIR/skills/helix-remote-operations"
-SKILL_FILE="$SKILL_DIR/SKILL.md"
 DEPLOYMENT_MODE="${HELIX_DEPLOYMENT_MODE:-Harness}"
 
 require_command() {
@@ -83,9 +81,6 @@ npx playwright install chromium || {
 }
 
 cp "$ROOT_DIR/docs/guides/HELIX_AI_GUIDE.md" "$GUIDE_FILE"
-mkdir -p "$SKILL_DIR"
-cp "$ROOT_DIR/skills/helix-remote-operations/SKILL.md" "$SKILL_FILE"
-
 ENTRY="$ROOT_DIR/apps/ssh-mcp/build/index.js"
 BROWSER_ENTRY="$ROOT_DIR/apps/browser-mcp/build/index.js"
 echo
@@ -93,7 +88,6 @@ echo "Helix SSH MCP installation completed."
 echo "Entry:    $ENTRY"
 echo "Config:   $CONFIG_FILE"
 echo "AI guide: $GUIDE_FILE"
-echo "Skill:    $SKILL_FILE"
 echo "Browser entry: $BROWSER_ENTRY"
 echo "Browser config: $BROWSER_CONFIG_FILE"
 echo "Deployment mode: $DEPLOYMENT_MODE"

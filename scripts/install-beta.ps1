@@ -11,7 +11,7 @@ param(
 )
 
 # Offline installer for the Helix beta package. Installs the prebuilt daemon,
-# the bundled MCP server, config, AI guide, skill and admin script from this
+# the bundled MCP server, config, AI guide and admin script from this
 # directory into the Helix runtime directory. No Rust toolchain, npm install or
 # TypeScript build is required; only Node.js 20+ and ssh/scp are needed.
 
@@ -82,7 +82,6 @@ $Helixd = Require-PackageFile "helixd.exe"
 $Bundle = Require-PackageFile "helix-ssh-mcp.bundle.mjs"
 $TemplateConfig = Require-PackageFile "ssh-mcp.config.json"
 $GuideSource = Require-PackageFile "HELIX_AI_GUIDE.md"
-$SkillSource = Require-PackageFile "SKILL.md"
 $AdminSource = Require-PackageFile "helix-admin.ps1"
 
 $ConfigDir = if ($env:APPDATA) { Join-Path $env:APPDATA "Helix" } else { Join-Path $HOME ".config\helix" }
@@ -156,11 +155,6 @@ $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $GuideFile = Join-Path $RuntimeDir "HELIX_AI_GUIDE.md"
 Copy-Item -LiteralPath $GuideSource -Destination $GuideFile -Force
 
-$SkillDir = Join-Path $RuntimeDir "skills\helix-remote-operations"
-$SkillFile = Join-Path $SkillDir "SKILL.md"
-New-Item -ItemType Directory -Force -Path $SkillDir | Out-Null
-Copy-Item -LiteralPath $SkillSource -Destination $SkillFile -Force
-
 $AdminFile = Join-Path $RuntimeDir "helix-admin.ps1"
 Copy-Item -LiteralPath $AdminSource -Destination $AdminFile -Force
 
@@ -170,7 +164,6 @@ Write-Host "MCP entry:  $Entry"
 Write-Host "Daemon runtime: $Broker"
 Write-Host "Config: $ConfigFile"
 Write-Host "AI guide: $GuideFile"
-Write-Host "Skill:    $SkillFile"
 Write-Host "Admin:    $AdminFile"
 Write-Host "Deployment mode: $DeploymentMode"
 Write-Host ""

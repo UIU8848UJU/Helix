@@ -215,12 +215,6 @@ $GuideSource = Join-Path $RootDir "docs\guides\HELIX_AI_GUIDE.md"
 $GuideFile = Join-Path $RuntimeDir "HELIX_AI_GUIDE.md"
 Copy-Item -LiteralPath $GuideSource -Destination $GuideFile -Force
 
-$SkillSource = Join-Path $RootDir "skills\helix-remote-operations\SKILL.md"
-$SkillDir = Join-Path $RuntimeDir "skills\helix-remote-operations"
-$SkillFile = Join-Path $SkillDir "SKILL.md"
-New-Item -ItemType Directory -Force -Path $SkillDir | Out-Null
-Copy-Item -LiteralPath $SkillSource -Destination $SkillFile -Force
-
 $AdminSource = Join-Path $RootDir "scripts\helix-admin.ps1"
 $AdminFile = Join-Path $RuntimeDir "helix-admin.ps1"
 Copy-Item -LiteralPath $AdminSource -Destination $AdminFile -Force
@@ -233,7 +227,6 @@ Write-Host "Entry:  $Entry"
 Write-Host "Daemon runtime: $Broker"
 Write-Host "Config: $ConfigFile"
 Write-Host "AI guide: $GuideFile"
-Write-Host "Skill:    $SkillFile"
 Write-Host "Admin:    $AdminFile"
 Write-Host "Browser entry: $BrowserEntry"
 Write-Host "Browser config: $BrowserConfigFile"

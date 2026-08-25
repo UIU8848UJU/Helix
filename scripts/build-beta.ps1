@@ -8,7 +8,7 @@ param(
 #   1. runs the full test gate (Rust release tests, TS tests, type check)
 #   2. builds helixd.exe (release) and bundles the ssh-mcp server into one file
 #   3. assembles dist\helix-<Version>-win-x64\ with install scripts, config,
-#      AI guide, skill and admin script
+#      AI guide and admin script
 #   4. writes SHA256SUMS.txt and a zip for distribution
 # Users only need Node.js 20+ and ssh/scp: no cargo, npm install or tsc required.
 
@@ -90,7 +90,6 @@ $Files = @(
     @{ Name = "helix-ssh-mcp.bundle.mjs";      Source = $Bundle },
     @{ Name = "ssh-mcp.config.json";           Source = (Join-Path $RootDir "examples\ssh-mcp.config.json") },
     @{ Name = "HELIX_AI_GUIDE.md";             Source = (Join-Path $RootDir "docs\guides\HELIX_AI_GUIDE.md") },
-    @{ Name = "SKILL.md";                      Source = (Join-Path $RootDir "skills\helix-remote-operations\SKILL.md") },
     @{ Name = "helix-admin.ps1";               Source = (Join-Path $RootDir "scripts\helix-admin.ps1") },
     @{ Name = "install.ps1";                   Source = (Join-Path $RootDir "scripts\install-beta.ps1") },
     @{ Name = "register-mcp.ps1";              Source = (Join-Path $RootDir "scripts\register-mcp.ps1") },
@@ -129,7 +128,7 @@ No Rust toolchain, npm install, or local compilation is required.
 .\install.ps1 -RegisterClient None
 ```
 
-The script installs helixd, the MCP server, configuration, AI guide, skill,
+The script installs helixd, the MCP server, configuration, AI guide,
 and administration scripts under %APPDATA%\Helix\. It can register the
 helix-ssh MCP server with installed Claude Code and Codex clients.
 

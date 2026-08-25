@@ -65,7 +65,6 @@ cd Helix
 | SSH 配置 | `%APPDATA%\Helix\ssh-mcp.json`（Windows）/ `~/.config/helix/ssh-mcp.json`（Linux/macOS） |
 | Daemon (helixd) | `%APPDATA%\Helix\bin\helixd-<sha16>.exe` |
 | AI 操作指南 | `%APPDATA%\Helix\HELIX_AI_GUIDE.md` |
-| 运维 Skill | `%APPDATA%\Helix\skills\helix-remote-operations\SKILL.md` |
 | 凭据管理脚本 | `%APPDATA%\Helix\helix-admin.ps1` |
 | 浏览器 MCP 配置 | `%APPDATA%\Helix\browser-mcp.json` |
 

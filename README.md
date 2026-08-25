@@ -51,7 +51,6 @@ crates/helix-credential/      Windows 凭据存储与 UI
 crates/helix-transport-ssh/   SSH Transport（exec/PTY/SFTP/sudo）
 docs/architecture/            Helix/helixd 架构设计文档
 docs/guides/                  AI 与人工操作指南
-skills/                       Helix 远程操作 Skill
 examples/                     配置示例
 scripts/                      安装、注册、管理和卸载脚本
 ```
@@ -396,7 +395,6 @@ cargo build --release --workspace
 
 - `docs/architecture/credential-broker-daemon.md`
 - `docs/guides/HELIX_AI_GUIDE.md`
-- `skills/helix-remote-operations/SKILL.md`
 
 
 ## 分支策略
