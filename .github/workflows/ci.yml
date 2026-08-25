@@ -50,16 +50,16 @@ jobs:
           node-version: ${{ matrix.node-version }}
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Type check
-        run: npm run check
+        run: npm run check --workspace @helix/ssh-mcp
 
       - name: Unit tests
-        run: npm test
+        run: npm test --workspace @helix/ssh-mcp
 
       - name: Build
-        run: npm run build
+        run: npm run build --workspace @helix/ssh-mcp
 
   helixd:
     name: helixd (${{ matrix.os }})
@@ -84,7 +84,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          npm install
+          npm ci
           npm test --workspace apps/ssh-mcp
 
       - name: Cache Rust build
@@ -147,7 +147,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Install Chromium for integration tests
         run: npx playwright install --with-deps chromium

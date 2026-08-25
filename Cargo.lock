@@ -182,7 +182,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "helix-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "regex",
@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "helix-credential"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "widestring",
@@ -204,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "helix-transport-ssh"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "helix-core",
@@ -215,7 +215,7 @@ dependencies = [
 
 [[package]]
 name = "helixd"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "clap",
