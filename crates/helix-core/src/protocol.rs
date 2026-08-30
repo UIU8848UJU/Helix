@@ -10,6 +10,7 @@ pub const DAEMON_CAPABILITIES: &[&str] = &[
     "terminal_v1",
     "terminal_policy_v2",
     "terminal_cursor_v2",
+    "terminal_task_v1",
     "spool_v1",
 ];
 
@@ -146,6 +147,10 @@ pub enum DaemonRequest {
     TaskStatus {
         task_id: String,
     },
+    TaskWait {
+        task_id: String,
+        timeout_seconds: u64,
+    },
     TaskCancel {
         task_id: String,
     },
@@ -181,6 +186,10 @@ pub enum DaemonRequest {
     TerminalWrite {
         terminal_id: String,
         input: String,
+    },
+    TerminalExec {
+        terminal_id: String,
+        command: String,
     },
     TerminalRead {
         terminal_id: String,
@@ -383,6 +392,7 @@ mod tests {
         assert_eq!(DAEMON_PROTOCOL_VERSION, 5);
         assert!(DAEMON_CAPABILITIES.contains(&"terminal_v1"));
         assert!(DAEMON_CAPABILITIES.contains(&"terminal_policy_v2"));
+        assert!(DAEMON_CAPABILITIES.contains(&"terminal_task_v1"));
     }
 
     #[test]
@@ -419,6 +429,17 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(write, DaemonRequest::TerminalWrite { .. }));
+
+        let exec: DaemonRequest = serde_json::from_str(
+            r#"{"op":"terminal_exec","terminal_id":"term-1","command":"make test"}"#,
+        )
+        .unwrap();
+        assert!(matches!(exec, DaemonRequest::TerminalExec { .. }));
+
+        let wait: DaemonRequest =
+            serde_json::from_str(r#"{"op":"task_wait","task_id":"task-1","timeout_seconds":30}"#)
+                .unwrap();
+        assert!(matches!(wait, DaemonRequest::TaskWait { .. }));
 
         let read: DaemonRequest = serde_json::from_str(
             r#"{"op":"terminal_read","terminal_id":"term-1","cursor":0,"max_bytes":1024}"#,
@@ -515,6 +536,9 @@ mod tests {
                 DaemonRequest::TaskStatus { .. } => {
                     daemon_variants.insert("task_status");
                 }
+                DaemonRequest::TaskWait { .. } => {
+                    daemon_variants.insert("task_wait");
+                }
                 DaemonRequest::TaskCancel { .. } => {
                     daemon_variants.insert("task_cancel");
                 }
@@ -532,6 +556,9 @@ mod tests {
                 }
                 DaemonRequest::TerminalWrite { .. } => {
                     daemon_variants.insert("terminal_write");
+                }
+                DaemonRequest::TerminalExec { .. } => {
+                    daemon_variants.insert("terminal_exec");
                 }
                 DaemonRequest::TerminalRead { .. } => {
                     daemon_variants.insert("terminal_read");
@@ -563,12 +590,14 @@ mod tests {
                 "ping",
                 "submit",
                 "task_status",
+                "task_wait",
                 "task_cancel",
                 "spool_read",
                 "spool_tail",
                 "spool_search",
                 "terminal_open",
                 "terminal_write",
+                "terminal_exec",
                 "terminal_read",
                 "terminal_tail",
                 "terminal_search",
@@ -593,7 +622,7 @@ mod tests {
             "TS fixture must cover every BrokerRequest variant",
         );
         assert_eq!(
-            accepted, 22,
+            accepted, 24,
             "fixture must contain one request per contract case"
         );
     }

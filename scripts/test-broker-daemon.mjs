@@ -4,7 +4,7 @@ import path from "node:path";
 
 const PROTOCOL_VERSION = 5;
 const root = process.cwd();
-const executable = path.join(
+const executable = process.env.HELIX_HELIXD ?? path.join(
   root,
   "target",
   "release",
@@ -60,7 +60,7 @@ function assertProtocol(response) {
   }
   for (const capability of [
     "task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "terminal_v1",
-    "terminal_policy_v2", "terminal_cursor_v2", "spool_v1",
+    "terminal_policy_v2", "terminal_cursor_v2", "terminal_task_v1", "spool_v1",
   ]) {
     if (!response.capabilities?.includes(capability)) {
       throw new Error(`missing daemon capability: ${capability}`);
@@ -215,6 +215,12 @@ try {
   assertProtocol(submitted);
   if (!submitted.ok || !submitted.taskId) {
     throw new Error(`submit failed: ${JSON.stringify(submitted)}`);
+  }
+
+  const waited = await rpc({ op: "task_wait", task_id: submitted.taskId, timeout_seconds: 5 });
+  assertProtocol(waited);
+  if (waited.state !== "succeeded" || !waited.result?.ok) {
+    throw new Error(`task_wait did not return a successful task: ${JSON.stringify(waited)}`);
   }
 
   let status = submitted;

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { assertPersistentTerminalEnabled, assertProtocolCompatible, buildBrokerCredentialExistsRequest, buildBrokerExecuteRequest, buildBrokerPtyRequest, buildBrokerSudoExecuteRequest, buildBrokerTerminalOpenRequest, buildBrokerTransferRequest, isBrokerDaemonPolicyCompatible, isCredentialError, resolveSpoolRefsWithReader, withCredentialAutoEnroll } from "../src/broker.js";
+import { assertPersistentTerminalEnabled, assertProtocolCompatible, buildBrokerCredentialExistsRequest, buildBrokerExecuteRequest, buildBrokerPtyRequest, buildBrokerSudoExecuteRequest, buildBrokerTerminalExecRequest, buildBrokerTerminalOpenRequest, buildBrokerTaskWaitRequest, buildBrokerTransferRequest, isBrokerDaemonPolicyCompatible, isCredentialError, resolveSpoolRefsWithReader, withCredentialAutoEnroll } from "../src/broker.js";
 import type { GlobalSettings, HostConfig, SpoolReadResult } from "../src/types.js";
 
 const settings: GlobalSettings = {
@@ -250,7 +250,7 @@ describe("broker daemon v5 capability contract", () => {
       protocolVersion: 5,
       capabilities: [
         "task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "terminal_v1",
-        "terminal_policy_v2", "terminal_cursor_v2", "spool_v1",
+        "terminal_policy_v2", "terminal_cursor_v2", "terminal_task_v1", "spool_v1",
       ],
     })).not.toThrow();
   });
@@ -269,7 +269,7 @@ describe("broker daemon v5 capability contract", () => {
       protocolVersion: 5,
       capabilities: [
         "task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "terminal_v1",
-        "terminal_policy_v2", "terminal_cursor_v2",
+        "terminal_policy_v2", "terminal_cursor_v2", "terminal_task_v1",
       ],
     })).toThrow(/missing required capabilities: spool_v1/);
   });
@@ -321,7 +321,7 @@ describe("persistent terminal authorization contract", () => {
     protocolVersion: 5,
     capabilities: [
       "task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1",
-      "terminal_v1", "terminal_policy_v2", "terminal_cursor_v2", "spool_v1",
+      "terminal_v1", "terminal_policy_v2", "terminal_cursor_v2", "terminal_task_v1", "spool_v1",
     ],
   };
 
@@ -414,6 +414,24 @@ describe("broker terminal open request", () => {
     expect(request.rows).toBe(40);
     expect(request.idle_seconds).toBe(120);
     expect(request.max_history_bytes).toBe(1024 * 1024);
+  });
+});
+
+describe("broker terminal task requests", () => {
+  it("builds terminal_exec with the exact daemon contract", () => {
+    expect(buildBrokerTerminalExecRequest("term-1", "make test")).toEqual({
+      op: "terminal_exec",
+      terminal_id: "term-1",
+      command: "make test",
+    });
+  });
+
+  it("builds task_wait with a bounded timeout", () => {
+    expect(buildBrokerTaskWaitRequest("task-1", 30)).toEqual({
+      op: "task_wait",
+      task_id: "task-1",
+      timeout_seconds: 30,
+    });
   });
 });
 

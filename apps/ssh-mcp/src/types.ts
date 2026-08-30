@@ -151,6 +151,18 @@ export interface SpoolSearchResult {
 
 export type TerminalState = "running" | "finished" | "closed";
 
+export type TaskState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+
+export interface TaskStatusResult {
+  taskId: string;
+  state: TaskState;
+  result?: BrokerResponse;
+  cancelRequested?: boolean;
+  createdAtMs?: number;
+  startedAtMs?: number;
+  finishedAtMs?: number;
+}
+
 /** Summary-first envelope returned by terminal_open / terminal_status. */
 export interface TerminalStatusResult {
   terminalId: string;

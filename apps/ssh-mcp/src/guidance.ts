@@ -16,7 +16,7 @@ export const HELIX_SERVER_INSTRUCTIONS = [
   "Harness hosts default to allowedRemotePaths=['/'] and strictHostKeyChecking=false. Do not introduce a path-whitelist or known_hosts setup step unless the active configuration is explicitly locked down.",
   "All user commands pass through the Harness dangerous-command guard. Do not try to bypass a blocked rm, filesystem wipe, block-device write, power-control, PID-1 kill, or fork-bomb command.",
   "Prefer structured cwd, env, and sourceScripts fields for repeatable build and debugging workflows.",
-  "Use terminal_open for persistent interactive sessions (shells, REPLs, long build loops). terminal_open returns a small summary (state, exitCode, size, tail); use terminal_write to send input, terminal_status for the current summary, terminal_read/terminal_tail to page output, terminal_search to find error lines without reading everything, and terminal_close when done. Terminals idle out after the configured timeout.",
+  "Use terminal_open for persistent interactive sessions (shells, REPLs, long build loops). terminal_open returns a small summary (state, exitCode, size, tail); use terminal_exec to queue a command and get a taskId, then task_wait to wait for dispatch completion, terminal_write for raw interactive input, terminal_status for the current summary, terminal_read/terminal_tail to page output, terminal_search to find error lines without reading everything, and terminal_close when done. Terminals idle out after the configured timeout.",
   "Each host can carry a persistent defaultWorkingDir (absolute, inside the allowlist). When cwd is omitted, ssh_exec, job_start, docker_exec and compose_exec fall back to it. View with get_working_dir and update with set_working_dir.",
 ].join("\n");
 
@@ -74,6 +74,10 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
     "Open a persistent interactive PTY session on a remote host; returns a summary envelope (terminalId, state, exitCode, size, tail). Use terminal_write/terminal_read/terminal_search to interact and drill down.",
   terminal_write:
     "Write input to a persistent terminal stdin. PTY input is echoed back, so never pass passwords or secrets.",
+  terminal_exec:
+    "Queue a command on a persistent terminal and return a taskId; use task_wait for bounded waiting and terminal_read/terminal_tail for command output.",
+  task_wait:
+    "Wait for a daemon taskId to reach a terminal state up to timeoutSeconds, returning the latest task snapshot when the deadline expires.",
   terminal_read:
     "Read a byte range from a persistent terminal clean output by cursor; continue with the returned nextCursor until eof.",
   terminal_tail:
@@ -183,7 +187,8 @@ const HELP: Record<HelpTopic, object> = {
     workflow: [
       "Call terminal_open with host and command (e.g. bash --norc -i).",
       "Save the returned terminalId; it stays alive until terminal_close or the idle timeout.",
-      "Send input with terminal_write; read output with terminal_status, terminal_tail, or terminal_read.",
+      "Use terminal_exec for a command that should have a taskId; call task_wait with that taskId, then read output with terminal_status, terminal_tail, or terminal_read.",
+      "Use terminal_write for raw interactive input when a command is not complete until a later prompt or response.",
       "Find error lines with terminal_search instead of reading everything.",
       "Call terminal_close when finished.",
     ],

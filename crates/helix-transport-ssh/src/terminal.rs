@@ -8,8 +8,10 @@ use crate::pool::connect_with_retry;
 use crate::ssh::{self, ConnectOptions};
 use anyhow::{Context, Result, anyhow};
 use helix_core::{
+    protocol::BrokerResponse,
     spool::runtime_dir,
     spool::{SpoolMatch, SpoolRead, SpoolTail},
+    task_pool::CancellationToken,
     terminal::{
         self, TerminalCleaner, TerminalOutput, TerminalSnapshot, TerminalState,
         generate_terminal_id, monotonic_ms,
@@ -158,6 +160,44 @@ impl TerminalSession for SshTerminalSession {
         write_all_nonblocking(&mut channel, input.as_bytes(), Duration::from_secs(5))?;
         self.shared.touch();
         Ok(())
+    }
+
+    fn execute(&self, command: &str, cancellation: &CancellationToken) -> Result<BrokerResponse> {
+        let start_cursor = self.snapshot().size;
+        let marker = format!("__HELIX_TASK_DONE_{}__", self.id);
+        let wrapped = format!("{command}\nprintf '\\n{marker}:%s\\n' \"$?\"\n");
+        self.write(&wrapped)?;
+
+        let started = Instant::now();
+        let mut cursor = start_cursor;
+        let mut output = String::new();
+        loop {
+            if cancellation.is_cancelled() {
+                return Err(anyhow!("terminal task was cancelled"));
+            }
+            let read = self.read(cursor, 64 * 1024)?;
+            if read.next_cursor > cursor {
+                output.push_str(&read.content);
+                cursor = read.next_cursor;
+            }
+            if let Some(marker_pos) = output.rfind(&format!("{marker}:")) {
+                let status_start = marker_pos + marker.len() + 1;
+                if let Some(status_line) = output[status_start..].lines().next() {
+                    if let Ok(exit_code) = status_line.trim().parse::<i32>() {
+                        let mut response = BrokerResponse::success();
+                        response.exit_code = Some(exit_code);
+                        response.duration_ms = Some(started.elapsed().as_millis());
+                        return Ok(response);
+                    }
+                }
+            }
+            match self.state() {
+                TerminalState::Running => thread::sleep(POLL_INTERVAL),
+                TerminalState::Finished | TerminalState::Closed => {
+                    return Err(anyhow!("terminal ended before task completion marker"));
+                }
+            }
+        }
     }
 
     fn resize(&self, cols: u16, rows: u16) -> Result<()> {

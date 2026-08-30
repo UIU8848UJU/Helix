@@ -8,6 +8,7 @@ import {
   brokerPty,
   brokerSudoExecute,
   brokerTerminalClose,
+  brokerTerminalExec,
   brokerTerminalOpen,
   brokerTerminalRead,
   brokerTerminalResize,
@@ -15,6 +16,7 @@ import {
   brokerTerminalStatus,
   brokerTerminalTail,
   brokerTerminalWrite,
+  brokerTaskWait,
   brokerTransfer,
 } from "./broker.js";
 import { ConfigStore, hostMutationAllowed, redactHost, validateHost } from "./config.js";
@@ -446,6 +448,27 @@ export function createServer(store = new ConfigStore()): McpServer {
       const config = await store.read();
       await brokerTerminalWrite(config.settings, terminalId, input);
       return textResult({ ok: true, terminalId });
+    } catch (error) { throwInvalid(error); }
+  });
+
+  server.tool("terminal_exec", "Queue a command on a persistent terminal and return a taskId. Use task_wait with that taskId instead of sleeping or polling task_status in the client.", {
+    terminalId: z.string(),
+    command: z.string().min(1),
+  }, async ({ terminalId, command }) => {
+    try {
+      assertCommandSafe(command);
+      const config = await store.read();
+      return textResult(await brokerTerminalExec(config.settings, terminalId, command));
+    } catch (error) { throwInvalid(error); }
+  });
+
+  server.tool("task_wait", "Wait for a daemon task to reach queued/running/succeeded/failed/cancelled state, or return its current state when timeoutSeconds expires.", {
+    taskId: z.string(),
+    timeoutSeconds: z.number().int().min(0).max(86400).default(30),
+  }, async ({ taskId, timeoutSeconds }) => {
+    try {
+      const config = await store.read();
+      return textResult(await brokerTaskWait(config.settings, taskId, timeoutSeconds));
     } catch (error) { throwInvalid(error); }
   });
 

@@ -59,7 +59,7 @@ The TypeScript MCP process auto-starts the daemon on first use when the endpoint
 
 Heavy Broker operations are no longer synchronous one-shot stdin RPCs. The daemon protocol has an
 explicit `protocolVersion` plus capabilities. The PTY request-set change was protocol v2;
-protocol v3 adds `spool_v1` (large-output spooling) and Harness/Sandbox execution policy; protocol v4 generalizes the wire ops (`execute`/`pty`/`upload`/`download`) so helix-core is transport-agnostic. Clients require version 4 and the capabilities they use. The endpoint name remains stable so a new
+protocol v3 adds `spool_v1` (large-output spooling) and Harness/Sandbox execution policy; protocol v4 generalizes the wire ops (`execute`/`pty`/`upload`/`download`) so helix-core is transport-agnostic; protocol v5 adds persistent-terminal task dispatch (`terminal_task_v1`). Clients require version 5 and the capabilities they use. The endpoint name remains stable so a new
 client can find and shut down an incompatible resident daemon.
 
 ### Submit
@@ -86,8 +86,8 @@ The daemon immediately returns a TaskID and state:
 ```json
 {
   "ok": true,
-  "protocolVersion": 4,
-  "capabilities": ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "spool_v1"],
+  "protocolVersion": 5,
+  "capabilities": ["task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "terminal_v1", "terminal_task_v1", "spool_v1"],
   "taskId": "broker-...",
   "state": "queued"
 }
@@ -113,6 +113,27 @@ cancelled
 ```
 
 A `succeeded` Broker task means the Broker operation completed normally. The nested SSH result may still contain a non-zero remote `exitCode`; that is a remote command result, not a Broker transport failure.
+
+### Persistent terminal tasks
+
+`terminal_exec` submits a complete command to an already-open persistent PTY and returns the same
+TaskID envelope used by normal Broker tasks:
+
+```json
+{"op":"terminal_exec","terminal_id":"term-...","command":"make test"}
+```
+
+Use `task_wait` to wait in the daemon instead of implementing a client-side sleep loop:
+
+```json
+{"op":"task_wait","task_id":"broker-...","timeout_seconds":30}
+```
+
+The response is the latest task snapshot. A timeout leaves a `queued` or `running` task unchanged;
+call `task_wait` again if needed. The SSH terminal adapter waits for its command-completion marker
+and records the remote exit code; adapters without completion observation may report success once
+stdin accepts the command. In both cases command output remains in terminal history and is read
+with `terminal_read`, `terminal_tail`, or `terminal_search`.
 
 ### Cancel
 

@@ -62,6 +62,18 @@ pub struct TerminalOpenRequest {
 pub trait TerminalSession: Send + Sync + 'static {
     fn id(&self) -> &str;
     fn write(&self, input: &str) -> Result<()>;
+    /// Executes one complete command in the terminal context. The default
+    /// implementation preserves compatibility with simple terminal adapters:
+    /// it dispatches the command and reports success once stdin accepts it.
+    /// Adapters that can observe shell completion may override this method.
+    fn execute(&self, command: &str, _cancellation: &CancellationToken) -> Result<BrokerResponse> {
+        let mut input = command.to_owned();
+        if !input.ends_with('\n') {
+            input.push('\n');
+        }
+        self.write(&input)?;
+        Ok(BrokerResponse::success())
+    }
     fn resize(&self, cols: u16, rows: u16) -> Result<()>;
     fn snapshot(&self) -> TerminalSnapshot;
     /// Cursor read over the terminal's clean output log.

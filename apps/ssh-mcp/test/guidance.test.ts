@@ -64,4 +64,12 @@ describe("Helix MCP guidance", () => {
     expect(internals._registeredTools?.job_start.description).toContain("persistent remote job");
     expect(internals._registeredTools?.helix_help).toBeDefined();
   });
+
+  it("documents terminal task execution and waiting", () => {
+    expect(TOOL_DESCRIPTIONS.terminal_exec).toContain("taskId");
+    expect(TOOL_DESCRIPTIONS.task_wait).toContain("timeout");
+    const help = getHelixHelp("terminal") as { workflow: string[] };
+    expect(help.workflow.join(" ")).toContain("terminal_exec");
+    expect(help.workflow.join(" ")).toContain("task_wait");
+  });
 });

@@ -71,6 +71,7 @@ scripts/                      安装、注册、管理和卸载脚本
 - `docker_list` / `docker_exec`；
 - `compose_ps` / `compose_exec`；
 - `environment_probe`：探测 OS、架构、工具链、容器和环境脚本；
+- `terminal_open` / `terminal_exec` / `task_wait` / `terminal_read`：在持久 PTY 中提交命令任务，按 taskId 有界等待并读取输出；
 - 常驻 Broker、SSH Session 复用、有界任务队列、固定 worker 池；
 - JSONL 审计、超时、输出上限和并发控制。
 
@@ -132,7 +133,7 @@ max idle Sessions / connection key = 2
 helixd Task 完成态保留 = 600s
 ```
 
-协议版本为 v4（transport 无关），能力含 `task_pool_v2` / `bounded_ipc` / `owner_only_ipc` / `pty_v1` / `spool_v1`。大输出（>64 KiB）自动落盘到 spool，IPC 只返回元数据，通过 `spool_read` / `spool_tail` / `spool_search` 读取。执行策略支持 **Harness**（开发，默认，拦截 `rm -rf /`、reboot、mkfs 等破坏性命令）和 **Sandbox**（生产，read-only + sudo 限制 + 路径/命令白名单），由 `helixd serve-daemon --mode harness|sandbox` 选择。
+协议版本为 v5（transport 无关），能力含 `task_pool_v2` / `bounded_ipc` / `owner_only_ipc` / `pty_v1` / `terminal_v1` / `terminal_task_v1` / `spool_v1`。普通 Broker 请求通过 `submit → task_status`，持久终端命令通过 `terminal_exec → task_wait`；命令输出仍从 `terminal_read` / `terminal_tail` 获取。大输出（>64 KiB）自动落盘到 spool，IPC 只返回元数据，通过 `spool_read` / `spool_tail` / `spool_search` 读取。执行策略支持 **Harness**（开发，默认，拦截 `rm -rf /`、reboot、mkfs 等破坏性命令）和 **Sandbox**（生产，read-only + sudo 限制 + 路径/命令白名单），由 `helixd serve-daemon --mode harness|sandbox` 选择。
 
 因此即使 Skill-Matrix 同时启动 20 个子进程请求远端信息，也不会同时创建 20 个 Broker 进程和 20 个 SSH 握手。请求先进入有界队列，最多由固定数量 worker 执行。
 

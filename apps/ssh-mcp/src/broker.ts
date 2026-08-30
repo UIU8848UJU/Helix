@@ -13,6 +13,7 @@ import type {
   TerminalState,
   TerminalStatusResult,
   TerminalTailResult,
+  TaskStatusResult,
 } from "./types.js";
 import { getCredentialBrokerPath } from "./paths.js";
 import { newRequestId, writeAudit } from "./audit.js";
@@ -21,6 +22,7 @@ const BROKER_PROTOCOL_VERSION = 5;
 const REQUIRED_BROKER_CAPABILITIES = [
   "task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "terminal_v1",
   "terminal_policy_v2", "terminal_cursor_v2", "spool_v1",
+  "terminal_task_v1",
 ] as const;
 const BROKER_ENDPOINT = process.platform === "win32"
   ? "\\\\.\\pipe\\helix-credential-broker-v1"
@@ -78,6 +80,9 @@ interface BrokerDaemonResponse {
     }>;
   };
   cancelRequested?: boolean;
+  createdAtMs?: number;
+  startedAtMs?: number;
+  finishedAtMs?: number;
   workers?: number;
   queuedTasks?: number;
   runningTasks?: number;
@@ -876,6 +881,71 @@ function terminalStatusFrom(response: BrokerDaemonResponse): TerminalStatusResul
     durationMs: terminal.durationMs ?? 0,
     logError: terminal.logError,
   };
+}
+
+function taskStatusFrom(response: BrokerDaemonResponse): TaskStatusResult {
+  if (!response.taskId || !response.state) {
+    throw new Error("credential broker task response is missing taskId or state");
+  }
+  return {
+    taskId: response.taskId,
+    state: response.state,
+    result: response.result,
+    cancelRequested: response.cancelRequested,
+    createdAtMs: response.createdAtMs,
+    startedAtMs: response.startedAtMs,
+    finishedAtMs: response.finishedAtMs,
+  };
+}
+
+export function buildBrokerTerminalExecRequest(
+  terminalId: string,
+  command: string,
+): Record<string, unknown> {
+  return {
+    op: "terminal_exec",
+    terminal_id: terminalId,
+    command,
+  };
+}
+
+export function buildBrokerTaskWaitRequest(
+  taskId: string,
+  timeoutSeconds: number,
+): Record<string, unknown> {
+  return {
+    op: "task_wait",
+    task_id: taskId,
+    timeout_seconds: timeoutSeconds,
+  };
+}
+
+/** Enqueues a command on a persistent terminal and returns its task snapshot. */
+export async function brokerTerminalExec(
+  settings: GlobalSettings,
+  terminalId: string,
+  command: string,
+): Promise<TaskStatusResult> {
+  assertPersistentTerminalEnabled(settings);
+  await ensureBrokerDaemon(settings);
+  const response = await daemonRpc(buildBrokerTerminalExecRequest(terminalId, command), 10_000);
+  assertProtocolCompatible(response);
+  return taskStatusFrom(response);
+}
+
+/** Waits in the daemon until a task completes or the timeout expires. */
+export async function brokerTaskWait(
+  settings: GlobalSettings,
+  taskId: string,
+  timeoutSeconds: number,
+): Promise<TaskStatusResult> {
+  await ensureBrokerDaemon(settings);
+  const response = await daemonRpc(
+    buildBrokerTaskWaitRequest(taskId, timeoutSeconds),
+    Math.max(2_000, timeoutSeconds * 1_000 + 2_000),
+  );
+  assertProtocolCompatible(response);
+  return taskStatusFrom(response);
 }
 
 export function buildBrokerTerminalOpenRequest(input: {

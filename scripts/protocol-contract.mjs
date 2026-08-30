@@ -2,8 +2,11 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
+const brokerBuildRoot = process.env.HELIX_SSH_MCP_BUILD
+  ? path.resolve(process.env.HELIX_SSH_MCP_BUILD)
+  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../apps/ssh-mcp/build");
 const {
   buildBrokerCredentialExistsRequest,
   buildBrokerExecuteRequest,
@@ -11,7 +14,7 @@ const {
   buildBrokerSudoExecuteRequest,
   buildBrokerTerminalOpenRequest,
   buildBrokerTransferRequest,
-} = await import("../apps/ssh-mcp/build/broker.js");
+} = await import(pathToFileURL(path.join(brokerBuildRoot, "broker.js")).href);
 
 const settings = {
   allowHostMutation: false,
@@ -88,6 +91,11 @@ const requests = [
     task_id: "contract-task",
   },
   {
+    op: "task_wait",
+    task_id: "contract-task",
+    timeout_seconds: 30,
+  },
+  {
     op: "task_cancel",
     task_id: "contract-task",
   },
@@ -118,6 +126,7 @@ const requests = [
     maxHistoryBytes: 4096,
   }),
   { op: "terminal_write", terminal_id: "contract-terminal", input: "echo contract\n" },
+  { op: "terminal_exec", terminal_id: "contract-terminal", command: "echo contract" },
   { op: "terminal_read", terminal_id: "contract-terminal", cursor: 0, max_bytes: 128 },
   { op: "terminal_tail", terminal_id: "contract-terminal", max_bytes: 128 },
   {

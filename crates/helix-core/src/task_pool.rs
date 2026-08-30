@@ -1,6 +1,7 @@
 use crate::{
     protocol::{BrokerRequest, BrokerResponse, DaemonResponse, TaskState},
     spool::SpoolManager,
+    transport::TerminalSession,
 };
 use anyhow::{Context, Result, anyhow};
 use std::{
@@ -103,6 +104,11 @@ enum Work {
         task_id: String,
         request: BrokerRequest,
     },
+    TerminalExec {
+        task_id: String,
+        terminal: Arc<dyn TerminalSession>,
+        command: String,
+    },
     Stop,
 }
 
@@ -192,6 +198,29 @@ impl TaskPool {
     pub fn submit(&self, request: BrokerRequest) -> Result<String> {
         let removed = cleanup_finished(&self.store, self.clock.monotonic_ms(), self.retention);
         self.cleanup_spools(removed);
+        self.enqueue(|task_id| Work::Execute { task_id, request })
+    }
+
+    /// Enqueues a command for a persistent terminal and returns its task id.
+    /// The task delegates execution to the terminal adapter. SSH terminals
+    /// wait for the command completion marker; simpler adapters may report
+    /// success once stdin accepts the command. Output remains available
+    /// through the terminal read/tail APIs.
+    pub fn submit_terminal(
+        &self,
+        terminal: Arc<dyn TerminalSession>,
+        command: String,
+    ) -> Result<String> {
+        let removed = cleanup_finished(&self.store, self.clock.monotonic_ms(), self.retention);
+        self.cleanup_spools(removed);
+        self.enqueue(|task_id| Work::TerminalExec {
+            task_id,
+            terminal,
+            command,
+        })
+    }
+
+    fn enqueue(&self, build_work: impl FnOnce(String) -> Work) -> Result<String> {
         let task_id = format!(
             "broker-{}-{}",
             self.clock.wall_ms(),
@@ -226,10 +255,7 @@ impl TaskPool {
             .map_err(lock_error)?
             .as_ref()
             .ok_or_else(|| anyhow!("credential broker is shutting down"))?
-            .try_send(Work::Execute {
-                task_id: task_id.clone(),
-                request,
-            });
+            .try_send(build_work(task_id.clone()));
         match send_result {
             Ok(()) => Ok(task_id),
             Err(TrySendError::Full(_)) => {
@@ -264,6 +290,40 @@ impl TaskPool {
             .get(task_id)
             .cloned()
             .ok_or_else(|| anyhow!("unknown broker task: {task_id}"))
+    }
+
+    /// Waits for a task to reach a terminal state, or returns its current
+    /// snapshot when the supplied deadline expires.
+    pub fn wait(&self, task_id: &str, timeout: Duration) -> Result<TaskRecord> {
+        let removed = cleanup_finished(&self.store, self.clock.monotonic_ms(), self.retention);
+        self.cleanup_spools(removed);
+        // Compare elapsed time instead of constructing `now + timeout` so a
+        // protocol caller cannot trigger an `Instant` overflow with a very
+        // large u64 timeout. The MCP surface applies a practical upper bound,
+        // but the daemon protocol must remain safe for direct callers too.
+        let started = Instant::now();
+        let mut store = self.store.0.lock().map_err(lock_error)?;
+        loop {
+            let task = store
+                .records
+                .get(task_id)
+                .cloned()
+                .ok_or_else(|| anyhow!("unknown broker task: {task_id}"))?;
+            if task.state.is_terminal() {
+                return Ok(task);
+            }
+            let elapsed = started.elapsed();
+            if elapsed >= timeout {
+                return Ok(task);
+            }
+            let remaining = timeout.saturating_sub(elapsed);
+            let (next, _) = self
+                .store
+                .1
+                .wait_timeout(store, remaining)
+                .map_err(|_| anyhow!("credential broker task state lock was poisoned"))?;
+            store = next;
+        }
     }
 
     pub fn cancel(&self, task_id: &str) -> Result<TaskRecord> {
@@ -453,13 +513,13 @@ fn spawn_worker(
         .name(format!("helix-broker-worker-{index}"))
         .spawn(move || {
             loop {
-                let work = {
+                let received = {
                     let Ok(receiver) = receiver.lock() else {
                         return;
                     };
                     receiver.recv_timeout(JANITOR_INTERVAL)
                 };
-                let Work::Execute { task_id, request } = (match work {
+                let work = match received {
                     Ok(Work::Stop) | Err(RecvTimeoutError::Disconnected) => return,
                     Err(RecvTimeoutError::Timeout) => {
                         let removed = cleanup_finished(&store, clock.monotonic_ms(), retention);
@@ -467,10 +527,13 @@ fn spawn_worker(
                         continue;
                     }
                     Ok(work) => work,
-                }) else {
-                    unreachable!()
                 };
-
+                let task_id = match &work {
+                    Work::Execute { task_id, .. } | Work::TerminalExec { task_id, .. } => {
+                        task_id.clone()
+                    }
+                    Work::Stop => return,
+                };
                 let cancellation = {
                     let Ok(mut task_store) = store.0.lock() else {
                         return;
@@ -486,7 +549,13 @@ fn spawn_worker(
                     task.cancellation.clone()
                 };
 
-                let result = executor.execute(request, &cancellation);
+                let result = match work {
+                    Work::Execute { request, .. } => executor.execute(request, &cancellation),
+                    Work::TerminalExec {
+                        terminal, command, ..
+                    } => terminal.execute(&command, &cancellation),
+                    Work::Stop => unreachable!(),
+                };
                 let Ok(mut task_store) = store.0.lock() else {
                     return;
                 };
@@ -664,6 +733,10 @@ fn lock_error<T>(_: std::sync::PoisonError<T>) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        spool::{SpoolMatch, SpoolRead, SpoolTail},
+        terminal::{TerminalSnapshot, TerminalState},
+    };
     use std::sync::atomic::AtomicUsize;
 
     struct FakeClock {
@@ -742,6 +815,87 @@ mod tests {
         }
     }
 
+    struct RecordingTerminal {
+        writes: Mutex<Vec<String>>,
+    }
+
+    impl RecordingTerminal {
+        fn new() -> Self {
+            Self {
+                writes: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl TerminalSession for RecordingTerminal {
+        fn id(&self) -> &str {
+            "test-terminal"
+        }
+
+        fn write(&self, input: &str) -> Result<()> {
+            self.writes.lock().unwrap().push(input.to_owned());
+            Ok(())
+        }
+
+        fn resize(&self, _cols: u16, _rows: u16) -> Result<()> {
+            Ok(())
+        }
+
+        fn snapshot(&self) -> TerminalSnapshot {
+            TerminalSnapshot {
+                terminal_id: self.id().to_owned(),
+                state: TerminalState::Running,
+                exit_code: None,
+                size: 0,
+                tail: String::new(),
+                created_at_ms: 0,
+                last_activity_at_ms: 0,
+                duration_ms: 0,
+                log_error: None,
+            }
+        }
+
+        fn read(&self, _cursor: usize, _max_bytes: usize) -> Result<SpoolRead> {
+            Ok(SpoolRead {
+                content: String::new(),
+                next_cursor: 0,
+                eof: true,
+                size: 0,
+                earliest_cursor: 0,
+                end_cursor: 0,
+            })
+        }
+
+        fn tail(&self, _max_bytes: usize) -> Result<SpoolTail> {
+            Ok(SpoolTail {
+                content: String::new(),
+                size: 0,
+                start: 0,
+                earliest_cursor: 0,
+                end_cursor: 0,
+            })
+        }
+
+        fn search(
+            &self,
+            _pattern: &str,
+            _regex: bool,
+            _before: usize,
+            _after: usize,
+            _max_matches: usize,
+        ) -> Result<Vec<SpoolMatch>> {
+            Ok(Vec::new())
+        }
+
+        fn close(&self) -> Result<()> {
+            Ok(())
+        }
+
+        fn last_activity_at(&self) -> u128 {
+            0
+        }
+    }
+
     fn test_pool(
         workers: usize,
         queue: usize,
@@ -786,6 +940,52 @@ mod tests {
         wait_terminal(&pool, &running);
         thread::sleep(Duration::from_millis(20));
         assert_eq!(executor.invocations.load(Ordering::Acquire), 1);
+        assert!(pool.shutdown(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn wait_blocks_until_task_reaches_a_terminal_state() {
+        let executor = Arc::new(BlockingExecutor::new());
+        let clock = Arc::new(FakeClock::new(0));
+        let pool = test_pool(1, 2, 1024, executor.clone(), clock);
+        let task_id = pool.submit(BrokerRequest::Ping).unwrap();
+        executor.wait_started(1);
+
+        let task = thread::scope(|scope| {
+            let waiter = scope.spawn(|| pool.wait(&task_id, Duration::from_secs(1)));
+            executor.release();
+            waiter.join().unwrap().unwrap()
+        });
+        assert_eq!(task.state, TaskState::Succeeded);
+    }
+
+    #[test]
+    fn wait_returns_running_task_when_deadline_expires() {
+        let executor = Arc::new(BlockingExecutor::new());
+        let clock = Arc::new(FakeClock::new(0));
+        let pool = test_pool(1, 2, 1024, executor.clone(), clock);
+        let task_id = pool.submit(BrokerRequest::Ping).unwrap();
+        executor.wait_started(1);
+
+        let task = pool.wait(&task_id, Duration::from_millis(1)).unwrap();
+        assert_eq!(task.state, TaskState::Running);
+        executor.release();
+        let _ = wait_terminal(&pool, &task_id);
+    }
+
+    #[test]
+    fn terminal_submit_writes_one_complete_command_and_is_waitable() {
+        let executor = Arc::new(BlockingExecutor::new());
+        executor.release();
+        let clock = Arc::new(FakeClock::new(0));
+        let pool = test_pool(1, 2, 1024, executor, clock);
+        let terminal = Arc::new(RecordingTerminal::new());
+        let task_id = pool
+            .submit_terminal(terminal.clone(), "echo hello".to_owned())
+            .unwrap();
+        let task = pool.wait(&task_id, Duration::from_secs(1)).unwrap();
+        assert_eq!(task.state, TaskState::Succeeded);
+        assert_eq!(terminal.writes.lock().unwrap().as_slice(), ["echo hello\n"]);
         assert!(pool.shutdown(Duration::from_secs(1)));
     }
 

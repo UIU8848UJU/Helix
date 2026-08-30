@@ -449,6 +449,13 @@ fn handle_request(
             Ok(task) => pool.task_response(&task_id, task),
             Err(error) => DaemonResponse::failure(format!("{error:#}")),
         },
+        DaemonRequest::TaskWait {
+            task_id,
+            timeout_seconds,
+        } => match pool.wait(&task_id, Duration::from_secs(timeout_seconds)) {
+            Ok(task) => pool.task_response(&task_id, task),
+            Err(error) => DaemonResponse::failure(format!("{error:#}")),
+        },
         DaemonRequest::TaskCancel { task_id } => match pool.cancel(&task_id) {
             Ok(task) => pool.task_response(&task_id, task),
             Err(error) => DaemonResponse::failure(format!("{error:#}")),
@@ -541,6 +548,19 @@ fn handle_request(
         DaemonRequest::TerminalWrite { terminal_id, input } => match terminals.get(&terminal_id) {
             Ok(session) => match session.write(&input) {
                 Ok(()) => terminal_ok(terminal_id),
+                Err(error) => DaemonResponse::failure(format!("{error:#}")),
+            },
+            Err(error) => DaemonResponse::failure(format!("{error:#}")),
+        },
+        DaemonRequest::TerminalExec {
+            terminal_id,
+            command,
+        } => match terminals.get(&terminal_id) {
+            Ok(session) => match pool.submit_terminal(session, command) {
+                Ok(task_id) => match pool.task(&task_id) {
+                    Ok(task) => pool.task_response(&task_id, task),
+                    Err(error) => DaemonResponse::failure(format!("{error:#}")),
+                },
                 Err(error) => DaemonResponse::failure(format!("{error:#}")),
             },
             Err(error) => DaemonResponse::failure(format!("{error:#}")),

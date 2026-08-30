@@ -37,6 +37,7 @@ try {
   check(hello.capabilities.includes("terminal_v1"), "terminal_v1 capability");
   check(hello.capabilities.includes("terminal_policy_v2"), "terminal_policy_v2 capability");
   check(hello.capabilities.includes("terminal_cursor_v2"), "terminal_cursor_v2 capability");
+  check(hello.capabilities.includes("terminal_task_v1"), "terminal_task_v1 capability");
   check(hello.persistentTerminalEnabled === true, "effective terminal authorization exposed");
 
   // 1. open a persistent bash session
@@ -72,8 +73,17 @@ try {
   check(status.terminal?.state === "running", "summary state running");
   check(typeof status.terminal?.tail === "string", "summary has tail");
 
-  // 3. write a command and wait for its output
-  console.log(`\n[3] terminal_write + read`);
+  // 3. queue a command as a daemon task and wait for dispatch
+  console.log(`\n[3] terminal_exec + task_wait`);
+  const exec = await rpc({ op: "terminal_exec", terminal_id: terminalId, command: "echo HELIX_TERM_TASK_MARKER_42" }, 10_000);
+  const taskId = exec.taskId;
+  check(exec.ok && typeof taskId === "string", "terminal_exec returns taskId", String(exec.error ?? ""));
+  const waited = await rpc({ op: "task_wait", task_id: taskId, timeout_seconds: 10 }, 15_000);
+  check(waited.ok && waited.taskId === taskId, "task_wait returns task snapshot");
+  check(waited.state === "succeeded", "terminal task dispatched", String(waited.state));
+
+  // 4. write a raw interactive input and wait for its output
+  console.log(`\n[4] terminal_write + read`);
   const write = await rpc({ op: "terminal_write", terminal_id: terminalId, input: "echo HELIX_TERM_MARKER_42\n" }, 10_000);
   check(write.ok, "write accepted");
   let content = "";
@@ -84,8 +94,8 @@ try {
   }
   check(content.includes("HELIX_TERM_MARKER_42"), "echo output captured", `len=${content.length}`);
 
-  // 4. cursor read semantics
-  console.log(`\n[4] terminal_read cursor`);
+  // 5. cursor read semantics
+  console.log(`\n[5] terminal_read cursor`);
   const first = await rpc({ op: "terminal_read", terminal_id: terminalId, cursor: 0, max_bytes: 16 }, 10_000);
   const nextCursor = first.terminal?.nextCursor ?? 0;
   check(nextCursor > 0, "read returns nextCursor", String(nextCursor));
@@ -94,24 +104,24 @@ try {
   const second = await rpc({ op: "terminal_read", terminal_id: terminalId, cursor: nextCursor, max_bytes: 16 }, 10_000);
   check(second.ok, "cursor read continues");
 
-  // 5. tail
-  console.log(`\n[5] terminal_tail`);
+  // 6. tail
+  console.log(`\n[6] terminal_tail`);
   const tail = await rpc({ op: "terminal_tail", terminal_id: terminalId, max_bytes: 1024 }, 10_000);
   check(tail.ok && (tail.terminal?.content?.length ?? 0) > 0, "tail returns content");
   check(typeof tail.terminal?.startCursor === "number", "tail returns startCursor");
 
-  // 6. search
-  console.log(`\n[6] terminal_search`);
+  // 7. search
+  console.log(`\n[7] terminal_search`);
   const search = await rpc({ op: "terminal_search", terminal_id: terminalId, pattern: "HELIX_TERM_MARKER", regex: false, before: 0, after: 0, max_matches: 10 }, 10_000);
   check(search.ok && (search.terminal?.matches?.length ?? 0) >= 1, "search finds marker", `matches=${search.terminal?.matches?.length}`);
 
-  // 7. resize
-  console.log(`\n[7] terminal_resize`);
+  // 8. resize
+  console.log(`\n[8] terminal_resize`);
   const resize = await rpc({ op: "terminal_resize", terminal_id: terminalId, cols: 200, rows: 50 }, 10_000);
   check(resize.ok, "resize accepted");
 
-  // 8. close
-  console.log(`\n[8] terminal_close`);
+  // 9. close
+  console.log(`\n[9] terminal_close`);
   const close = await rpc({ op: "terminal_close", terminal_id: terminalId }, 15_000);
   check(close.ok, "close accepted");
   const gone = await rpc({ op: "terminal_status", terminal_id: terminalId }, 5_000).catch(() => null);

@@ -81,6 +81,13 @@ describe("ssh_pty tool registration and routing (TDD PTY-001)", () => {
     expect(names).toContain("ssh_pty");
   });
 
+  it("registers terminal task execution and wait tools", async () => {
+    const tools = await client.listTools();
+    const names = tools.tools.map((tool) => tool.name);
+    expect(names).toContain("terminal_exec");
+    expect(names).toContain("task_wait");
+  });
+
   it("routes windows-credential hosts to brokerPty", async () => {
     const result = await client.callTool({
       name: "ssh_pty",

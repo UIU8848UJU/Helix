@@ -330,7 +330,21 @@ job_cancel(host, jobId)
 
 不要用 `ssh_exec` 手工拼接 `kill`、PID 文件和 `tail`，除非作业记录已经损坏且正在做故障诊断。
 
-## 8. 危险命令保护
+## 8. 持久终端命令任务
+
+当需要复用同一个交互式 PTY（shell、REPL 或需要保留目录/环境状态的构建循环）时，先调用 `terminal_open` 保存 `terminalId`。对完整命令使用：
+
+```text
+terminal_exec(terminalId, command)
+  → taskId
+task_wait(taskId, timeoutSeconds)
+  → queued / running / succeeded / failed / cancelled
+terminal_read / terminal_tail(terminalId)
+```
+
+`task_wait` 在 daemon 内等待，不需要客户端用固定时间反复 sleep；超时只返回当前任务快照，可以继续等待。命令输出仍从终端的 `terminal_read`、`terminal_tail` 或 `terminal_search` 获取。需要发送未完成的交互输入（例如回答提示符）时，继续使用 `terminal_write`，完成后调用 `terminal_close`。
+
+## 9. 危险命令保护
 
 Helix 只保留一个轻量的防误操作 guard。它会在普通 SSH、直接 sudo、持久作业、Docker 和 Compose 命令执行前拦截明显危险的命令，包括：
 
@@ -349,7 +363,7 @@ Helix 只保留一个轻量的防误操作 guard。它会在普通 SSH、直接 
 
 这个 guard 是防误操作措施，不是完整的远端 shell 沙箱。
 
-## 9. Docker 与 Compose
+## 10. Docker 与 Compose
 
 推荐流程：
 
@@ -364,7 +378,7 @@ environment_probe
 
 容器内命令同样经过危险命令 guard。
 
-## 10. 文件传输
+## 11. 文件传输
 
 使用：
 
@@ -380,7 +394,7 @@ Harness 主机默认允许远端根目录 `/`，因此不会因远端路径白�
 
 设置 `HELIX_LOCAL_PATH_ROOTS` 可主动缩小本地传输范围。
 
-## 11. 编译与调试
+## 12. 编译与调试
 
 推荐顺序：
 
@@ -399,7 +413,7 @@ ssh_check
 
 不要在未分析错误前反复执行完整构建，也不要因为 Broker 调用超时就重复启动同一个构建。先使用返回的 `jobId` 查询状态。
 
-## 12. 完成报告
+## 13. 完成报告
 
 至少说明：
 

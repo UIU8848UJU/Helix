@@ -55,7 +55,7 @@ node tests/run-all.mjs
 - `tests/max.mjs`：极限（连接容量 64、请求 4MiB 边界、突发 task 吞吐、饱和下关机）
 
 SSH 阶段（需可达目标）：`$env:HELIX_BENCH_SSH_HOST="<host>"` 后 `node tests/bench.mjs --ssh`。
-持久终端验证（需可达目标 + Windows 凭据）：`node tests/terminal.mjs`，环境变量 `HELIX_SSH_HOST` / `HELIX_SSH_USER` / `HELIX_SSH_CRED_REF`。覆盖 open/write/read/tail/search/resize/status/close 全流程。
+持久终端验证（需可达目标 + Windows 凭据）：`node tests/terminal.mjs`，环境变量 `HELIX_SSH_HOST` / `HELIX_SSH_USER` / `HELIX_SSH_CRED_REF`。覆盖 open/exec/task_wait/write/read/tail/search/resize/status/close 全流程；SSH 终端会等待命令完成标记并记录退出码，输出仍通过 terminal_read/tail 获取。
 该路径必须以 `helixd serve-daemon --allow-persistent-terminal` 显式授权；默认策略会在任何 transport 副作用前拒绝 `terminal_open`。终端历史 cursor 是绝对字节偏移，日志 trim 后旧 cursor 会得到明确的 expired 错误，而不会映射到新日志内容。
 详见 `tests/README.md`。
 
