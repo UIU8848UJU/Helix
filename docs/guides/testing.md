@@ -59,10 +59,10 @@ SSH 阶段（需可达目标）：`$env:HELIX_BENCH_SSH_HOST="<host>"` 后 `node
 该路径必须以 `helixd serve-daemon --allow-persistent-terminal` 显式授权；默认策略会在任何 transport 副作用前拒绝 `terminal_open`。终端历史 cursor 是绝对字节偏移，日志 trim 后旧 cursor 会得到明确的 expired 错误，而不会映射到新日志内容。
 详见 `tests/README.md`。
 
-## 5. beta 发布流程
+## 5. 离线发布流程
 
-1. `.\scripts\build-beta.ps1 -Version 0.4.0-beta.2`（自动跑门禁 + 组装包 + SHA256SUMS + zip）。
-2. 按第 3 节沙箱验证离线安装与 bundle 冒烟。
-3. 提交脚本与本文档：`scripts/build-beta.ps1`、`scripts/install-beta.ps1`、`docs/guides/testing.md`，分步 commit 并 push。
-4. 打标签：`git tag v0.4.0-beta.2` + `git push origin v0.4.0-beta.2`。
-5. GitHub Release（prerelease）：上传 `dist\helix-0.4.0-beta.2-win-x64.zip` 并附 SHA-256。beta 阶段仅 win-x64；Linux/macOS 安装走 `install.sh`，待后续提供 Linux 二进制。
+1. `.\scripts\package\build-release.ps1 -Version <version>`（自动跑门禁、构建 daemon 和 bundle、组装离线安装包、生成 SHA256SUMS，并解压校验 zip）。
+2. 在没有 Windows Credential Manager 登录会话的本机，可显式增加 `-SkipCredentialIntegrationTests`；CI 和正式发布应运行完整 workspace 测试。
+3. 解压后的 `install.ps1` 来自离线安装器，只要求目标机已有 Node.js 20+、ssh、scp，不执行 cargo/npm 构建或网络下载。
+4. 确认 `dist\helix-<version>-win-x64.zip` 可解压且 SHA256 校验通过后，再提交打包脚本并推送代码。
+5. 打标签：`git tag v<version>` + `git push origin v<version>`；GitHub Release 上传对应 zip 并附 SHA-256。当前发布目标为 Windows x64。
