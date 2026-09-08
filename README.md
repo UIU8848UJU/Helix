@@ -1,384 +1,371 @@
 # Helix
 
-Helix 是面向 AI Agent 的远程执行与会话 Runtime。当前由 SSH MCP + helixd（Rust 常驻 daemon）提供凭据、SSH/PTY/SFTP、任务队列、主机管理、Docker/Compose 与远端持久作业。
+**Remote Execution Runtime for AI Agents / 面向 AI Agent 的远程执行 Runtime**
 
-## 快速安装
+Helix gives AI agents a persistent, credential-aware remote execution layer. It combines an MCP adapter, a long-lived Rust daemon, reusable SSH sessions, persistent PTYs, bounded task lifecycles, secure Windows-backed credentials, SFTP/SCP, and durable remote jobs.
 
-Windows：
+Helix 为 AI Agent 提供一个持久、可复用、具备本地凭据代理能力的远程执行层：通过 MCP 暴露能力，由 Rust 常驻 daemon 管理 SSH Session、PTY、Task、凭据、文件传输与远端持久任务。
 
-```powershell
-.\scripts\install.ps1
-.\scripts\build-broker-release.ps1
-.\scripts\install.ps1 -BrokerBinary .\dist\helixd.exe
-```
+[中文](#中文) · [English](#english)
 
-Linux/macOS：
+---
 
-```bash
-./scripts/install.sh
-```
+# 中文
 
-完整安装指南见 [docs/guides/installation.md](docs/guides/installation.md)。
+## Helix 是什么
 
-## 设计目标
-
-Helix 默认运行在 **Harness 模式**：优先保证 AI 可以连续完成远程编译、调试、部署和环境维护，不使用会频繁打断工作流的权限审批链。
-
-默认行为：
+Helix **不是把编译、部署、诊断等业务流程写死在 MCP 里**，而是提供稳定的远程执行能力，供 Agent、Skill、SOP 或其他上层编排使用。
 
 ```text
-allowHostMutation=true
-allowPolicyMutation=true
-strictHostKeyChecking=false
-allowedRemotePaths=["/"]
-sudo_exec 直接执行
-无 sudo allowlist
-无 sudo_request / APPROVE / sudo_execute
-无审批 token 和过期时间
+Agent / Skill / SOP
+        │
+       MCP
+        │
+        ▼
+  Helix SSH Adapter
+        │
+        ▼
+      helixd
+   ┌────┼───────────────┐
+   │    │               │
+ Task  Terminal      Credential
+Pool   Runtime        Runtime
+   │    │               │
+   └────┴──── Transport ┘
+              │
+             SSH
+              │
+              ▼
+         Remote Host
 ```
 
-正常 SSH、sudo、文件传输和配置修改不再被安全流程阻断。只保留一个轻量的危险命令 guard，用于防止明显误操作。
+当前主要 Transport 是 SSH，因此 MCP Adapter 仍命名为 `helix-ssh` / `apps/ssh-mcp`；项目本身的定位是更上层的 **Remote Execution Runtime**。
 
-`EnterpriseLocked` 模式仍会关闭主机/策略写入并恢复严格 host-key 校验。
+## 为什么需要 Helix
 
-## 目录结构
+普通 SSH MCP 往往适合“一次请求 → 一次 SSH 命令 → 返回结果”。Helix 更关注 Agent 长时间工作的场景：
+
+- **持久 PTY**：Shell 不因一次 MCP 调用结束而消失，`cwd`、环境、虚拟环境、容器上下文可以继续保留；
+- **Terminal Task**：在持久 PTY 中提交一次有明确生命周期的命令，返回 `TaskID`，使用 `task_wait` 等待结束，不需要客户端 `sleep 25` 猜时间；
+- **本地凭据代理**：Windows 密码认证可由 helixd 从 Windows Credential Manager 读取，密码不需要进入聊天、MCP payload、命令行参数或日志；
+- **SSH Session 复用**：减少重复 TCP/KEX/auth 开销，多 Agent 并发统一经过有界任务队列；
+- **远端持久 Job**：长时间编译、测试、部署等任务可以脱离一次 MCP/SSH 调用持续运行；
+- **统一能力层**：执行、PTY、sudo、SFTP/SCP、Docker/Compose、环境探测、主机与凭据管理使用同一套 Runtime。
+
+## 核心能力
+
+| 能力 | 说明 |
+| --- | --- |
+| Persistent Terminal | `terminal_open` 创建持久 PTY，返回 `TerminalID` |
+| Async Terminal Task | `terminal_exec` 在现有 Terminal 中提交命令并返回 `TaskID` |
+| Bounded Wait | `task_wait` 等待 Task 完成或超时返回当前快照，避免客户端 sleep/poll |
+| Raw Interactive I/O | `terminal_write` 处理确认提示、REPL、交互输入等原始 stdin |
+| Incremental Output | `terminal_read` / `terminal_tail` / `terminal_search` 按 cursor 或关键字读取输出 |
+| Secure Credentials | Windows Credential Manager + helixd 本地凭据代理 |
+| SSH Key / Agent Auth | `openssh` 路径继续支持系统 SSH key / ssh-agent 认证 |
+| Remote Jobs | `job_start` / `job_status` / `job_logs` / `job_cancel` |
+| File Transfer | `ssh_upload` / `ssh_download`，支持 SCP 或 broker SFTP |
+| Direct sudo | `sudo_exec`，Harness 模式下不引入审批 token 流程 |
+| Host Management | `host_list` / `host_get` / `host_onboard` / `host_update` / `host_offboard` |
+| Runtime Utilities | Docker/Compose、环境探测、连接检查、审计、超时、输出上限 |
+
+## Persistent Terminal + Task
+
+这是 Helix 与普通一次性 SSH 执行最重要的区别之一。
 
 ```text
-apps/ssh-mcp/                 TypeScript MCP 控制层
-apps/helixd/                  Rust 常驻 daemon（凭据、任务、会话与终端运行时）
-crates/helix-core/            Transport/任务池/Spool/沙箱策略等核心库
-crates/helix-credential/      Windows 凭据存储与 UI
-crates/helix-transport-ssh/   SSH Transport（exec/PTY/SFTP/sudo）
-docs/architecture/            Helix/helixd 架构设计文档
-docs/guides/                  AI 与人工操作指南
-examples/                     配置示例
-scripts/                      安装、注册、管理和卸载脚本
+terminal_open
+    │
+    └── TerminalID = T1
+            │
+            ├── shell cwd / env / container context 持续存在
+            │
+            ├── terminal_exec("git pull")
+            │       └── TaskID = K1
+            │              └── task_wait(K1)
+            │
+            ├── terminal_exec("./build.sh")
+            │       └── TaskID = K2
+            │              └── task_wait(K2)
+            │
+            ├── terminal_search("error")
+            └── terminal_close
 ```
 
-## 主要能力
-
-- `host_list` / `host_get`：查询主机配置；
-- `host_onboard`：一站式新增主机；
-- `host_update`：修改连接、路径和认证配置；
-- `host_offboard`：删除主机配置；
-- `credential_status`：检查凭据是否存在；
-- `credential_enroll_launch`：由 helixd 弹出 Windows 原生凭据对话框；
-- `credential_enroll_request`：无桌面环境的命令行备用方案；
-- `ssh_check` / `ssh_exec`：连接检查和普通命令（Windows 主机自动走 PowerShell `-EncodedCommand`，支持 win→win 命令执行）；
-- `sudo_exec`：直接 sudo；
-- `job_start` / `job_status` / `job_logs` / `job_cancel`：远端持久后台作业；
-- `ssh_upload` / `ssh_download`：文件传输；
-- `docker_list` / `docker_exec`；
-- `compose_ps` / `compose_exec`；
-- `environment_probe`：探测 OS、架构、工具链、容器和环境脚本；
-- `terminal_open` / `terminal_exec` / `task_wait` / `terminal_read`：在持久 PTY 中提交命令任务，按 taskId 有界等待并读取输出；
-- 常驻 Broker、SSH Session 复用、有界任务队列、固定 worker 池；
-- JSONL 审计、超时、输出上限和并发控制。
-
-## Credential Broker Daemon
-
-旧架构每次密码 SSH/SFTP 调用都会：
+推荐语义：
 
 ```text
-MCP
-  → spawn helixd serve-once
-  → TCP connect
-  → SSH KEX
-  → password auth
-  → execute
-  → Broker 退出
+terminal_exec + task_wait
+  = 有明确开始/结束边界的命令
+
+terminal_write
+  = 原始交互输入，例如 y/n、REPL、提示符后的人工输入
+
+terminal_read / tail / search
+  = 获取 Terminal 的输出
 ```
 
-这种方式在 Skill-Matrix 多子进程、多 Agent 并发时会产生大量进程启动和 SSH 握手，也容易放大 `MaxStartups`、KEX 抖动和 65 秒 Broker 超时问题。
+`task_wait` 在 daemon 内等待 Task 状态变化，不要求 Agent 自己通过 `sleep` 猜测命令何时结束。等待超时时返回当前 Task 快照，不会因此终止 Terminal。
 
-当前架构改为：
+## TerminalID、TaskID、JobID
+
+三种 ID 表示不同生命周期：
 
 ```text
-MCP / Skill-Matrix subprocesses
-  → Named Pipe (Windows) / Unix Domain Socket (Unix)
-  → helixd daemon
-  → submit TaskID
-  → bounded queue
-  → fixed worker pool
-  → persistent SSH Session pool
-  → remote host
+TerminalID
+  = 持久执行上下文
+  = PTY / shell / cwd / env / interactive state
+  = 直到 terminal_close、idle reap 或连接结束
+
+TaskID
+  = 本机 helixd 中的一次有界操作
+  = queued / running / succeeded / failed / cancelled
+  = terminal_exec 会返回 TaskID
+  = 当前状态保存在 daemon 内存中
+
+JobID
+  = 远端持久任务
+  = job_start 创建并在远端保存状态与日志
+  = 可跨 MCP / Broker / SSH 会话继续运行
+  = 不保证跨远端主机重启
 ```
 
-IPC endpoint：
+不要把 `TaskID` 与 `JobID` 混用：Task 用于 Runtime 内的短/中等生命周期管理，Job 用于真正需要脱离连接持续执行的远端进程。
+
+## Windows 凭据模型
+
+Helix 支持两条主要认证路径：
 
 ```text
-Windows: \\.\pipe\helix-credential-broker-v1
-Unix:    /tmp/helix-credential-broker-v1.sock
+1. openssh
+   └── 系统 SSH key / ssh-agent / OpenSSH 配置
+
+2. windows-credential
+   └── Windows Credential Manager
+           ↓
+         helixd
+           ↓
+      SSH password auth / SFTP / sudo password
 ```
 
-MCP 第一次需要密码 SSH 时会自动启动 helixd daemon。正常调用不需要人工启动守护进程，也不会再为每条命令创建一个 Rust 进程。
-
-Daemon 协议从同步 stdin RPC 改成：
-
-```text
-submit
-  → TaskID
-  → task_status 轮询
-  → succeeded / failed / cancelled
-```
-
-默认资源模型：
-
-```text
-workers = maxConcurrentCommands（默认 4）
-queueCapacity = max(32, workers * 16)（默认 64）
-SSH idle Session TTL = 120s
-max idle Sessions / connection key = 2
-握手重试 = 200ms / 500ms / 1000ms
-helixd Task 完成态保留 = 600s
-```
-
-协议版本为 v5（transport 无关），能力含 `task_pool_v2` / `bounded_ipc` / `owner_only_ipc` / `pty_v1` / `terminal_v1` / `terminal_task_v1` / `spool_v1`。普通 Broker 请求通过 `submit → task_status`，持久终端命令通过 `terminal_exec → task_wait`；命令输出仍从 `terminal_read` / `terminal_tail` 获取。大输出（>64 KiB）自动落盘到 spool，IPC 只返回元数据，通过 `spool_read` / `spool_tail` / `spool_search` 读取。执行策略支持 **Harness**（开发，默认，拦截 `rm -rf /`、reboot、mkfs 等破坏性命令）和 **Sandbox**（生产，read-only + sudo 限制 + 路径/命令白名单），由 `helixd serve-daemon --mode harness|sandbox` 选择。
-
-因此即使 Skill-Matrix 同时启动 20 个子进程请求远端信息，也不会同时创建 20 个 Broker 进程和 20 个 SSH 握手。请求先进入有界队列，最多由固定数量 worker 执行。
-
-SSH Session 按凭据、host、port、username 和 host-key 策略复用。复用前会检查认证状态和 keepalive；失效 Session 会丢弃。连接/KEX 类瞬时错误会在命令真正开始前有限重试，但**不会在命令可能已经执行后自动重放命令**。
-
-注意两个 Task 概念不同：
-
-```text
-Broker TaskID
-  = 本机 Daemon 内部的短/中等 RPC 调度状态
-  = MCP 自动 submit + poll
-
-remote jobId
-  = job_start 创建的远端持久任务
-  = 用于长时间编译、测试、Docker build、部署等
-```
-
-Broker Task 当前使用内存状态；Daemon 崩溃后本地 TaskID 会丢失。远端 `job_*` 不依赖 Broker Task 内存，所以 Broker/MCP 重启不会自动杀掉已经启动的远端持久作业。
-
-详细设计：`docs/architecture/credential-broker-daemon.md`。
-
-## Windows 一站式凭据录入
-
-`host_onboard` 使用 Windows 密码认证时会自动生成：
+使用 `windows-credential` 时，`host_onboard` 可以为主机创建凭据引用，例如：
 
 ```text
 Helix/ssh/<alias>/login
 Helix/ssh/<alias>/sudo
 ```
 
-随后 MCP 启动 credential broker 并弹出 Windows 原生凭据对话框。用户只需在对话框中输入密码，不需要把命令复制到终端，也不需要把密码提供给 AI。
+`credential_enroll_launch` 由本地进程弹出 Windows 原生凭据窗口。密码由 helixd 在本机读取和使用，不需要出现在：
 
-默认一次输入同时保存 login 和 sudo 密码。两者不同时设置：
+- AI 对话；
+- MCP tool 参数；
+- JSON payload；
+- CLI 参数；
+- 环境变量；
+- Helix 日志。
 
-```json
-{
-  "separatePasswords": true
-}
-```
+> 这里的 Windows Credential Manager 是 **credential-backed password authentication**。系统 OpenSSH 的 SSH private key / ssh-agent 认证仍由 `openssh` 路径提供，两者概念不同。
 
-窗口未出现时可重新调用：
+## 架构
 
 ```text
+Claude / Codex / Agent / Skill-Matrix
+                 │
+              MCP stdio
+                 │
+                 ▼
+        apps/ssh-mcp (TypeScript)
+                 │
+     Named Pipe / Unix Domain Socket
+                 │
+                 ▼
+            helixd (Rust)
+        ┌────────┼─────────┐
+        │        │         │
+     TaskPool  Terminal  Credential
+        │      Registry    Runtime
+        │        │         │
+        └────────┴────┬────┘
+                     │
+              helix-core Transport
+                     │
+             helix-transport-ssh
+                     │
+        ┌────────────┼─────────────┐
+        │            │             │
+      exec          PTY         SFTP/sudo
+        │            │             │
+        └────────────┴─────────────┘
+                     │
+                 Remote Host
+```
+
+`helix-core` 负责通用执行语义，SSH 细节放在 `helix-transport-ssh`。MCP 层负责把这些能力暴露给 Agent，而不是承载具体业务 SOP。
+
+## 快速安装
+
+### Windows Release 包（推荐）
+
+普通用户应使用预编译 Release 包，不需要 Rust 工具链，也不需要本地编译。
+
+1. 从 [GitHub Releases](https://github.com/UIU8848UJU/Helix/releases) 下载 `helix-*-win-x64.zip`；
+2. 解压；
+3. 在解压目录执行：
+
+```powershell
+.\install.ps1
+```
+
+不希望自动注册 MCP Client：
+
+```powershell
+.\install.ps1 -RegisterClient None
+```
+
+Release 包运行依赖：
+
+- Windows 10/11 x64；
+- Node.js 20+；
+- Windows OpenSSH Client（`ssh` / `scp`）。
+
+Release 包应已包含 `helixd.exe` 与 `helix-ssh-mcp.bundle.mjs`，**不应要求 cargo、npm install 或本地 TypeScript/Rust 编译**。
+
+### 从源码安装
+
+开发者或需要修改 Helix 本身时再使用源码安装。
+
+Windows：
+
+```powershell
+git clone https://github.com/UIU8848UJU/Helix.git
+cd Helix
+.\scripts\install.ps1 -RegisterClient Auto
+```
+
+源码构建需要 Node.js 20+、npm、OpenSSH Client、Rust 1.85+；Windows 首次编译 vendored OpenSSL 时还可能需要 Perl。
+
+Linux/macOS：
+
+```bash
+git clone https://github.com/UIU8848UJU/Helix.git
+cd Helix
+./scripts/install.sh
+```
+
+完整说明见 [docs/guides/installation.md](docs/guides/installation.md)。
+
+## 常用 MCP 工具
+
+### Host / Credential
+
+```text
+host_list
+host_get
+host_onboard
+host_update
+host_offboard
+credential_status
 credential_enroll_launch
+credential_enroll_request
 ```
 
-## 直接 sudo
-
-需要 root 权限时直接调用：
-
-```json
-{
-  "host": "ubuntu22-developer",
-  "command": "systemctl restart nginx"
-}
-```
-
-对应工具：
+### Execute / Transfer
 
 ```text
+ssh_check
+ssh_exec
 sudo_exec
+ssh_upload
+ssh_download
+environment_probe
 ```
 
-密码认证主机由 Rust Broker 从 Windows Credential Manager 读取 sudo 密码；密码不进入 MCP、聊天、JSON、命令行参数、环境变量或日志。
+### Persistent Terminal
 
-OpenSSH 主机使用 `sudo -n`。
+```text
+terminal_open
+terminal_exec
+task_wait
+terminal_write
+terminal_status
+terminal_read
+terminal_tail
+terminal_search
+terminal_resize
+terminal_close
+```
 
-## 远端持久作业
+### Remote Job
 
-预计超过约 30 秒，或者不能因为 MCP 超时、Claude 重启、SSH 短暂断开而中止的任务，不要使用长时间阻塞的 `ssh_exec`，改用：
+```text
+job_start
+job_status
+job_logs
+job_cancel
+```
+
+### Docker / Compose
+
+```text
+docker_list
+docker_exec
+compose_ps
+compose_exec
+```
+
+## 远端持久 Job
+
+当任务需要真正脱离一次 MCP/SSH 调用继续执行，例如大型编译、完整测试、镜像构建、部署或数据任务，使用：
 
 ```text
 job_start
   → job_status
   → job_logs
-  → job_cancel（需要时）
+  → job_cancel   # 需要时
 ```
 
-`job_start` 会在远端 `/tmp/helix/jobs/<jobId>` 创建作业目录，通过 `nohup` 和 `setsid` 脱离当前 SSH 会话，然后立即返回 `jobId`。作业状态和日志位于远端，所以原 MCP 调用结束后仍可继续查询。
+`job_start` 在 Unix 目标上将任务状态与日志存放于 `/tmp/helix/jobs/<jobId>`，并使用 `nohup` / `setsid` 等机制脱离原始 SSH 会话。它与持久 Terminal 是两种不同能力：Terminal 保留交互上下文，Job 强调脱离连接后的远端进程生命周期。
 
-示例：Docker Compose 镜像构建。
+## 安全模型
 
-```json
-{
-  "host": "Ubuntu22.04_developer",
-  "type": "compose-build",
-  "name": "QuantX dev image",
-  "cwd": "/home/xxx/QuantX",
-  "command": "docker compose -f docker/docker-compose.yml build dev"
-}
-```
+Helix 默认面向开发 Harness 场景，目标是减少频繁审批对 Agent 连续执行的干扰。
 
-支持的任务类型：
-
-```text
-build
-test
-docker-build
-compose-build
-deploy
-service
-data
-simulation
-run
-custom
-```
-
-任务类型只用于分类、日志和 AI 路由，执行机制保持统一，不为每种构建工具写一套专用接口。
-
-### 查询状态
-
-```json
-{
-  "host": "Ubuntu22.04_developer",
-  "jobId": "job-..."
-}
-```
-
-可能状态：
-
-```text
-queued / running / succeeded / failed / cancelled / lost / not_found
-```
-
-### 查询日志
-
-首次查看末尾日志：
-
-```json
-{
-  "host": "Ubuntu22.04_developer",
-  "jobId": "job-...",
-  "lines": 100
-}
-```
-
-持续增量读取时，把上次返回的 `nextCursor` 作为下一次的 `cursor`，可避免重复传输日志和消耗上下文 token。
-
-### 取消作业
-
-`job_cancel` 先向整个进程组发送 TERM，等待默认 5 秒；仍未退出时才发送 KILL。使用 `useSudo=true` 启动的作业会自动使用 sudo 取消。
-
-作业可跨 MCP/SSH 会话继续运行，但不会跨远端主机重启继续运行；`/tmp` 也可能在系统重启后被清理。
-
-## 危险命令 guard
-
-Guard 会在 `ssh_exec`、`sudo_exec`、`job_start`、`docker_exec` 和 `compose_exec` 的用户命令执行前拦截明显危险的操作，包括：
-
-- `rm`；
-- `find -delete`；
-- `shred`、`wipefs`；
-- `mkfs`、`fdisk`、`sfdisk`、`cfdisk`、`parted`；
-- `dd ... of=/dev/...`；
-- 重定向写入块设备；
-- `shutdown`、`poweroff`、`halt`、`reboot`；
-- systemd 电源控制；
-- 终止 PID 1；
-- fork bomb。
-
-这是防误操作措施，不是完整 shell 沙箱。
-
-## 文件传输默认范围
-
-远端主机默认：
-
-```text
-allowedRemotePaths=["/"]
-```
-
-本地未设置 `HELIX_LOCAL_PATH_ROOTS` 时：
-
-- Linux/macOS 默认允许本地根目录；
-- Windows 默认允许 MCP 当前目录所在盘、用户目录所在盘和临时目录所在盘。
-
-需要更窄范围时，可以显式设置 `HELIX_LOCAL_PATH_ROOTS` 或使用 `EnterpriseLocked` 部署配置。
-
-## 安装
-
-### Windows PowerShell
-
-```powershell
-git clone https://github.com/UIU8848UJU/Helix.git
-cd Helix
-.\scripts\install.ps1 -RegisterClient Claude
-```
-
-默认 `DeploymentMode=Harness`。重新执行安装脚本会把旧配置迁移为：
+Harness 默认倾向：
 
 ```text
 allowHostMutation=true
 allowPolicyMutation=true
 strictHostKeyChecking=false
-每台已有主机 allowedRemotePaths=["/"]
+allowedRemotePaths=["/"]
+direct sudo_exec
 ```
 
-也可选择：
+同时保留轻量危险命令 guard，拦截明显的破坏性操作，例如文件系统擦除、块设备写入、关机/重启、终止 PID 1、fork bomb 等。
 
-```powershell
-# Claude Code
-.\scripts\install.ps1 -RegisterClient Claude
+这不是完整 shell sandbox。需要更严格的集中管理时使用 `EnterpriseLocked` 配置，并缩小 host、路径、sudo 与 host-key 策略。
 
-# Codex
-.\scripts\install.ps1 -RegisterClient Codex
+## 平台与认证
 
-# 自动检测 Claude/Codex
-.\scripts\install.ps1 -RegisterClient Auto
+| 控制端 → 目标端 | 认证方式 | 命令 | 文件传输 |
+| --- | --- | --- | --- |
+| Windows → Linux | OpenSSH key/agent 或 Windows Credential password | ✅ | ✅ SCP / SFTP |
+| Linux/macOS → Linux | OpenSSH key/agent | ✅ | ✅ SCP |
+| Windows → Windows | Windows Credential password | ✅ PowerShell | ✅ SFTP |
 
-# 集中锁定模式
-.\scripts\install.ps1 `
-  -DeploymentMode EnterpriseLocked `
-  -RegisterClient Claude
-```
+Windows 目标的命令执行使用 PowerShell `-EncodedCommand` 处理脚本、cwd 与环境变量。`sudo_exec` 仅适用于 Unix 目标。
 
-安装依赖：
-
-- Node.js 20+
-- npm
-- OpenSSH Client
-- Rust 1.85+
-- Windows 首次编译 vendored OpenSSL 时需要 Perl
-
-### Linux/macOS
-
-```bash
-bash scripts/install.sh
-```
-
-可用环境变量：
-
-```bash
-HELIX_DEPLOYMENT_MODE=EnterpriseLocked bash scripts/install.sh
-```
-
-## 标准 AI 流程
+## 目录结构
 
 ```text
-host_list
-  → host_get
-  → credential_status
-  → credential_enroll_launch（凭据缺失时）
-  → ssh_check
-  → environment_probe
-  → 短任务：ssh_exec / sudo_exec / Docker / Compose / 传输
-      ↳ 密码主机由 helixd daemon 自动 submit + poll + Session 复用
-  → 长任务：job_start → job_status / job_logs
+apps/ssh-mcp/                 TypeScript MCP Adapter
+apps/helixd/                  Rust long-lived daemon
+crates/helix-core/            Task / terminal / spool / transport core
+crates/helix-credential/      Windows credential storage and UI
+crates/helix-transport-ssh/   SSH exec / PTY / SFTP / sudo transport
+docs/architecture/            Architecture documents
+docs/guides/                  Installation and operation guides
+examples/                     Configuration examples
+scripts/                      Build / install / register / admin scripts
 ```
 
 ## 开发验证
@@ -392,13 +379,401 @@ cargo test --release --workspace
 cargo build --release --workspace
 ```
 
-完整 AI 操作说明：
+重点文档：
 
-- `docs/architecture/credential-broker-daemon.md`
-- `docs/guides/HELIX_AI_GUIDE.md`
-
+- [Credential Broker Daemon](docs/architecture/credential-broker-daemon.md)
+- [AI Guide](docs/guides/HELIX_AI_GUIDE.md)
+- [Installation Guide](docs/guides/installation.md)
+- [Branch Policy](docs/guides/branch-policy.md)
 
 ## 分支策略
-- `main` 只保留代码与文档；`requirements/`、`development/` 等流程产物只存在于 `develop`。
-- 禁止整支 merge develop 进 main，代码改动请按提交逐个 cherry-pick。
-- 详见 `docs/guides/branch-policy.md`。
+
+- `main` 只保留代码与正式文档；
+- `requirements/`、`development/` 等流程产物只存在于 `develop`；
+- 不整支 merge `develop` 到 `main`，代码改动按提交选择性合入；
+- 详见 [docs/guides/branch-policy.md](docs/guides/branch-policy.md)。
+
+---
+
+# English
+
+## What is Helix?
+
+Helix is a **remote execution runtime for AI agents**. It intentionally keeps business procedures such as compilation, deployment, diagnostics, and project-specific SOPs outside the MCP layer. Agents, Skills, and SOPs orchestrate Helix capabilities instead.
+
+```text
+Agent / Skill / SOP
+        │
+       MCP
+        │
+        ▼
+  Helix SSH Adapter
+        │
+        ▼
+      helixd
+   ┌────┼───────────────┐
+   │    │               │
+ Task  Terminal      Credential
+Pool   Runtime        Runtime
+   │    │               │
+   └────┴──── Transport ┘
+              │
+             SSH
+              │
+              ▼
+         Remote Host
+```
+
+SSH is the primary transport today, so the MCP adapter remains `helix-ssh` / `apps/ssh-mcp`. The Helix project itself sits one layer above that adapter.
+
+## Why Helix?
+
+A minimal SSH MCP is excellent for one-shot request/response execution. Helix targets longer-lived agent workflows:
+
+- **Persistent PTY** — keep shell state, `cwd`, environment, virtualenv, and container context across MCP calls;
+- **Terminal Tasks** — submit a bounded command inside an existing terminal, receive a `TaskID`, and use `task_wait` instead of guessing with client-side sleeps;
+- **Local credential brokering** — on Windows, helixd can read password credentials from Windows Credential Manager without exposing them to the model or MCP payloads;
+- **Reusable SSH sessions** — reduce repeated TCP/KEX/auth overhead and apply bounded concurrency centrally;
+- **Durable remote jobs** — run long builds, tests, deployments, and batch work independently of one MCP/SSH call;
+- **Capability-first design** — exec, PTY, sudo, SFTP/SCP, Docker/Compose, environment probing, hosts, and credentials are exposed as reusable primitives.
+
+## Core capabilities
+
+| Capability | Description |
+| --- | --- |
+| Persistent Terminal | `terminal_open` creates a persistent PTY and returns a `TerminalID` |
+| Async Terminal Task | `terminal_exec` submits a command into an existing terminal and returns a `TaskID` |
+| Bounded Wait | `task_wait` waits for task completion or returns the current snapshot on timeout |
+| Raw Interactive I/O | `terminal_write` sends raw stdin for prompts, REPLs, and interactive programs |
+| Incremental Output | `terminal_read` / `terminal_tail` / `terminal_search` retrieve output by cursor or pattern |
+| Secure Credentials | Windows Credential Manager backed credential brokering through helixd |
+| SSH Key / Agent Auth | The `openssh` path continues to use system SSH keys and ssh-agent |
+| Remote Jobs | `job_start` / `job_status` / `job_logs` / `job_cancel` |
+| File Transfer | `ssh_upload` / `ssh_download` via SCP or broker SFTP |
+| Direct sudo | `sudo_exec` without an approval-token workflow in Harness mode |
+| Host Management | `host_list` / `host_get` / `host_onboard` / `host_update` / `host_offboard` |
+| Runtime Utilities | Docker/Compose, environment probing, connection checks, audit, timeouts, output bounds |
+
+## Persistent Terminal + Task
+
+This is one of the main differences between Helix and one-shot SSH execution.
+
+```text
+terminal_open
+    │
+    └── TerminalID = T1
+            │
+            ├── shell cwd / env / container context stays alive
+            │
+            ├── terminal_exec("git pull")
+            │       └── TaskID = K1
+            │              └── task_wait(K1)
+            │
+            ├── terminal_exec("./build.sh")
+            │       └── TaskID = K2
+            │              └── task_wait(K2)
+            │
+            ├── terminal_search("error")
+            └── terminal_close
+```
+
+Recommended semantics:
+
+```text
+terminal_exec + task_wait
+  = a command with an explicit start/end lifecycle
+
+terminal_write
+  = raw interactive input such as y/n, REPL input, or prompt responses
+
+terminal_read / tail / search
+  = terminal output retrieval
+```
+
+`task_wait` waits inside the daemon for task state changes. The agent does not need to run `sleep 25` and guess when a command is finished. A wait timeout returns the current task snapshot; it does not terminate the persistent terminal.
+
+## TerminalID, TaskID, and JobID
+
+These IDs represent different lifecycles:
+
+```text
+TerminalID
+  = persistent execution context
+  = PTY / shell / cwd / env / interactive state
+  = lives until terminal_close, idle reap, or connection termination
+
+TaskID
+  = one bounded local helixd operation
+  = queued / running / succeeded / failed / cancelled
+  = returned by terminal_exec
+  = currently stored in daemon memory
+
+JobID
+  = durable remote job
+  = created by job_start with remote state and logs
+  = can outlive MCP / Broker / SSH sessions
+  = not guaranteed to survive a remote host reboot
+```
+
+Do not confuse `TaskID` with `JobID`: tasks model runtime operations; jobs model remote processes that need to outlive the connection that created them.
+
+## Windows credential model
+
+Helix supports two primary authentication paths:
+
+```text
+1. openssh
+   └── system SSH key / ssh-agent / OpenSSH configuration
+
+2. windows-credential
+   └── Windows Credential Manager
+           ↓
+         helixd
+           ↓
+      SSH password auth / SFTP / sudo password
+```
+
+For `windows-credential` hosts, `host_onboard` can create credential references such as:
+
+```text
+Helix/ssh/<alias>/login
+Helix/ssh/<alias>/sudo
+```
+
+`credential_enroll_launch` opens a native local Windows credential dialog. helixd reads and uses the password locally, so the secret does not need to appear in:
+
+- the AI conversation;
+- MCP tool arguments;
+- JSON payloads;
+- CLI arguments;
+- environment variables;
+- Helix logs.
+
+> Windows Credential Manager here provides **credential-backed password authentication**. SSH private keys and ssh-agent remain part of the separate `openssh` authentication path.
+
+## Architecture
+
+```text
+Claude / Codex / Agent / Skill-Matrix
+                 │
+              MCP stdio
+                 │
+                 ▼
+        apps/ssh-mcp (TypeScript)
+                 │
+     Named Pipe / Unix Domain Socket
+                 │
+                 ▼
+            helixd (Rust)
+        ┌────────┼─────────┐
+        │        │         │
+     TaskPool  Terminal  Credential
+        │      Registry    Runtime
+        │        │         │
+        └────────┴────┬────┘
+                     │
+              helix-core Transport
+                     │
+             helix-transport-ssh
+                     │
+        ┌────────────┼─────────────┐
+        │            │             │
+      exec          PTY         SFTP/sudo
+        │            │             │
+        └────────────┴─────────────┘
+                     │
+                 Remote Host
+```
+
+`helix-core` owns reusable execution semantics while SSH-specific behavior lives in `helix-transport-ssh`. The MCP layer exposes those capabilities to agents rather than encoding project-specific SOPs.
+
+## Quick start
+
+### Windows release package (recommended)
+
+End users should install the prebuilt release package. No Rust toolchain or local build is required.
+
+1. Download `helix-*-win-x64.zip` from [GitHub Releases](https://github.com/UIU8848UJU/Helix/releases);
+2. Extract it;
+3. Run from the extracted directory:
+
+```powershell
+.\install.ps1
+```
+
+Skip automatic MCP client registration:
+
+```powershell
+.\install.ps1 -RegisterClient None
+```
+
+Release runtime requirements:
+
+- Windows 10/11 x64;
+- Node.js 20+;
+- Windows OpenSSH Client (`ssh` / `scp`).
+
+A release package should already contain `helixd.exe` and `helix-ssh-mcp.bundle.mjs`; it **must not require cargo, npm install, or local TypeScript/Rust compilation**.
+
+### Install from source
+
+Use the source installer when developing or modifying Helix itself.
+
+Windows:
+
+```powershell
+git clone https://github.com/UIU8848UJU/Helix.git
+cd Helix
+.\scripts\install.ps1 -RegisterClient Auto
+```
+
+Source builds require Node.js 20+, npm, OpenSSH Client, and Rust 1.85+. The first Windows build of vendored OpenSSL may also require Perl.
+
+Linux/macOS:
+
+```bash
+git clone https://github.com/UIU8848UJU/Helix.git
+cd Helix
+./scripts/install.sh
+```
+
+See [docs/guides/installation.md](docs/guides/installation.md) for details.
+
+## MCP tools
+
+### Host / Credential
+
+```text
+host_list
+host_get
+host_onboard
+host_update
+host_offboard
+credential_status
+credential_enroll_launch
+credential_enroll_request
+```
+
+### Execute / Transfer
+
+```text
+ssh_check
+ssh_exec
+sudo_exec
+ssh_upload
+ssh_download
+environment_probe
+```
+
+### Persistent Terminal
+
+```text
+terminal_open
+terminal_exec
+task_wait
+terminal_write
+terminal_status
+terminal_read
+terminal_tail
+terminal_search
+terminal_resize
+terminal_close
+```
+
+### Remote Job
+
+```text
+job_start
+job_status
+job_logs
+job_cancel
+```
+
+### Docker / Compose
+
+```text
+docker_list
+docker_exec
+compose_ps
+compose_exec
+```
+
+## Durable remote jobs
+
+Use remote jobs when work needs to continue independently of one MCP/SSH call, for example large builds, complete test suites, image builds, deployments, or batch processing:
+
+```text
+job_start
+  → job_status
+  → job_logs
+  → job_cancel   # when needed
+```
+
+On Unix targets, `job_start` stores state and logs under `/tmp/helix/jobs/<jobId>` and detaches the process from the original SSH session using mechanisms such as `nohup` / `setsid`. Persistent terminals and durable jobs solve different problems: terminals preserve interactive context; jobs preserve remote process lifetime.
+
+## Security model
+
+Helix defaults to a development-oriented Harness profile that minimizes approval interruptions during agent workflows.
+
+Typical Harness defaults:
+
+```text
+allowHostMutation=true
+allowPolicyMutation=true
+strictHostKeyChecking=false
+allowedRemotePaths=["/"]
+direct sudo_exec
+```
+
+A lightweight dangerous-command guard still blocks obvious destructive operations such as filesystem wipes, block-device writes, power control, PID 1 termination, and fork bombs.
+
+This is not a complete shell sandbox. Use the `EnterpriseLocked` profile and narrower host/path/sudo/host-key policies when centralized restrictions are required.
+
+## Platform and authentication
+
+| Controller → Target | Authentication | Commands | File transfer |
+| --- | --- | --- | --- |
+| Windows → Linux | OpenSSH key/agent or Windows Credential password | ✅ | ✅ SCP / SFTP |
+| Linux/macOS → Linux | OpenSSH key/agent | ✅ | ✅ SCP |
+| Windows → Windows | Windows Credential password | ✅ PowerShell | ✅ SFTP |
+
+Commands targeting Windows are wrapped with PowerShell `-EncodedCommand` for scripts, working directories, and environment variables. `sudo_exec` applies to Unix targets only.
+
+## Repository layout
+
+```text
+apps/ssh-mcp/                 TypeScript MCP Adapter
+apps/helixd/                  Rust long-lived daemon
+crates/helix-core/            Task / terminal / spool / transport core
+crates/helix-credential/      Windows credential storage and UI
+crates/helix-transport-ssh/   SSH exec / PTY / SFTP / sudo transport
+docs/architecture/            Architecture documents
+docs/guides/                  Installation and operation guides
+examples/                     Configuration examples
+scripts/                      Build / install / register / admin scripts
+```
+
+## Development
+
+```bash
+npm install
+npm run check
+npm test
+npm run build
+cargo test --release --workspace
+cargo build --release --workspace
+```
+
+Key documents:
+
+- [Credential Broker Daemon](docs/architecture/credential-broker-daemon.md)
+- [AI Guide](docs/guides/HELIX_AI_GUIDE.md)
+- [Installation Guide](docs/guides/installation.md)
+- [Branch Policy](docs/guides/branch-policy.md)
+
+## Branch policy
+
+- `main` contains code and release-facing documentation;
+- workflow artifacts such as `requirements/` and `development/` stay on `develop`;
+- do not merge the entire `develop` branch into `main`; selectively integrate code commits;
+- see [docs/guides/branch-policy.md](docs/guides/branch-policy.md).
