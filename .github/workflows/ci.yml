@@ -52,6 +52,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Restore Rollup native optional dependency
+        shell: bash
+        run: |
+          ROLLUP_VERSION=$(node -p "require('./node_modules/rollup/package.json').version")
+          npm install --no-save "@rollup/rollup-linux-x64-gnu@${ROLLUP_VERSION}"
+
       - name: Type check
         run: npm run check --workspace @helix/ssh-mcp
 
@@ -155,6 +161,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Restore Rollup native optional dependency
+        shell: bash
+        run: |
+          ROLLUP_VERSION=$(node -p "require('./node_modules/rollup/package.json').version")
+          npm install --no-save "@rollup/rollup-linux-x64-gnu@${ROLLUP_VERSION}"
+
       - name: Build SSH MCP
         run: npm run build --workspace @helix/ssh-mcp
 
@@ -215,6 +227,12 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Restore Rollup native optional dependency
+        shell: bash
+        run: |
+          ROLLUP_VERSION=$(node -p "require('./node_modules/rollup/package.json').version")
+          npm install --no-save "@rollup/rollup-linux-x64-gnu@${ROLLUP_VERSION}"
 
       - name: Install Chromium for integration tests
         run: npx playwright install --with-deps chromium
