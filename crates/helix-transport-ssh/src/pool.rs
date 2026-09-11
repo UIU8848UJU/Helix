@@ -81,7 +81,10 @@ impl SessionPool {
             }
             let session = idle.session;
             session.set_timeout(timeout_ms(timeout_seconds));
-            if session.authenticated() && session.keepalive_send().is_ok() {
+            if session.authenticated()
+                && session.keepalive_send().is_ok()
+                && reusable_session_probe(&session)
+            {
                 return Some(session);
             }
         }
@@ -112,6 +115,20 @@ impl SessionPool {
             .map(|guard| guard.values().map(Vec::len).sum())
             .unwrap_or(0)
     }
+}
+
+/// `authenticated()` and a successful keepalive can still briefly report a
+/// dead TCP connection as usable after the remote sshd restarts. Opening an
+/// otherwise-unused SSH session channel forces a round trip before the pooled
+/// connection is handed to a real command. A failure here is safe to recover
+/// from because no user command has been submitted yet.
+fn reusable_session_probe(session: &Session) -> bool {
+    let Ok(mut channel) = session.channel_session() else {
+        return false;
+    };
+    let closed = channel.close().is_ok();
+    let waited = channel.wait_close().is_ok();
+    closed && waited
 }
 
 fn timeout_ms(timeout_seconds: u64) -> u32 {
