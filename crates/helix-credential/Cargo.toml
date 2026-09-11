@@ -1,9 +1,15 @@
-﻿[package]
+[package]
 name = "helix-credential"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+
+[features]
+default = []
+# CI-only credential backend for real SSH E2E on non-Windows runners.
+# Production builds must leave this feature disabled.
+test-credentials = []
 
 [dependencies]
 anyhow.workspace = true

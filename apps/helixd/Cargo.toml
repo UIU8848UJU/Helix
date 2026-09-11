@@ -1,9 +1,14 @@
-﻿[package]
+[package]
 name = "helixd"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+
+[features]
+default = []
+# Propagates the explicitly opt-in, CI-only credential backend.
+test-credentials = ["helix-credential/test-credentials"]
 
 [dependencies]
 anyhow.workspace = true
@@ -31,4 +36,3 @@ windows-sys = { version = "0.61", features = [
   "Win32_System_Threading",
   "Win32_UI_WindowsAndMessaging",
 ] }
-

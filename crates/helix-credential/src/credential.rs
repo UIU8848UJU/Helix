@@ -121,7 +121,7 @@ mod platform {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(feature = "test-credentials")))]
 mod platform {
     use super::*;
 
@@ -143,6 +143,49 @@ mod platform {
 
     pub fn delete(_target: &str) -> Result<()> {
         Err(unsupported())
+    }
+}
+
+// This backend exists only so GitHub Actions can exercise the real helixd SSH
+// transport against a disposable Docker sshd. It is disabled in every normal
+// build and intentionally supports only one read-only ephemeral credential.
+#[cfg(all(not(windows), feature = "test-credentials"))]
+mod platform {
+    use super::*;
+    use std::env;
+
+    const TARGET_ENV: &str = "HELIX_TEST_CREDENTIAL_TARGET";
+    const USERNAME_ENV: &str = "HELIX_TEST_CREDENTIAL_USERNAME";
+    const SECRET_ENV: &str = "HELIX_TEST_CREDENTIAL_SECRET";
+
+    fn matches_target(target: &str) -> bool {
+        env::var(TARGET_ENV).is_ok_and(|expected| expected == target)
+    }
+
+    pub fn write(_target: &str, _username: &str, _secret: &str) -> Result<()> {
+        Err(anyhow!("CI test credential backend is read-only"))
+    }
+
+    pub fn read(target: &str) -> Result<StoredCredential> {
+        if !matches_target(target) {
+            return Err(anyhow!("credential not found: {target}"));
+        }
+        let username = env::var(USERNAME_ENV)
+            .with_context(|| format!("missing CI test credential environment variable {USERNAME_ENV}"))?;
+        let secret = env::var(SECRET_ENV)
+            .with_context(|| format!("missing CI test credential environment variable {SECRET_ENV}"))?;
+        Ok(StoredCredential {
+            username,
+            secret: Zeroizing::new(secret),
+        })
+    }
+
+    pub fn exists(target: &str) -> bool {
+        read(target).is_ok()
+    }
+
+    pub fn delete(_target: &str) -> Result<()> {
+        Err(anyhow!("CI test credential backend is read-only"))
     }
 }
 
