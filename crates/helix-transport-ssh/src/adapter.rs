@@ -177,4 +177,8 @@ impl Transport for SshTransport {
         }
         result
     }
+
+    fn pooled_sessions(&self) -> usize {
+        self.sessions.size()
+    }
 }
