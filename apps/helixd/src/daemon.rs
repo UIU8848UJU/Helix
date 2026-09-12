@@ -26,6 +26,13 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+#[cfg(unix)]
+use std::{
+    fs::{File, OpenOptions},
+    os::fd::AsRawFd,
+    os::unix::fs::OpenOptionsExt,
+    path::{Path, PathBuf},
+};
 
 #[cfg(windows)]
 pub const DEFAULT_ENDPOINT: &str = r"\\.\pipe\helix-credential-broker-v1";
@@ -82,17 +89,36 @@ pub fn serve_daemon(
         max_terminals,
         terminal_idle_seconds,
     } = config;
-    let listener = match create_listener(endpoint) {
-        Ok(listener) => listener,
-        Err(_bind_error) if compatible_daemon_is_listening(endpoint) => {
+    let _singleton_lock = match DaemonSingletonLock::try_acquire(endpoint)? {
+        Some(lock) => lock,
+        None => {
+            if wait_for_compatible_daemon(endpoint) {
+                eprintln!("compatible credential broker already owns {endpoint}");
+                return Ok(());
+            }
+            return Err(anyhow!(
+                "daemon singleton lock is held, but the existing daemon did not answer with a compatible protocol"
+            ));
+        }
+    };
+
+    // A daemon from an older build may predate the lock file. Probe before
+    // removing the endpoint so an upgrade cannot clobber a live peer.
+    match probe_daemon(endpoint) {
+        DaemonProbe::Compatible => {
             eprintln!("compatible credential broker already owns {endpoint}");
             return Ok(());
         }
-        Err(bind_error) => {
-            return Err(bind_error)
-                .with_context(|| format!("failed to bind broker IPC endpoint: {endpoint}"));
+        DaemonProbe::Incompatible => {
+            return Err(anyhow!(
+                "an incompatible daemon already owns the broker IPC endpoint: {endpoint}"
+            ));
         }
-    };
+        DaemonProbe::Unavailable => {}
+    }
+    remove_stale_endpoint(endpoint)?;
+    let listener = create_listener(endpoint)
+        .with_context(|| format!("failed to bind broker IPC endpoint: {endpoint}"))?;
 
     let spool = Arc::new(SpoolManager::at_default_root()?);
     match cleanup_orphaned_terminals() {
@@ -201,7 +227,14 @@ fn create_listener(endpoint: &str) -> Result<ServerListener> {
     Ok(ipc_security::secure_listener_options(listener_options)?.create_sync()?)
 }
 
-fn compatible_daemon_is_listening(endpoint: &str) -> bool {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DaemonProbe {
+    Compatible,
+    Incompatible,
+    Unavailable,
+}
+
+fn probe_daemon(endpoint: &str) -> DaemonProbe {
     let result = (|| -> Result<bool> {
         let endpoint_name = endpoint
             .to_fs_name::<GenericFilePath>()
@@ -223,7 +256,95 @@ fn compatible_daemon_is_listening(endpoint: &str) -> bool {
                         .any(|actual| actual == required)
                 }))
     })();
-    result.unwrap_or(false)
+    match result {
+        Ok(true) => DaemonProbe::Compatible,
+        Ok(false) => DaemonProbe::Incompatible,
+        Err(_) => DaemonProbe::Unavailable,
+    }
+}
+
+const DAEMON_STARTUP_PROBE_ATTEMPTS: usize = 20;
+const DAEMON_STARTUP_PROBE_INTERVAL: Duration = Duration::from_millis(25);
+
+fn wait_for_compatible_daemon(endpoint: &str) -> bool {
+    (0..DAEMON_STARTUP_PROBE_ATTEMPTS).any(|attempt| {
+        if probe_daemon(endpoint) == DaemonProbe::Compatible {
+            return true;
+        }
+        if attempt + 1 < DAEMON_STARTUP_PROBE_ATTEMPTS {
+            thread::sleep(DAEMON_STARTUP_PROBE_INTERVAL);
+        }
+        false
+    })
+}
+
+fn remove_stale_endpoint(endpoint: &str) -> Result<()> {
+    #[cfg(unix)]
+    {
+        match std::fs::remove_file(endpoint) {
+            Ok(()) => eprintln!("removed stale broker IPC endpoint {endpoint}"),
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to remove stale broker IPC endpoint: {endpoint}")
+                });
+            }
+        }
+    }
+    #[cfg(windows)]
+    let _ = endpoint;
+    Ok(())
+}
+
+struct DaemonSingletonLock {
+    #[cfg(unix)]
+    file: File,
+    #[cfg(unix)]
+    path: PathBuf,
+}
+
+impl DaemonSingletonLock {
+    fn try_acquire(endpoint: &str) -> Result<Option<Self>> {
+        #[cfg(unix)]
+        {
+            let path = singleton_lock_path(endpoint);
+            let file = OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .mode(0o600)
+                .open(&path)
+                .with_context(|| {
+                    format!("failed to open daemon singleton lock: {}", path.display())
+                })?;
+            let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            if result == 0 {
+                return Ok(Some(Self { file, path }));
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() == ErrorKind::WouldBlock {
+                return Ok(None);
+            }
+            return Err(error).context("failed to acquire daemon singleton lock");
+        }
+        #[cfg(windows)]
+        {
+            let _ = endpoint;
+            Ok(Some(Self {}))
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for DaemonSingletonLock {
+    fn drop(&mut self) {
+        let _ = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+#[cfg(unix)]
+fn singleton_lock_path(endpoint: &str) -> PathBuf {
+    Path::new(endpoint).with_extension("sock.lock")
 }
 
 struct ConnectionGuard(Arc<AtomicUsize>);
@@ -769,5 +890,36 @@ mod tests {
         input.push(b'\n');
         let error = read_request_line(Cursor::new(input)).unwrap_err();
         assert_eq!(error.to_string(), "broker IPC request exceeds 4 MiB");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_singleton_lock_is_exclusive_and_released() {
+        let endpoint = std::env::temp_dir().join(format!(
+            "helix-daemon-singleton-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let endpoint = endpoint.to_string_lossy().into_owned();
+
+        let first = DaemonSingletonLock::try_acquire(&endpoint)
+            .unwrap()
+            .expect("first daemon must acquire singleton lock");
+        assert!(
+            DaemonSingletonLock::try_acquire(&endpoint)
+                .unwrap()
+                .is_none()
+        );
+        drop(first);
+        assert!(
+            DaemonSingletonLock::try_acquire(&endpoint)
+                .unwrap()
+                .is_some()
+        );
+
+        let _ = std::fs::remove_file(singleton_lock_path(&endpoint));
     }
 }

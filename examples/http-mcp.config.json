@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "allowedDomains": [],
+  "allowPrivateNetworks": false,
+  "allowHttp": true,
+  "allowHttps": true,
+  "maxResponseBytes": 1048576,
+  "defaultTimeoutSeconds": 15,
+  "maxRedirects": 3,
+  "auditEnabled": true
+}

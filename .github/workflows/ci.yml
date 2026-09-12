@@ -245,3 +245,31 @@ jobs:
 
       - name: Build
         run: npm run build --workspace @helix/browser-mcp
+
+  http-mcp:
+    name: http-mcp (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run check --workspace @helix/http-mcp
+
+      - name: Unit and local HTTP E2E tests
+        run: npm test --workspace @helix/http-mcp
+
+      - name: Build
+        run: npm run build --workspace @helix/http-mcp

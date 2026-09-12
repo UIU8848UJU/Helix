@@ -2,6 +2,8 @@
 
 **Remote Execution Runtime for AI Agents / 面向 AI Agent 的远程执行 Runtime**
 
+Helix 是面向 AI Agent 的远程执行与会话 Runtime。当前由 SSH MCP + helixd（Rust 常驻 daemon）提供凭据、SSH/PTY/SFTP、任务队列、主机管理、Docker/Compose 与远端持久作业，并由独立的 HTTP MCP 提供受策略控制的 HTTP 请求能力。
+
 Helix gives AI agents a persistent, credential-aware remote execution layer. It combines an MCP adapter, a long-lived Rust daemon, reusable SSH sessions, persistent PTYs, bounded task lifecycles, secure Windows-backed credentials, SFTP/SCP, and durable remote jobs.
 
 Helix 为 AI Agent 提供一个持久、可复用、具备本地凭据代理能力的远程执行层：通过 MCP 暴露能力，由 Rust 常驻 daemon 管理 SSH Session、PTY、Task、凭据、文件传输与远端持久任务。
@@ -93,6 +95,66 @@ terminal_open
 ```
 
 推荐语义：
+
+apps/ssh-mcp/                 TypeScript MCP 控制层
+apps/http-mcp/                有界、可审计、策略控制的 HTTP MCP
+apps/helixd/                  Rust 常驻 daemon（凭据、任务、会话与终端运行时）
+crates/helix-core/            Transport/任务池/Spool/沙箱策略等核心库
+crates/helix-credential/      Windows 凭据存储与 UI
+crates/helix-transport-ssh/   SSH Transport（exec/PTY/SFTP/sudo）
+docs/architecture/            Helix/helixd 架构设计文档
+docs/guides/                  AI 与人工操作指南
+examples/                     配置示例
+scripts/                      安装、注册、管理和卸载脚本
+```
+
+## 主要能力
+
+- `host_list` / `host_get`：查询主机配置；
+- `host_onboard`：一站式新增主机；
+- `host_update`：修改连接、路径和认证配置；
+- `host_offboard`：删除主机配置；
+- `credential_status`：检查凭据是否存在；
+- `credential_enroll_launch`：由 helixd 弹出 Windows 原生凭据对话框；
+- `credential_enroll_request`：无桌面环境的命令行备用方案；
+- `ssh_check` / `ssh_exec`：连接检查和普通命令（Windows 主机自动走 PowerShell `-EncodedCommand`，支持 win→win 命令执行）；
+- `sudo_exec`：直接 sudo；
+- `job_start` / `job_status` / `job_logs` / `job_cancel`：远端持久后台作业；
+- `ssh_upload` / `ssh_download`：文件传输；
+- `docker_list` / `docker_exec`；
+- `compose_ps` / `compose_exec`；
+- `environment_probe`：探测 OS、架构、工具链、容器和环境脚本；
+- `terminal_open` / `terminal_exec` / `task_wait` / `terminal_read`：在持久 PTY 中提交命令任务，按 taskId 有界等待并读取输出；
+- `http_request`（`apps/http-mcp`）：执行 GET/POST/PUT/PATCH/DELETE，支持 JSON/text、查询参数、超时、响应大小上限、重定向复核和字段/数组/字符串裁剪；
+- 常驻 Broker、SSH Session 复用、有界任务队列、固定 worker 池；
+- JSONL 审计、超时、输出上限和并发控制。
+
+### HTTP MCP 能力边界
+
+`http_request` 是独立于 SSH 和 browser-mcp 的 MCP server。它不会读取 Windows Credential Manager；认证只通过调用方显式传入的请求头完成。默认仅允许公开 HTTP/HTTPS 目标，配置 `allowedDomains` 可进一步收窄域名，`allowPrivateNetworks=true` 才允许访问 RFC1918、loopback 和 link-local 地址（云 metadata 地址始终拒绝）。每次重定向都会重新执行协议、域名、DNS/IP 和私网策略检查。
+
+响应只返回 `status`、`contentType`、最终 URL、耗时、字节数以及 `data` 或 `text`，不会回显响应头。默认最大响应为 1 MiB；超过上限返回结构化 `response_too_large` 和 `recommendedStrategy: local_search`，需要远端文件检索时再使用 SSH 工具。支持 `responseFilter.fields`、`arrayLimit` 和 `maxStringBytes`，不引入 jq/JSONPath。
+
+配置文件为 `%APPDATA%\Helix\http-mcp.json`（Linux/macOS 为 `~/.config/Helix/http-mcp.json`），可用 `HELIX_HTTP_CONFIG` 指定路径；完整安全默认值见 `examples/http-mcp.config.json`。最小示例：
+
+```json
+{
+  "version": 1,
+  "allowedDomains": ["api.example.com"],
+  "allowPrivateNetworks": false,
+  "allowHttp": false,
+  "allowHttps": true,
+  "maxResponseBytes": 1048576,
+  "defaultTimeoutSeconds": 15,
+  "maxRedirects": 3
+}
+```
+
+能力边界可以简单理解为：SSH 面向远程机器，HTTP 面向机器可读的网络 API，Browser 面向需要渲染、导航和点击的动态网页。三者由 Skill/SOP 组合，不在 Capability 层内置代码搜索、编译或部署业务。
+
+## Credential Broker Daemon
+
+旧架构每次密码 SSH/SFTP 调用都会：
 
 ```text
 terminal_exec + task_wait

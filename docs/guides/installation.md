@@ -1,6 +1,6 @@
-# Helix SSH MCP 安装指南
+# Helix MCP 安装指南
 
-本文说明如何安装 Helix SSH MCP（含 helixd / Rust Credential Broker Daemon 与 browser-mcp）。支持两种方式：
+本文说明如何安装 Helix MCP（含 helixd / Rust Credential Broker Daemon、ssh-mcp、browser-mcp 与独立的 http-mcp）。支持两种方式：
 
 - **方式 A：源码全量安装** —— 需要 Node.js 20+、npm、ssh、scp，以及 Rust 工具链（cargo）。
 - **方式 B：release 二进制安装（推荐）** —— 先把 helixd（Rust daemon）编译一次并保存为 release exe，之后安装无需 Rust 工具链，直接复用预编译二进制。
@@ -62,15 +62,17 @@ cd Helix
 | 产物 | 默认位置 |
 | --- | --- |
 | MCP 服务端入口 | `apps/ssh-mcp/build/index.js` |
+| HTTP MCP 服务端入口 | `apps/http-mcp/build/index.js` |
 | SSH 配置 | `%APPDATA%\Helix\ssh-mcp.json`（Windows）/ `~/.config/helix/ssh-mcp.json`（Linux/macOS） |
 | Daemon (helixd) | `%APPDATA%\Helix\bin\helixd-<sha16>.exe` |
 | AI 操作指南 | `%APPDATA%\Helix\HELIX_AI_GUIDE.md` |
 | 凭据管理脚本 | `%APPDATA%\Helix\helix-admin.ps1` |
 | 浏览器 MCP 配置 | `%APPDATA%\Helix\browser-mcp.json` |
+| HTTP MCP 配置 | `%APPDATA%\Helix\http-mcp.json`（可用 `HELIX_HTTP_CONFIG` 覆盖） |
 
 ## MCP 客户端注册
 
-安装脚本末尾会输出 `mcpServers` JSON（`helix-ssh` + `helix-browser`），也可用 `register-mcp.ps1` 自动注册：
+安装脚本末尾会输出 `mcpServers` JSON（`helix-ssh` + `helix-browser`）；`http-mcp` 可按需以 `node apps/http-mcp/build/index.js` 注册，也可用 `register-mcp.ps1` 自动注册已有服务：
 
 ```powershell
 .\scripts\register-mcp.ps1 -Client Auto

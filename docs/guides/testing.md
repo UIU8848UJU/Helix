@@ -1,7 +1,7 @@
 # Helix 测试方法与流程
 
-> 适用范围：ssh-mcp / browser-mcp / helixd（Rust daemon）。发布前门禁必须全绿。
-> 最近一次全绿基线：Rust 42 passed / 7 ignored；ssh-mcp 89 passed / 4 skipped；browser-mcp 53 passed。
+> 适用范围：ssh-mcp / browser-mcp / http-mcp / helixd（Rust daemon）。发布前门禁必须全绿。
+> 本次目标回归基线：Rust release workspace 88 passed / 8 ignored；npm workspace 184 passed / 4 skipped；http-mcp 9 passed。
 
 ## 1. 自动化门禁（发布前本地必跑）
 
@@ -11,7 +11,7 @@
 | --- | --- | --- |
 | Rust 全量测试（release） | `cargo test --release --workspace` | helixd、helix-core、helix-credential、helix-transport-ssh |
 | TS 类型检查 | `npm run check` | 全部 workspace |
-| TS 单元测试 | `npm test` | ssh-mcp（含 spool 分块读、PTY 请求构建、凭证自动录入、broker v3 能力契约）、browser-mcp |
+| TS 单元测试 | `npm test` | ssh-mcp、browser-mcp、http-mcp（策略、过滤、真实本地 HTTP E2E） |
 | TS 构建 | `npm run build` | `apps/*/build` 产物 |
 | 单文件 bundle | `npx esbuild apps/ssh-mcp/src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/helix-ssh-mcp.bundle.mjs --log-level=warning` | 离线安装使用的 MCP server 单文件 |
 | Daemon IPC 集成 | `node scripts/test-broker-daemon.mjs`（需先 `cargo build --release`） | v3 能力契约、owner-only 管道 ACL、64 连接读/写饱和、启动竞争收敛、大响应有界写 |
@@ -25,11 +25,13 @@
 
 ## 2. CI 自动执行
 
-`.github/workflows/ci.yml`，push 到 `main` / `agent/**` 与 PR 时触发，共 3 个 job：
+`.github/workflows/ci.yml`，push 到 `main` / `agent/**` 与 PR 时触发，共 5 个 job：
 
+- `protocol-contract`：TypeScript → Rust serde 协议契约门禁。
 - `ssh-mcp`：Node 20/22 上 `npm run check` + `npm test` + `npm run build`。
 - `helixd`：ubuntu/windows 上 `cargo test --release --workspace` + `cargo build --release` + `node scripts/test-broker-daemon.mjs`；Windows 额外跑 PS 脚本解析、`test-mcp-registration.ps1`、`test-helix-admin.ps1`。
 - `browser-mcp`：Node 20/22 上 Playwright Chromium + check/test/build。
+- `http-mcp`：Node 20/22 上 `npm run check` + `npm test` + `npm run build`；测试会启动本地 HTTP 服务，覆盖 GET、JSON/text、重定向复核和响应大小上限，不依赖 SSH 或 helixd。
 
 ## 3. 手工验证清单（自动化覆盖不到的）
 

@@ -223,6 +223,7 @@ dependencies = [
  "helix-credential",
  "helix-transport-ssh",
  "interprocess",
+ "libc",
  "rpassword",
  "serde",
  "serde_json",
