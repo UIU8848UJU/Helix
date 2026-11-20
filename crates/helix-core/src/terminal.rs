@@ -1513,10 +1513,18 @@ mod tests {
         ) -> Result<crate::protocol::BrokerResponse> {
             Err(anyhow!("unsupported"))
         }
-        fn upload(&self, _request: crate::transport::TransferRequest) -> Result<()> {
+        fn upload(
+            &self,
+            _request: crate::transport::TransferRequest,
+            _cancellation: &crate::task_pool::CancellationToken,
+        ) -> Result<()> {
             Err(anyhow!("unsupported"))
         }
-        fn download(&self, _request: crate::transport::TransferRequest) -> Result<()> {
+        fn download(
+            &self,
+            _request: crate::transport::TransferRequest,
+            _cancellation: &crate::task_pool::CancellationToken,
+        ) -> Result<()> {
             Err(anyhow!("unsupported"))
         }
     }
@@ -1529,6 +1537,7 @@ mod tests {
                 port: 22,
                 username: None,
                 strict_host_key_checking: true,
+                identity_file: None,
             },
             command: "test".to_owned(),
             cols: None,

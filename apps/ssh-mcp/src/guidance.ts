@@ -9,8 +9,10 @@ export const HELIX_SERVER_INSTRUCTIONS = [
   "Use host_onboard for one-stop Windows onboarding. It normally opens the native Windows credential dialog automatically.",
   "Use credential_enroll_launch to reopen the local credential window; never ask the user to paste a password into chat.",
   "On Windows, ssh_check/ssh_exec/sudo_exec/ssh_upload/ssh_download automatically open the native credential dialog once when credentials are missing or the stored password is rejected, then retry the command.",
+  "SSH backend selection is per host: auto preserves auth-based routing and may fall back from a libssh2 handshake compatibility error to OpenSSH only when an identityFile is configured; libssh2 and OpenSSH are never silently swapped for authentication or network errors.",
+  "Persistent terminal sessions currently require the libssh2 backend; an OpenSSH-selected host must use ssh_exec/ssh_pty/job_* or SCP until an OpenSSH PTY session registry is available.",
   "Use sudo_exec directly for short privileged commands. There is no sudo allowlist, request/execute approval split, confirmation token, or expiry.",
-  "Use job_start for work expected to exceed roughly 30 seconds, produce large logs, or survive an MCP/SSH session. Continue with job_status, job_logs, and job_cancel instead of restarting the command.",
+  "For ordinary long-running commands that should stay within the current Terminal/MCP lifecycle, use terminal_exec followed by task_wait. Use job_start only when work must continue after the Terminal, MCP call, or SSH session ends; then use job_status, job_logs, and job_cancel.",
   "Task types such as build, test, docker-build, compose-build, deploy, data, simulation, and run are metadata for one common persistent-job mechanism.",
   "Do not treat a client run_in_background option or a large MCP timeout as remote persistence.",
   "Harness hosts default to allowedRemotePaths=['/'] and strictHostKeyChecking=false. Do not introduce a path-whitelist or known_hosts setup step unless the active configuration is explicitly locked down.",
@@ -43,11 +45,11 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   host_get:
     "Read one host configuration with secrets redacted.",
   host_onboard:
-    "Preferred one-stop host creation. On Windows it opens the native credential dialog automatically and defaults remote access to root.",
+    "Preferred one-stop host creation. Set sshBackend=auto|libssh2|openssh when a host needs an explicit transport; on Windows it opens the native credential dialog automatically and defaults remote access to root.",
   host_add:
     "Low-level host creation. Prefer host_onboard unless exact low-level fields are required.",
   host_update:
-    "Update host connection or policy fields. Harness mode permits these changes by default.",
+    "Update host connection, sshBackend, or policy fields. Harness mode permits these changes by default.",
   host_offboard:
     "Remove a host configuration while leaving stored credentials available for optional cleanup.",
   host_remove:
@@ -67,7 +69,7 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
   ssh_check:
     "Check SSH connectivity using the configured authentication backend.",
   ssh_exec:
-    "Execute a short remote command with structured cwd, env, and source scripts. Use job_start instead when work may exceed roughly 30 seconds or must survive the MCP call.",
+    "Execute a remote command with structured cwd, env, and source scripts. Use terminal_open + terminal_exec + task_wait when the command should stay in the current terminal lifecycle; use job_start only when it must survive the Terminal, MCP, or SSH session.",
   ssh_pty:
     "Execute a remote command under an allocated PTY (xterm) for interactive flows; stdin input is passed through and the merged output is returned with a deadline.",
   terminal_open:
@@ -76,6 +78,9 @@ export const TOOL_DESCRIPTIONS: Record<string, string> = {
     "Write input to a persistent terminal stdin. PTY input is echoed back, so never pass passwords or secrets.",
   terminal_exec:
     "Queue a command on a persistent terminal and return a taskId; use task_wait for bounded waiting and terminal_read/terminal_tail for command output.",
+  task_status: "Fetch a task snapshot, including progress.version/done/total. Use it for a single poll without waiting.",
+  task_watch: "Wait until progress.version advances, the task finishes, or the timeout expires. Pass the last progress.version you saw as sinceVersion to avoid sleep-polling.",
+  task_cancel: "Request task cancellation. A cancelled transfer deletes only its .helix.part file; the destination is untouched and the task ends cancelled (a deadline ends it failed).",
   task_wait:
     "Wait for a daemon taskId to reach a terminal state up to timeoutSeconds, returning the latest task snapshot when the deadline expires.",
   terminal_read:
@@ -126,7 +131,7 @@ const HELP: Record<HelpTopic, object> = {
       "ssh_check",
       "environment_probe for unfamiliar environments",
       "short work: ssh_exec, sudo_exec, transfer, Docker, or Compose tools",
-      "long work: job_start, then job_status and job_logs",
+      "ordinary long work: terminal_exec, then task_wait; detached work: job_start, then job_status and job_logs",
     ],
     defaults: [
       "Host and policy mutation are enabled in Harness and Personal deployments.",
@@ -154,7 +159,7 @@ const HELP: Record<HelpTopic, object> = {
       "Use ssh_exec for short normal commands.",
       "On os=windows hosts, ssh_exec and ssh_check run PowerShell via -EncodedCommand; sudo_exec and job_* are unix-only.",
       "Use sudo_exec for short commands requiring sudo password handling.",
-      "Use job_start for long, high-output, or session-independent work.",
+      "Use terminal_exec + task_wait for ordinary long or high-output work that stays in the current terminal lifecycle; use job_start only for work that must continue after the Terminal, MCP, or SSH session ends.",
       "Pass cwd, env, and sourceScripts as structured fields.",
       "Inspect exitCode, stdout, stderr, timedOut, and truncated.",
     ],
@@ -162,7 +167,6 @@ const HELP: Record<HelpTopic, object> = {
   },
   jobs: {
     chooseWhen: [
-      "Expected duration is over roughly 30 seconds.",
       "The task is a complete build, full test, Docker/Compose image build, deployment, data import, simulation, replay, or benchmark.",
       "Logs are large and should be read incrementally.",
       "The task must continue after the MCP call, SSH connection, or client session ends.",

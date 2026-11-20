@@ -81,6 +81,37 @@ describe("configuration", () => {
     expect((await store.getHost("build-dev")).auth.type).toBe("windows-credential");
   });
 
+  it("defaults sshBackend to auto and preserves an explicit OpenSSH backend", () => {
+    const automatic = validateHost("auto", {
+      hostname: "10.0.0.20",
+      allowedRemotePaths: ["/"],
+      auth: { type: "openssh" },
+      sudo: { mode: "disabled" },
+    });
+    expect(automatic.sshBackend).toBe("auto");
+
+    const fallback = validateHost("fallback", {
+      hostname: "10.0.0.21",
+      identityFile: "~/.ssh/id_ed25519",
+      sshBackend: "openssh",
+      allowedRemotePaths: ["/"],
+      auth: { type: "windows-credential", credentialRef: "Helix/ssh/fallback/login" },
+      sudo: { mode: "disabled" },
+    });
+    expect(fallback.sshBackend).toBe("openssh");
+    expect(redactHost(fallback).sshBackend).toBe("openssh");
+  });
+
+  it("rejects an explicit OpenSSH backend without a key path for password auth", () => {
+    expect(() => validateHost("unsafe", {
+      hostname: "10.0.0.22",
+      sshBackend: "openssh",
+      allowedRemotePaths: ["/"],
+      auth: { type: "windows-credential", credentialRef: "Helix/ssh/unsafe/login" },
+      sudo: { mode: "disabled" },
+    })).toThrow("identityFile");
+  });
+
   it("rejects unanchored legacy sudo regex", () => {
     expect(() => validateConfig({
       version: 1,
@@ -161,5 +192,46 @@ describe("configuration", () => {
     const host = await store.getHost("dev");
     expect(host.defaultWorkingDir).toBe("/srv/project/quantx");
     expect(redactHost(host).defaultWorkingDir).toBe("/srv/project/quantx");
+  });
+});
+
+describe("transfer backend configuration", () => {
+  function keyHostInput(extra: Record<string, unknown> = {}) {
+    return {
+      hostname: "192.168.33.128",
+      username: "developer",
+      identityFile: "/home/developer/.ssh/id_ed25519",
+      allowedRemotePaths: ["/"],
+      auth: { type: "openssh" },
+      sudo: { mode: "disabled", allow: ["^.*$"], approvalTtlSeconds: 300 },
+      ...extra,
+    };
+  }
+
+  it("defaults transferBackend to auto", () => {
+    expect(harnessHost().transferBackend).toBe("auto");
+  });
+
+  it("preserves an explicit broker transfer backend for a key host", () => {
+    const host = validateHost("key", keyHostInput({ transferBackend: "broker" }));
+    expect(host.transferBackend).toBe("broker");
+  });
+
+  it("rejects broker transfer without an identity file for OpenSSH auth", () => {
+    expect(() =>
+      validateHost("key", keyHostInput({ transferBackend: "broker", identityFile: undefined })),
+    ).toThrow(/transferBackend=broker requires identityFile/);
+  });
+
+  it("rejects scp transfer for a password-backed host", () => {
+    expect(() => validateHost("build-dev", {
+      ...harnessHost(),
+      transferBackend: "scp",
+    })).toThrow(/transferBackend=scp requires openssh auth/);
+  });
+
+  it("redacts transferBackend", () => {
+    const host = validateHost("key", keyHostInput({ transferBackend: "broker" }));
+    expect(redactHost(host).transferBackend).toBe("broker");
   });
 });

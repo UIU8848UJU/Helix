@@ -407,8 +407,11 @@ mod tests {
                 timeout_seconds: 1,
                 max_output_bytes: 1024,
                 strict_host_key_checking: false,
+                identity_file: None,
             },
             &helix_core::task_pool::CancellationToken::default(),
+            "",
+            std::sync::Arc::new(helix_core::transport::NoProgress),
         );
         assert!(denied.is_err());
         assert!(denied.unwrap_err().to_string().contains("sandbox policy"));
@@ -441,8 +444,9 @@ mod tests {
             username: Some(&user),
             timeout_seconds: 15,
             strict_host_key_checking: strict,
+            identity_file: None,
         };
-        ssh::connect(&options, &stored).ok()
+        ssh::connect(&options, Some(&stored)).ok()
     }
 
     #[test]

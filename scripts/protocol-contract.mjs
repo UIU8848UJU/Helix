@@ -48,6 +48,7 @@ const requests = [
   submit(buildBrokerCredentialExistsRequest("Helix/contract/login")),
   submit(buildBrokerExecuteRequest({
     credentialRef: "Helix/contract/login",
+    identityFile: "/contract/id_ed25519",
     host,
     command: "printf contract",
     settings,
@@ -70,6 +71,7 @@ const requests = [
   })),
   submit(buildBrokerTransferRequest({
     credentialRef: "Helix/contract/login",
+    identityFile: "/contract/id_ed25519",
     host,
     direction: "upload",
     localPath: "./contract.txt",
@@ -98,6 +100,12 @@ const requests = [
   {
     op: "task_cancel",
     task_id: "contract-task",
+  },
+  {
+    op: "task_watch",
+    task_id: "contract-task",
+    since_version: 0,
+    timeout_seconds: 1,
   },
   {
     op: "spool_read",

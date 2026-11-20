@@ -307,15 +307,24 @@ pub fn open_terminal(
     target: &ExecTarget,
     request: &TerminalOpenRequest,
 ) -> Result<Arc<SshTerminalSession>> {
-    let credential = credential::read(&target.credential_ref)?;
+    let mode = crate::auth::resolve_auth(&target.credential_ref, target.identity_file.as_deref())?;
+    let credential = if mode.uses_credential() {
+        Some(credential::read(&target.credential_ref).map_err(crate::error::attach_code)?)
+    } else {
+        None
+    };
     let options = ConnectOptions {
         host: &target.host,
         port: target.port,
         username: target.username.as_deref(),
         timeout_seconds: CONNECT_TIMEOUT_SECONDS,
         strict_host_key_checking: target.strict_host_key_checking,
+        identity_file: match &mode {
+            crate::auth::AuthMode::Key { identity_file } => Some(identity_file.as_str()),
+            crate::auth::AuthMode::Password { .. } => None,
+        },
     };
-    let session = connect_with_retry(&options, &credential)?;
+    let session = connect_with_retry(&options, credential.as_ref())?;
     session.set_keepalive(true, 30);
     // Create and exec the channel in blocking mode first; libssh2's
     // nonblocking mode would otherwise return EAGAIN for these handshakes.

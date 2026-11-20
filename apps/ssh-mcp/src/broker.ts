@@ -1,6 +1,8 @@
 import { promises as fs } from "node:fs";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createConnection } from "node:net";
+import os from "node:os";
+import path from "node:path";
 import type {
   BrokerResponse,
   ExecutionResult,
@@ -18,11 +20,11 @@ import type {
 import { getCredentialBrokerPath } from "./paths.js";
 import { newRequestId, writeAudit } from "./audit.js";
 
-const BROKER_PROTOCOL_VERSION = 5;
+const BROKER_PROTOCOL_VERSION = 7;
 const REQUIRED_BROKER_CAPABILITIES = [
   "task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "terminal_v1",
   "terminal_policy_v2", "terminal_cursor_v2", "spool_v1",
-  "terminal_task_v1",
+  "terminal_task_v1", "identity_file_v1", "task_watch_v1",
 ] as const;
 const BROKER_ENDPOINT = process.platform === "win32"
   ? "\\\\.\\pipe\\helix-credential-broker-v1"
@@ -83,6 +85,7 @@ interface BrokerDaemonResponse {
   createdAtMs?: number;
   startedAtMs?: number;
   finishedAtMs?: number;
+  progress?: { version?: number; done?: number; total?: number };
   workers?: number;
   queuedTasks?: number;
   runningTasks?: number;
@@ -119,6 +122,9 @@ function errorMessage(error: unknown): string {
 }
 
 export function isCredentialError(error: unknown): boolean {
+  if (error instanceof BrokerDaemonError && error.code === "CREDENTIAL_MISSING") {
+    return true;
+  }
   const message = errorMessage(error).toLowerCase();
   return CREDENTIAL_ERROR_MARKERS.some((marker) => message.includes(marker));
 }
@@ -283,6 +289,7 @@ function responseToExecution(response: BrokerResponse): ExecutionResult {
     stderrRef: response.stderrRef,
     stdoutSize: response.stdoutSize,
     stderrSize: response.stderrSize,
+    errorCode: response.errorCode,
   };
 }
 
@@ -616,16 +623,25 @@ export async function brokerDaemonStatus(settings: GlobalSettings): Promise<Brok
   return await pingDaemon();
 }
 
-export async function runBroker(
+/** Submit a request and return its task id without waiting for completion. */
+export async function submitBroker(
   settings: GlobalSettings,
   request: Record<string, unknown>,
-  timeoutSeconds = settings.defaultTimeoutSeconds,
-): Promise<BrokerResponse> {
+): Promise<string> {
   await ensureBrokerDaemon(settings);
   const submitted = await daemonRpc({ op: "submit", request });
   assertProtocolCompatible(submitted);
   const taskId = submitted.taskId;
   if (!taskId) throw new Error("Credential broker daemon did not return a taskId");
+  return taskId;
+}
+
+export async function runBroker(
+  settings: GlobalSettings,
+  request: Record<string, unknown>,
+  timeoutSeconds = settings.defaultTimeoutSeconds,
+): Promise<BrokerResponse> {
+  const taskId = await submitBroker(settings, request);
 
   const deadline = Date.now() + timeoutSeconds * 1000;
   let delayMs = 50;
@@ -637,7 +653,10 @@ export async function runBroker(
         if (!status.result) throw new Error(`Credential broker task ${taskId} completed without a result`);
         return await resolveSpoolRefs(settings, status.result);
       case "failed":
-        throw new Error(status.result?.error ?? status.error ?? `Credential broker task ${taskId} failed`);
+        throw new BrokerDaemonError(
+          status.result?.error ?? status.error ?? `Credential broker task ${taskId} failed`,
+          status.result?.errorCode ?? status.errorCode,
+        );
       case "cancelled":
         throw new Error(`Credential broker task ${taskId} was cancelled`);
       case "queued":
@@ -654,11 +673,29 @@ export async function runBroker(
   throw new Error(`Credential broker task ${taskId} timed out after ${timeoutSeconds}s`);
 }
 
-function passwordAuth(host: HostConfig): { credentialRef: string } {
-  if (host.auth.type !== "windows-credential") {
-    throw new Error("Host is not configured for Windows credential authentication");
+export interface BrokerHostAuth {
+  credentialRef: string;
+  identityFile?: string;
+}
+
+/** Expand a leading `~` on the client; the daemon never expands it. */
+export function expandHomePath(value: string): string {
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/") || value.startsWith("~\\")) {
+    return path.join(os.homedir(), value.slice(2));
   }
-  return { credentialRef: host.auth.credentialRef };
+  return value;
+}
+
+/** Resolve broker authentication from the host without reading a secret. */
+export function hostAuth(host: HostConfig): BrokerHostAuth {
+  if (host.auth.type === "windows-credential") {
+    return { credentialRef: host.auth.credentialRef };
+  }
+  if (!host.identityFile) {
+    throw new Error("openssh host requires identityFile when using the broker backend");
+  }
+  return { credentialRef: "", identityFile: expandHomePath(host.identityFile) };
 }
 
 export function buildBrokerCredentialExistsRequest(credentialRef: string): Record<string, unknown> {
@@ -667,6 +704,7 @@ export function buildBrokerCredentialExistsRequest(credentialRef: string): Recor
 
 export function buildBrokerExecuteRequest(input: {
   credentialRef: string;
+  identityFile?: string;
   host: HostConfig;
   command: string;
   timeoutSeconds?: number;
@@ -683,6 +721,7 @@ export function buildBrokerExecuteRequest(input: {
     timeout_seconds: timeout,
     max_output_bytes: input.settings.maxOutputBytes,
     strict_host_key_checking: input.settings.strictHostKeyChecking,
+    ...(input.identityFile ? { identity_file: input.identityFile } : {}),
   };
 }
 
@@ -694,12 +733,13 @@ export async function brokerExecute(input: {
   timeoutSeconds?: number;
 }): Promise<ExecutionResult> {
   return withCredentialAutoEnroll(input, async () => {
-    const auth = passwordAuth(input.host);
+    const auth = hostAuth(input.host);
     const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
     const response = await runBroker(
       input.settings,
       buildBrokerExecuteRequest({
         credentialRef: auth.credentialRef,
+        identityFile: auth.identityFile,
         host: input.host,
         command: input.command,
         timeoutSeconds: timeout,
@@ -713,6 +753,7 @@ export async function brokerExecute(input: {
 
 export function buildBrokerPtyRequest(input: {
   credentialRef: string;
+  identityFile?: string;
   host: HostConfig;
   command: string;
   timeoutSeconds?: number;
@@ -736,6 +777,7 @@ export function buildBrokerPtyRequest(input: {
   if (input.cols !== undefined) request.cols = input.cols;
   if (input.rows !== undefined) request.rows = input.rows;
   if (input.input !== undefined) request.input = input.input;
+  if (input.identityFile) request.identity_file = input.identityFile;
   return request;
 }
 
@@ -750,12 +792,13 @@ export async function brokerPty(input: {
   input?: string;
 }): Promise<ExecutionResult> {
   return withCredentialAutoEnroll(input, async () => {
-    const auth = passwordAuth(input.host);
+    const auth = hostAuth(input.host);
     const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
     const response = await runBroker(
       input.settings,
       buildBrokerPtyRequest({
         credentialRef: auth.credentialRef,
+        identityFile: auth.identityFile,
         host: input.host,
         command: input.command,
         timeoutSeconds: timeout,
@@ -772,6 +815,7 @@ export async function brokerPty(input: {
 
 export function buildBrokerSudoExecuteRequest(input: {
   loginCredentialRef: string;
+  identityFile?: string;
   sudoCredentialRef: string;
   host: HostConfig;
   command: string;
@@ -790,6 +834,7 @@ export function buildBrokerSudoExecuteRequest(input: {
     timeout_seconds: timeout,
     max_output_bytes: input.settings.maxOutputBytes,
     strict_host_key_checking: input.settings.strictHostKeyChecking,
+    ...(input.identityFile ? { identity_file: input.identityFile } : {}),
   };
 }
 
@@ -801,7 +846,7 @@ export async function brokerSudoExecute(input: {
   timeoutSeconds?: number;
 }): Promise<ExecutionResult> {
   return withCredentialAutoEnroll(input, async () => {
-    const auth = passwordAuth(input.host);
+    const auth = hostAuth(input.host);
     if (!input.host.sudo.credentialRef) {
       throw new Error("Password-backed sudo requires sudo.credentialRef");
     }
@@ -812,6 +857,7 @@ export async function brokerSudoExecute(input: {
       input.settings,
       buildBrokerSudoExecuteRequest({
         loginCredentialRef: auth.credentialRef,
+        identityFile: auth.identityFile,
         sudoCredentialRef: input.host.sudo.credentialRef,
         host: input.host,
         command: input.command,
@@ -883,6 +929,90 @@ function terminalStatusFrom(response: BrokerDaemonResponse): TerminalStatusResul
   };
 }
 
+export function buildBrokerTaskStatusRequest(taskId: string): Record<string, unknown> {
+  return { op: "task_status", task_id: taskId };
+}
+
+export function buildBrokerTaskCancelRequest(taskId: string): Record<string, unknown> {
+  return { op: "task_cancel", task_id: taskId };
+}
+
+export function buildBrokerTaskWatchRequest(
+  taskId: string,
+  sinceVersion: number,
+  timeoutSeconds: number,
+): Record<string, unknown> {
+  return {
+    op: "task_watch",
+    task_id: taskId,
+    since_version: sinceVersion,
+    timeout_seconds: timeoutSeconds,
+  };
+}
+
+export type BrokerRpc = (
+  request: Record<string, unknown>,
+  timeoutMs?: number,
+) => Promise<BrokerDaemonResponse>;
+
+export async function brokerTaskStatusWithRpc(
+  rpc: BrokerRpc,
+  taskId: string,
+): Promise<TaskStatusResult> {
+  const response = await rpc(buildBrokerTaskStatusRequest(taskId), 10_000);
+  assertProtocolCompatible(response);
+  return taskStatusFrom(response);
+}
+
+export async function brokerTaskCancelWithRpc(
+  rpc: BrokerRpc,
+  taskId: string,
+): Promise<TaskStatusResult> {
+  const response = await rpc(buildBrokerTaskCancelRequest(taskId), 10_000);
+  assertProtocolCompatible(response);
+  return taskStatusFrom(response);
+}
+
+export async function brokerTaskWatchWithRpc(
+  rpc: BrokerRpc,
+  taskId: string,
+  sinceVersion: number,
+  timeoutSeconds: number,
+): Promise<TaskStatusResult> {
+  const response = await rpc(
+    buildBrokerTaskWatchRequest(taskId, sinceVersion, timeoutSeconds),
+    Math.max(2_000, timeoutSeconds * 1_000 + 2_000),
+  );
+  assertProtocolCompatible(response);
+  return taskStatusFrom(response);
+}
+
+export async function brokerTaskStatus(
+  settings: GlobalSettings,
+  taskId: string,
+): Promise<TaskStatusResult> {
+  await ensureBrokerDaemon(settings);
+  return brokerTaskStatusWithRpc(daemonRpc, taskId);
+}
+
+export async function brokerTaskCancel(
+  settings: GlobalSettings,
+  taskId: string,
+): Promise<TaskStatusResult> {
+  await ensureBrokerDaemon(settings);
+  return brokerTaskCancelWithRpc(daemonRpc, taskId);
+}
+
+export async function brokerTaskWatch(
+  settings: GlobalSettings,
+  taskId: string,
+  sinceVersion: number,
+  timeoutSeconds: number,
+): Promise<TaskStatusResult> {
+  await ensureBrokerDaemon(settings);
+  return brokerTaskWatchWithRpc(daemonRpc, taskId, sinceVersion, timeoutSeconds);
+}
+
 function taskStatusFrom(response: BrokerDaemonResponse): TaskStatusResult {
   if (!response.taskId || !response.state) {
     throw new Error("credential broker task response is missing taskId or state");
@@ -895,6 +1025,13 @@ function taskStatusFrom(response: BrokerDaemonResponse): TaskStatusResult {
     createdAtMs: response.createdAtMs,
     startedAtMs: response.startedAtMs,
     finishedAtMs: response.finishedAtMs,
+    progress: response.progress
+      ? {
+          version: response.progress.version ?? 0,
+          done: response.progress.done ?? 0,
+          total: response.progress.total,
+        }
+      : undefined,
   };
 }
 
@@ -951,6 +1088,7 @@ export async function brokerTaskWait(
 export function buildBrokerTerminalOpenRequest(input: {
   settings: GlobalSettings;
   credentialRef: string;
+  identityFile?: string;
   host: HostConfig;
   command: string;
   cols?: number;
@@ -971,6 +1109,7 @@ export function buildBrokerTerminalOpenRequest(input: {
   };
   if (input.cols !== undefined) request.cols = input.cols;
   if (input.rows !== undefined) request.rows = input.rows;
+  if (input.identityFile) request.identity_file = input.identityFile;
   return request;
 }
 
@@ -987,11 +1126,12 @@ export async function brokerTerminalOpen(input: {
 }): Promise<TerminalStatusResult> {
   assertPersistentTerminalEnabled(input.settings);
   return withCredentialAutoEnroll(input, async () => {
-    const auth = passwordAuth(input.host);
+    const auth = hostAuth(input.host);
     await ensureBrokerDaemon(input.settings);
     const response = await daemonRpc(
       buildBrokerTerminalOpenRequest({
         credentialRef: auth.credentialRef,
+        identityFile: auth.identityFile,
         host: input.host,
         command: input.command,
         cols: input.cols,
@@ -1123,6 +1263,7 @@ export async function brokerTerminalClose(
 
 export function buildBrokerTransferRequest(input: {
   credentialRef: string;
+  identityFile?: string;
   host: HostConfig;
   direction: "upload" | "download";
   localPath: string;
@@ -1143,6 +1284,7 @@ export function buildBrokerTransferRequest(input: {
     recursive: input.recursive,
     timeout_seconds: timeout,
     strict_host_key_checking: input.settings.strictHostKeyChecking,
+    ...(input.identityFile ? { identity_file: input.identityFile } : {}),
   };
 }
 
@@ -1154,18 +1296,47 @@ export async function brokerTransfer(input: {
   remotePath: string;
   recursive: boolean;
   timeoutSeconds?: number;
+  detach?: boolean;
 }): Promise<ExecutionResult> {
   return withCredentialAutoEnroll(
     { settings: input.settings, host: input.host, hostAlias: input.host.hostname },
     async () => {
-      const auth = passwordAuth(input.host);
+      const auth = hostAuth(input.host);
       const timeout = input.timeoutSeconds ?? input.settings.defaultTimeoutSeconds;
       const requestId = newRequestId();
       const startedAt = Date.now();
+      if (input.detach) {
+        const taskId = await submitBroker(
+          input.settings,
+          buildBrokerTransferRequest({
+            credentialRef: auth.credentialRef,
+            identityFile: auth.identityFile,
+            host: input.host,
+            direction: input.direction,
+            localPath: input.localPath,
+            remotePath: input.remotePath,
+            recursive: input.recursive,
+            timeoutSeconds: timeout,
+            settings: input.settings,
+          }),
+        );
+        return {
+          ok: true,
+          exitCode: 0,
+          signal: null,
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          truncated: false,
+          durationMs: Date.now() - startedAt,
+          taskId,
+        };
+      }
       const response = await runBroker(
         input.settings,
         buildBrokerTransferRequest({
           credentialRef: auth.credentialRef,
+          identityFile: auth.identityFile,
           host: input.host,
           direction: input.direction,
           localPath: input.localPath,

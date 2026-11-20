@@ -1,11 +1,12 @@
 use anyhow::{Context, Result, anyhow};
 use helix_core::protocol::BrokerResponse;
 use helix_core::task_pool::CancellationToken;
+use helix_core::transport::ProgressSink;
 use helix_credential::credential::StoredCredential;
 use ssh2::{CheckResult, KnownHostFileKind, Session, Sftp};
 use std::{
     fs::{self, File},
-    io::{Read, Write},
+    io::{self, Read, Write},
     net::{TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     thread,
@@ -19,6 +20,7 @@ pub struct ConnectOptions<'a> {
     pub username: Option<&'a str>,
     pub timeout_seconds: u64,
     pub strict_host_key_checking: bool,
+    pub identity_file: Option<&'a str>,
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -56,7 +58,10 @@ fn verify_known_host(session: &Session, host: &str, port: u16, strict: bool) -> 
     }
 }
 
-pub fn connect(options: &ConnectOptions<'_>, credential: &StoredCredential) -> Result<Session> {
+pub fn connect(
+    options: &ConnectOptions<'_>,
+    credential: Option<&StoredCredential>,
+) -> Result<Session> {
     let address = format!("{}:{}", options.host, options.port);
     let socket = (options.host, options.port)
         .to_socket_addrs()
@@ -83,18 +88,56 @@ pub fn connect(options: &ConnectOptions<'_>, credential: &StoredCredential) -> R
         options.strict_host_key_checking,
     )?;
 
-    let username = options
-        .username
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or(&credential.username);
-    if username.trim().is_empty() {
-        return Err(anyhow!(
-            "SSH username is missing from both host config and credential"
-        ));
+    let username = match (
+        options
+            .username
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        credential,
+    ) {
+        (Some(username), _) => username.to_owned(),
+        (None, Some(credential)) if !credential.username.trim().is_empty() => {
+            credential.username.clone()
+        }
+        _ => {
+            return Err(anyhow!(
+                "SSH username is missing from both host config and credential"
+            ));
+        }
+    };
+    match (options.identity_file, credential) {
+        (Some(path), _) => {
+            // Pass the adjacent `.pub` file when present: libssh2 can derive
+            // it from the private key only for formats it understands, while
+            // OpenSSH-format private keys are easiest to pair with their .pub.
+            let public_key = PathBuf::from(format!("{path}.pub"));
+            let public_key = public_key.exists().then_some(public_key);
+            if let Err(error) = session.userauth_pubkey_file(
+                &username,
+                public_key.as_deref(),
+                Path::new(path),
+                None,
+            ) {
+                return Err(
+                    anyhow::Error::new(crate::error::TransportError::Authentication)
+                        .context(format!("SSH key authentication failed: {error}")),
+                );
+            }
+        }
+        (None, Some(credential)) => {
+            if let Err(error) = session.userauth_password(&username, credential.secret.as_str()) {
+                return Err(
+                    anyhow::Error::new(crate::error::TransportError::Authentication)
+                        .context(format!("SSH password authentication failed: {error}")),
+                );
+            }
+        }
+        (None, None) => {
+            return Err(anyhow!(
+                "password authentication requires a stored credential"
+            ));
+        }
     }
-    session
-        .userauth_password(username, credential.secret.as_str())
-        .context("SSH password authentication failed")?;
     if !session.authenticated() {
         return Err(anyhow!("SSH server rejected the credential"));
     }
@@ -106,7 +149,7 @@ fn bounded_text(mut bytes: Vec<u8>, max: usize) -> (String, bool) {
     if truncated {
         bytes.truncate(max);
     }
-    (String::from_utf8_lossy(&bytes).into_owned(), truncated)
+    (helix_core::output::decode_remote_output(&bytes), truncated)
 }
 
 struct CapturedOutput {
@@ -408,7 +451,179 @@ fn ensure_remote_dir(sftp: &Sftp, path: &Path) -> Result<()> {
     }
 }
 
-fn upload_path(sftp: &Sftp, local: &Path, remote: &Path, recursive: bool) -> Result<()> {
+const SFTP_CHUNK_SIZE: usize = 256 * 1024;
+
+/// Per-transfer state shared by the copy loop, progress reporting and cleanup.
+pub struct TransferContext<'a> {
+    pub task_id: &'a str,
+    pub cancellation: &'a CancellationToken,
+    pub progress: &'a dyn ProgressSink,
+    pub deadline: Instant,
+}
+
+impl TransferContext<'_> {
+    fn check_interrupt(&self) -> Result<()> {
+        if self.cancellation.is_cancelled() {
+            return Err(crate::error::TransportError::Cancelled.into());
+        }
+        if Instant::now() >= self.deadline {
+            return Err(crate::error::TransportError::Timeout.into());
+        }
+        Ok(())
+    }
+}
+
+fn copy_with_progress<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    context: &TransferContext<'_>,
+    progress_offset: u64,
+    progress_total: Option<u64>,
+) -> Result<u64> {
+    let mut buffer = vec![0u8; SFTP_CHUNK_SIZE];
+    let mut done = 0u64;
+    loop {
+        context.check_interrupt()?;
+        match reader.read(&mut buffer) {
+            Ok(0) => return Ok(done),
+            Ok(read) => {
+                write_all_retrying(writer, &buffer[..read], context)?;
+                done += read as u64;
+                context
+                    .progress
+                    .report(progress_offset + done, progress_total);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(2));
+            }
+            Err(error) => return Err(error).context("failed to read transfer data"),
+        }
+    }
+}
+
+fn write_all_retrying<W: Write>(
+    writer: &mut W,
+    mut chunk: &[u8],
+    context: &TransferContext<'_>,
+) -> Result<()> {
+    while !chunk.is_empty() {
+        context.check_interrupt()?;
+        match writer.write(chunk) {
+            Ok(0) => thread::sleep(Duration::from_millis(2)),
+            Ok(written) => chunk = &chunk[written..],
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(2));
+            }
+            Err(error) => return Err(error).context("failed to write transfer data"),
+        }
+    }
+    Ok(())
+}
+
+fn part_path(target: &Path, task_id: &str) -> PathBuf {
+    let name = target
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let sanitized: String = task_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    target.with_file_name(format!("{name}.helix.part.{sanitized}"))
+}
+
+fn replace_remote_file(sftp: &Sftp, part: &Path, target: &Path) -> Result<()> {
+    // `posix-rename@openssh.com` is the only replace path that works on SFTP
+    // v3 servers; libssh2 silently drops the OVERWRITE flag there.
+    if sftp.posix_rename(part, target).is_ok() {
+        return Ok(());
+    }
+    let flags =
+        Some(ssh2::RenameFlags::OVERWRITE | ssh2::RenameFlags::ATOMIC | ssh2::RenameFlags::NATIVE);
+    match sftp.rename(part, target, flags) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // Only retry when the failure is a generic FX_FAILURE and the
+            // target really exists; never delete anything on other errors.
+            if sftp.stat(target).is_ok() {
+                let _ = sftp.unlink(target);
+                if sftp.rename(part, target, flags).is_ok() {
+                    return Ok(());
+                }
+            }
+            Err(error).with_context(|| {
+                format!(
+                    "failed to rename {} to {}",
+                    part.display(),
+                    target.display()
+                )
+            })
+        }
+    }
+}
+
+fn replace_local_file(part: &Path, target: &Path) -> Result<()> {
+    if target.exists() {
+        // Windows cannot rename over an existing file; this makes the local
+        // replacement non-atomic there, which is documented behavior.
+        let _ = fs::remove_file(target);
+    }
+    fs::rename(part, target).with_context(|| {
+        format!(
+            "failed to rename {} to {}",
+            part.display(),
+            target.display()
+        )
+    })
+}
+
+fn upload_file(
+    sftp: &Sftp,
+    local: &Path,
+    remote: &Path,
+    context: &TransferContext<'_>,
+    progress_offset: u64,
+    progress_total: Option<u64>,
+) -> Result<()> {
+    let part = part_path(remote, context.task_id);
+    let written = (|| -> Result<()> {
+        let mut source = File::open(local)
+            .with_context(|| format!("cannot read local path {}", local.display()))?;
+        let mut destination = sftp.create(&part)?;
+        copy_with_progress(
+            &mut source,
+            &mut destination,
+            context,
+            progress_offset,
+            progress_total,
+        )?;
+        Ok(())
+    })();
+    match written.and_then(|()| replace_remote_file(sftp, &part, remote)) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = sftp.unlink(&part);
+            Err(error)
+        }
+    }
+}
+
+fn upload_path(
+    sftp: &Sftp,
+    local: &Path,
+    remote: &Path,
+    recursive: bool,
+    context: &TransferContext<'_>,
+    progress_offset: &mut u64,
+    progress_total: Option<u64>,
+) -> Result<()> {
+    context.check_interrupt()?;
     let metadata = fs::metadata(local)
         .with_context(|| format!("cannot read local path {}", local.display()))?;
     if metadata.is_dir() {
@@ -420,16 +635,31 @@ fn upload_path(sftp: &Sftp, local: &Path, remote: &Path, recursive: bool) -> Res
         ensure_remote_dir(sftp, remote)?;
         for entry in fs::read_dir(local)? {
             let entry = entry?;
-            upload_path(sftp, &entry.path(), &remote.join(entry.file_name()), true)?;
+            upload_path(
+                sftp,
+                &entry.path(),
+                &remote.join(entry.file_name()),
+                true,
+                context,
+                progress_offset,
+                progress_total,
+            )?;
         }
         return Ok(());
     }
     if let Some(parent) = remote.parent() {
         ensure_remote_dir(sftp, parent)?;
     }
-    let mut source = File::open(local)?;
-    let mut destination = sftp.create(remote)?;
-    std::io::copy(&mut source, &mut destination)?;
+    let size = metadata.len();
+    upload_file(
+        sftp,
+        local,
+        remote,
+        context,
+        *progress_offset,
+        progress_total,
+    )?;
+    *progress_offset += size;
     Ok(())
 }
 
@@ -439,7 +669,49 @@ fn is_remote_dir(stat: &ssh2::FileStat) -> bool {
         .unwrap_or(false)
 }
 
-fn download_path(sftp: &Sftp, remote: &Path, local: &Path, recursive: bool) -> Result<()> {
+fn download_file(
+    sftp: &Sftp,
+    remote: &Path,
+    local: &Path,
+    context: &TransferContext<'_>,
+    progress_offset: u64,
+    progress_total: Option<u64>,
+) -> Result<()> {
+    if let Some(parent) = local.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let part = part_path(local, context.task_id);
+    let written = (|| -> Result<()> {
+        let mut source = sftp.open(remote)?;
+        let mut destination = File::create(&part)?;
+        copy_with_progress(
+            &mut source,
+            &mut destination,
+            context,
+            progress_offset,
+            progress_total,
+        )?;
+        Ok(())
+    })();
+    match written.and_then(|()| replace_local_file(&part, local)) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = fs::remove_file(&part);
+            Err(error)
+        }
+    }
+}
+
+fn download_path(
+    sftp: &Sftp,
+    remote: &Path,
+    local: &Path,
+    recursive: bool,
+    context: &TransferContext<'_>,
+    progress_offset: &mut u64,
+    progress_total: Option<u64>,
+) -> Result<()> {
+    context.check_interrupt()?;
     let stat = sftp
         .stat(remote)
         .with_context(|| format!("cannot stat remote path {}", remote.display()))?;
@@ -457,27 +729,257 @@ fn download_path(sftp: &Sftp, remote: &Path, local: &Path, recursive: bool) -> R
             if name == std::ffi::OsStr::new(".") || name == std::ffi::OsStr::new("..") {
                 continue;
             }
-            download_path(sftp, &child, &local.join(name), true)?;
+            download_path(
+                sftp,
+                &child,
+                &local.join(name),
+                true,
+                context,
+                progress_offset,
+                progress_total,
+            )?;
         }
         return Ok(());
     }
-    if let Some(parent) = local.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut source = sftp.open(remote)?;
-    let mut destination = File::create(local)?;
-    std::io::copy(&mut source, &mut destination)?;
+    let size = stat.size.unwrap_or(0);
+    download_file(
+        sftp,
+        remote,
+        local,
+        context,
+        *progress_offset,
+        progress_total,
+    )?;
+    *progress_offset += size;
     Ok(())
 }
 
-pub fn upload(session: &Session, local: &Path, remote: &Path, recursive: bool) -> Result<()> {
-    let sftp = session.sftp()?;
-    upload_path(&sftp, local, remote, recursive)
+/// Sum every regular file under `path` without following symlinks.
+pub fn local_tree_size(path: &Path) -> io::Result<u64> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Ok(0);
+    }
+    if !metadata.is_dir() {
+        return Ok(metadata.len());
+    }
+    let mut total = 0u64;
+    for entry in fs::read_dir(path)? {
+        total += local_tree_size(&entry?.path())?;
+    }
+    Ok(total)
 }
 
-pub fn download(session: &Session, remote: &Path, local: &Path, recursive: bool) -> Result<()> {
+fn remote_tree_size(sftp: &Sftp, path: &Path) -> Result<u64> {
+    let stat = sftp.lstat(path)?;
+    if stat.perm.is_some_and(|perm| perm & 0o170000 == 0o120000) {
+        return Ok(0);
+    }
+    if !is_remote_dir(&stat) {
+        return Ok(stat.size.unwrap_or(0));
+    }
+    let mut total = 0u64;
+    for (child, _) in sftp.readdir(path)? {
+        let name = child
+            .file_name()
+            .ok_or_else(|| anyhow!("invalid remote file name"))?;
+        if name == std::ffi::OsStr::new(".") || name == std::ffi::OsStr::new("..") {
+            continue;
+        }
+        total += remote_tree_size(sftp, &child)?;
+    }
+    Ok(total)
+}
+
+pub fn upload(
+    session: &Session,
+    local: &Path,
+    remote: &Path,
+    recursive: bool,
+    context: &TransferContext<'_>,
+) -> Result<()> {
     let sftp = session.sftp()?;
-    download_path(&sftp, remote, local, recursive)
+    // Compute the tree total exactly once at the entry point so every file
+    // reports against the same denominator.
+    let total = Some(local_tree_size(local).unwrap_or(0));
+    let mut offset = 0u64;
+    upload_path(&sftp, local, remote, recursive, context, &mut offset, total)
+}
+
+pub fn download(
+    session: &Session,
+    remote: &Path,
+    local: &Path,
+    recursive: bool,
+    context: &TransferContext<'_>,
+) -> Result<()> {
+    let sftp = session.sftp()?;
+    let total = Some(remote_tree_size(&sftp, remote).unwrap_or(0));
+    let mut offset = 0u64;
+    download_path(&sftp, remote, local, recursive, context, &mut offset, total)
+}
+
+#[cfg(test)]
+mod transfer_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingSink {
+        reports: Mutex<Vec<(u64, Option<u64>)>>,
+    }
+
+    impl ProgressSink for RecordingSink {
+        fn report(&self, done: u64, total: Option<u64>) {
+            self.reports.lock().unwrap().push((done, total));
+        }
+    }
+
+    fn context<'a>(
+        sink: &'a RecordingSink,
+        cancellation: &'a CancellationToken,
+    ) -> TransferContext<'a> {
+        TransferContext {
+            task_id: "broker-1-1",
+            cancellation,
+            progress: sink,
+            deadline: Instant::now() + Duration::from_secs(5),
+        }
+    }
+
+    #[test]
+    fn copy_reports_progress_per_chunk_and_copies_every_byte() {
+        let data = vec![7u8; 600 * 1024];
+        let mut reader = &data[..];
+        let mut output = Vec::new();
+        let sink = RecordingSink::default();
+        let cancellation = CancellationToken::default();
+        let context = context(&sink, &cancellation);
+        let done =
+            copy_with_progress(&mut reader, &mut output, &context, 0, Some(600 * 1024)).unwrap();
+        assert_eq!(done, 600 * 1024);
+        assert_eq!(output.len(), 600 * 1024);
+        let reports = sink.reports.lock().unwrap();
+        assert!(reports.len() >= 2, "chunks must report incrementally");
+        assert_eq!(reports.last().unwrap().0, 600 * 1024);
+    }
+
+    struct WouldBlockReader {
+        blocks_left: usize,
+        payload: Vec<u8>,
+        offset: usize,
+    }
+
+    impl Read for WouldBlockReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if self.blocks_left > 0 {
+                self.blocks_left -= 1;
+                return Err(io::Error::from(io::ErrorKind::WouldBlock));
+            }
+            if self.offset >= self.payload.len() {
+                return Ok(0);
+            }
+            let remaining = self.payload.len() - self.offset;
+            let count = remaining.min(buffer.len());
+            buffer[..count].copy_from_slice(&self.payload[self.offset..self.offset + count]);
+            self.offset += count;
+            Ok(count)
+        }
+    }
+
+    #[test]
+    fn would_block_is_retried_instead_of_truncating() {
+        let mut reader = WouldBlockReader {
+            blocks_left: 2,
+            payload: vec![1u8; 1024],
+            offset: 0,
+        };
+        let mut output = Vec::new();
+        let sink = RecordingSink::default();
+        let cancellation = CancellationToken::default();
+        let context = context(&sink, &cancellation);
+        let done = copy_with_progress(&mut reader, &mut output, &context, 0, Some(1024)).unwrap();
+        assert_eq!(done, 1024);
+        assert_eq!(output.len(), 1024);
+    }
+
+    #[test]
+    fn cancellation_stops_the_copy() {
+        let data = vec![1u8; 1024];
+        let mut reader = &data[..];
+        let mut output = Vec::new();
+        let sink = RecordingSink::default();
+        let cancellation = CancellationToken::default();
+        cancellation.cancel();
+        let context = context(&sink, &cancellation);
+        let error =
+            copy_with_progress(&mut reader, &mut output, &context, 0, Some(1024)).unwrap_err();
+        assert_eq!(
+            crate::error::error_code(&error),
+            Some(helix_core::coded_error::TRANSFER_CANCELLED)
+        );
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn timeout_stops_the_copy_before_new_bytes() {
+        let data = vec![1u8; 1024];
+        let mut reader = &data[..];
+        let mut output = Vec::new();
+        let sink = RecordingSink::default();
+        let cancellation = CancellationToken::default();
+        let context = TransferContext {
+            task_id: "broker-1-1",
+            cancellation: &cancellation,
+            progress: &sink,
+            deadline: Instant::now(),
+        };
+        let error =
+            copy_with_progress(&mut reader, &mut output, &context, 0, Some(1024)).unwrap_err();
+        assert_eq!(
+            crate::error::error_code(&error),
+            Some(helix_core::coded_error::TRANSFER_TIMEOUT)
+        );
+    }
+
+    #[test]
+    fn part_path_is_unique_per_task_and_stays_beside_the_target() {
+        let path = part_path(Path::new("/tmp/report.txt"), "broker-123-7");
+        assert_eq!(path, Path::new("/tmp/report.txt.helix.part.broker-123-7"));
+        let sanitized = part_path(Path::new("/tmp/report.txt"), "broker/12 3");
+        assert_eq!(
+            sanitized,
+            Path::new("/tmp/report.txt.helix.part.broker_12_3")
+        );
+    }
+
+    #[test]
+    fn local_tree_size_sums_every_regular_file() {
+        let root = std::env::temp_dir().join(format!(
+            "helix-tree-{}-{}",
+            std::process::id(),
+            Instant::now().elapsed().as_nanos()
+        ));
+        fs::create_dir_all(root.join("nested")).unwrap();
+        fs::write(root.join("a.bin"), vec![0u8; 3]).unwrap();
+        fs::write(root.join("nested/b.bin"), vec![0u8; 5]).unwrap();
+        fs::write(root.join("nested/c.bin"), vec![0u8; 7]).unwrap();
+        assert_eq!(local_tree_size(&root).unwrap(), 15);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn progress_offset_shifts_a_file_report_into_the_tree() {
+        let data = [0u8; 50];
+        let mut reader = &data[..];
+        let mut output = Vec::new();
+        let sink = RecordingSink::default();
+        let cancellation = CancellationToken::default();
+        let context = context(&sink, &cancellation);
+        copy_with_progress(&mut reader, &mut output, &context, 100, Some(200)).unwrap();
+        let reports = sink.reports.lock().unwrap();
+        assert_eq!(reports.last().unwrap(), &(150, Some(200)));
+    }
 }
 
 #[cfg(test)]
@@ -502,5 +1004,22 @@ mod output_tests {
             1024
         ));
         assert_eq!(stdout.len() + stderr.len(), 1024);
+    }
+
+    #[test]
+    fn bounded_text_repairs_an_oem_damaged_utf8_bom() {
+        let mut bytes = vec![0xEF, 0xBB, 0x3F];
+        bytes.extend_from_slice("名称".as_bytes());
+        let (text, truncated) = bounded_text(bytes, 1024);
+        assert!(!truncated);
+        assert!(text.contains("名称"), "text: {text:?}");
+        assert!(!text.starts_with('\u{FFFD}'), "text: {text:?}");
+    }
+
+    #[test]
+    fn bounded_text_still_decodes_a_genuine_gbk_stream() {
+        let (text, truncated) = bounded_text(vec![0xC3, 0xFB, 0xB3, 0xC6], 1024);
+        assert!(!truncated);
+        assert_eq!(text, "名称");
     }
 }

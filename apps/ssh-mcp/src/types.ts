@@ -1,4 +1,7 @@
 export type AuditCommandMode = "plain" | "hash";
+export type SshBackend = "auto" | "libssh2" | "openssh";
+export type ResolvedSshBackend = Exclude<SshBackend, "auto">;
+export type TransferBackend = "auto" | "scp" | "broker";
 export type AuthConfig =
   | { type: "openssh" }
   | { type: "windows-credential"; credentialRef: string };
@@ -18,6 +21,8 @@ export interface HostConfig {
   username?: string;
   identityFile?: string;
   proxyJump?: string | null;
+  sshBackend?: SshBackend;
+  transferBackend?: TransferBackend;
   tags?: string[];
   defaultWorkingDir?: string;
   allowedRemotePaths: string[];
@@ -57,6 +62,8 @@ export interface ExecutionResult {
   stderrRef?: string;
   stdoutSize?: number;
   stderrSize?: number;
+  errorCode?: string;
+  taskId?: string;
 }
 
 export interface RemoteExecutionOptions {
@@ -123,6 +130,7 @@ export interface BrokerResponse {
   truncated?: boolean;
   durationMs?: number;
   error?: string;
+  errorCode?: string;
 }
 
 export interface SpoolReadResult {
@@ -153,6 +161,12 @@ export type TerminalState = "running" | "finished" | "closed";
 
 export type TaskState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
+export interface TaskProgress {
+  version: number;
+  done: number;
+  total?: number;
+}
+
 export interface TaskStatusResult {
   taskId: string;
   state: TaskState;
@@ -161,6 +175,7 @@ export interface TaskStatusResult {
   createdAtMs?: number;
   startedAtMs?: number;
   finishedAtMs?: number;
+  progress?: TaskProgress;
 }
 
 /** Summary-first envelope returned by terminal_open / terminal_status. */

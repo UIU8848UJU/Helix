@@ -16,10 +16,15 @@ import {
   brokerTerminalStatus,
   brokerTerminalTail,
   brokerTerminalWrite,
+  brokerTaskCancel,
+  brokerTaskStatus,
   brokerTaskWait,
+  brokerTaskWatch,
   brokerTransfer,
 } from "./broker.js";
 import { ConfigStore, hostMutationAllowed, redactHost, validateHost } from "./config.js";
+import { resolveSshBackend, runWithSshBackend } from "./backend.js";
+import { resolveTransferBackend } from "./transfer-backend.js";
 import { getLocalPathRoots } from "./paths.js";
 import {
   assertComposeService,
@@ -117,8 +122,9 @@ export function createServer(store = new ConfigStore()): McpServer {
     if (!host) throw new Error(`Unknown host alias: ${input.hostAlias}`);
     const requestId = newRequestId();
     try {
-      const result = host.auth.type === "windows-credential"
-        ? input.pty
+      const result = await runWithSshBackend({
+        host,
+        runLibssh2: async () => input.pty
           ? await brokerPty({
               settings: config.settings,
               hostAlias: input.hostAlias,
@@ -135,8 +141,8 @@ export function createServer(store = new ConfigStore()): McpServer {
               host,
               command: input.command,
               timeoutSeconds: input.timeoutSeconds,
-            })
-        : input.pty
+            }),
+        runOpenSsh: async () => input.pty
           ? await runSshPty({
               host,
               settings: config.settings,
@@ -151,7 +157,8 @@ export function createServer(store = new ConfigStore()): McpServer {
               command: input.command,
               timeoutSeconds: input.timeoutSeconds,
               limiter: getLimiter(config.settings),
-            });
+            }),
+      });
       await auditExecution({
         config,
         requestId,
@@ -199,6 +206,8 @@ export function createServer(store = new ConfigStore()): McpServer {
     username: z.string().optional(),
     identityFile: z.string().optional(),
     proxyJump: z.string().nullable().optional(),
+    sshBackend: z.enum(["auto", "libssh2", "openssh"]).optional(),
+    transferBackend: z.enum(["auto", "scp", "broker"]).optional(),
     tags: z.array(z.string()).optional(),
     allowedRemotePaths: z.array(z.string()).optional(),
     defaultWorkingDir: z.string().optional(),
@@ -235,6 +244,7 @@ export function createServer(store = new ConfigStore()): McpServer {
         username: input.username,
         identityFile: input.identityFile,
         proxyJump: input.proxyJump,
+        sshBackend: input.sshBackend,
         defaultWorkingDir: input.defaultWorkingDir,
       });
       const host = validateHost(input.alias, candidate);
@@ -250,6 +260,8 @@ export function createServer(store = new ConfigStore()): McpServer {
     username: z.string().nullable().optional(),
     identityFile: z.string().nullable().optional(),
     proxyJump: z.string().nullable().optional(),
+    sshBackend: z.enum(["auto", "libssh2", "openssh"]).optional(),
+    transferBackend: z.enum(["auto", "scp", "broker"]).optional(),
     tags: z.array(z.string()).optional(),
     allowedRemotePaths: z.array(z.string()).optional(),
     defaultWorkingDir: z.string().nullable().optional(),
@@ -273,6 +285,7 @@ export function createServer(store = new ConfigStore()): McpServer {
         port: input.port,
         tags: input.tags,
         allowedRemotePaths: input.allowedRemotePaths,
+        sshBackend: input.sshBackend,
       });
       for (const field of ["username", "identityFile", "proxyJump", "defaultWorkingDir"] as const) {
         const value = input[field];
@@ -427,6 +440,9 @@ export function createServer(store = new ConfigStore()): McpServer {
       const config = await store.read();
       const hostConfig = config.hosts[host];
       if (!hostConfig) throw new Error(`Unknown host alias: ${host}`);
+      if (resolveSshBackend(hostConfig) !== "libssh2") {
+        throw new Error("Persistent terminal sessions currently require the libssh2 backend; OpenSSH terminal fallback is not available yet");
+      }
       return textResult(await brokerTerminalOpen({
         settings: config.settings,
         hostAlias: host,
@@ -459,6 +475,37 @@ export function createServer(store = new ConfigStore()): McpServer {
       assertCommandSafe(command);
       const config = await store.read();
       return textResult(await brokerTerminalExec(config.settings, terminalId, command));
+    } catch (error) { throwInvalid(error); }
+  });
+
+  server.tool("task_status", "Fetch a broker task snapshot, including byte progress.", {
+    taskId: z.string(),
+  }, async ({ taskId }) => {
+    try {
+      const config = await store.read();
+      return textResult(await brokerTaskStatus(config.settings, taskId));
+    } catch (error) { throwInvalid(error); }
+  });
+
+  server.tool("task_watch", "Wait until a task's progress version advances, the task finishes, or the timeout expires. Pass the last progress.version you saw as sinceVersion.", {
+    taskId: z.string(),
+    sinceVersion: z.number().int().min(0).default(0),
+    timeoutSeconds: z.number().int().min(0).max(86400).default(30),
+  }, async ({ taskId, sinceVersion, timeoutSeconds }) => {
+    try {
+      const config = await store.read();
+      return textResult(
+        await brokerTaskWatch(config.settings, taskId, sinceVersion, timeoutSeconds),
+      );
+    } catch (error) { throwInvalid(error); }
+  });
+
+  server.tool("task_cancel", "Request cancellation of a broker task. Transfers remove their .helix.part file and leave the destination untouched.", {
+    taskId: z.string(),
+  }, async ({ taskId }) => {
+    try {
+      const config = await store.read();
+      return textResult(await brokerTaskCancel(config.settings, taskId));
     } catch (error) { throwInvalid(error); }
   });
 
@@ -555,21 +602,22 @@ export function createServer(store = new ConfigStore()): McpServer {
         throw new Error("sudo_exec is not supported on Windows hosts");
       }
       const wrapped = buildRemoteScript(hostConfig, command, { cwd, env, sourceScripts });
-      if (hostConfig.auth.type === "windows-credential") {
-        return textResult(await brokerSudoExecute({
+      return textResult(await runWithSshBackend({
+        host: hostConfig,
+        runLibssh2: async () => await brokerSudoExecute({
           settings: config.settings,
           hostAlias: host,
           host: hostConfig,
           command: wrapped,
           timeoutSeconds,
-        }));
-      }
-      return textResult(await executeRemote({
-        tool: "sudo_exec",
-        hostAlias: host,
-        command: `sudo -n -- sh -lc ${shellQuote(wrapped)}`,
-        timeoutSeconds,
-        operation: command,
+        }),
+        runOpenSsh: async () => await executeRemote({
+          tool: "sudo_exec",
+          hostAlias: host,
+          command: `sudo -n -- sh -lc ${shellQuote(wrapped)}`,
+          timeoutSeconds,
+          operation: command,
+        }),
       }));
     } catch (error) { throwInvalid(error); }
   });
@@ -581,13 +629,18 @@ export function createServer(store = new ConfigStore()): McpServer {
     remotePath: string;
     recursive?: boolean;
     timeoutSeconds?: number;
+    detach?: boolean;
   }): Promise<ExecutionResult> => {
     const config = await store.read();
     const hostConfig = config.hosts[input.host];
     if (!hostConfig) throw new Error(`Unknown host alias: ${input.host}`);
     const localPath = assertLocalPathAllowed(input.localPath, getLocalPathRoots());
     const remotePath = assertRemotePathAllowed(hostConfig, input.remotePath);
-    if (hostConfig.auth.type === "windows-credential") {
+    const backend = resolveTransferBackend(hostConfig);
+    if (input.detach && backend !== "broker") {
+      throw new Error("detach requires the broker transfer backend");
+    }
+    if (backend === "broker") {
       return await brokerTransfer({
         settings: config.settings,
         host: hostConfig,
@@ -596,6 +649,7 @@ export function createServer(store = new ConfigStore()): McpServer {
         remotePath,
         recursive: input.recursive ?? false,
         timeoutSeconds: input.timeoutSeconds,
+        detach: input.detach,
       });
     }
     return await runScp({
@@ -616,6 +670,7 @@ export function createServer(store = new ConfigStore()): McpServer {
     remotePath: z.string(),
     recursive: z.boolean().optional(),
     timeoutSeconds: z.number().int().min(1).max(3600).optional(),
+    detach: z.boolean().optional(),
   }, async (input) => {
     try { return textResult(await transfer({ direction: "upload", ...input })); }
     catch (error) { throwInvalid(error); }
@@ -627,6 +682,7 @@ export function createServer(store = new ConfigStore()): McpServer {
     localPath: z.string(),
     recursive: z.boolean().optional(),
     timeoutSeconds: z.number().int().min(1).max(3600).optional(),
+    detach: z.boolean().optional(),
   }, async (input) => {
     try { return textResult(await transfer({ direction: "download", ...input })); }
     catch (error) { throwInvalid(error); }

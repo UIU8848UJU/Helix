@@ -52,6 +52,7 @@ impl Transport for SshTransport {
             request.target.username.as_deref(),
             request.timeout_seconds,
             request.target.strict_host_key_checking,
+            request.target.identity_file.as_deref(),
         )?;
         let stdin_secret = request.stdin_secret.map(Zeroizing::new);
         let result = ssh::execute(
@@ -82,6 +83,7 @@ impl Transport for SshTransport {
             request.target.username.as_deref(),
             request.timeout_seconds,
             request.target.strict_host_key_checking,
+            request.target.identity_file.as_deref(),
         )?;
         let result = ssh::execute_pty(
             &session,
@@ -116,6 +118,7 @@ impl Transport for SshTransport {
             request.target.username.as_deref(),
             request.timeout_seconds,
             request.target.strict_host_key_checking,
+            request.target.identity_file.as_deref(),
         )?;
         let sudo = credential::read(&request.sudo_credential_ref)?;
         let quoted = request.command.replace('\'', "'\"'\"'");
@@ -136,7 +139,7 @@ impl Transport for SshTransport {
         result
     }
 
-    fn upload(&self, request: TransferRequest) -> Result<()> {
+    fn upload(&self, request: TransferRequest, cancellation: &CancellationToken) -> Result<()> {
         let (key, session) = self.sessions.acquire(
             &request.target.credential_ref,
             &request.target.host,
@@ -144,12 +147,21 @@ impl Transport for SshTransport {
             request.target.username.as_deref(),
             request.timeout_seconds,
             request.target.strict_host_key_checking,
+            request.target.identity_file.as_deref(),
         )?;
+        let context = ssh::TransferContext {
+            task_id: &request.task_id,
+            cancellation,
+            progress: request.progress.as_ref(),
+            deadline: std::time::Instant::now()
+                + Duration::from_secs(request.timeout_seconds.max(1)),
+        };
         let result = ssh::upload(
             &session,
             std::path::Path::new(&request.local_path),
             std::path::Path::new(&request.remote_path),
             request.recursive,
+            &context,
         );
         if result.is_ok() {
             self.sessions.release(key, session);
@@ -157,7 +169,7 @@ impl Transport for SshTransport {
         result
     }
 
-    fn download(&self, request: TransferRequest) -> Result<()> {
+    fn download(&self, request: TransferRequest, cancellation: &CancellationToken) -> Result<()> {
         let (key, session) = self.sessions.acquire(
             &request.target.credential_ref,
             &request.target.host,
@@ -165,12 +177,21 @@ impl Transport for SshTransport {
             request.target.username.as_deref(),
             request.timeout_seconds,
             request.target.strict_host_key_checking,
+            request.target.identity_file.as_deref(),
         )?;
+        let context = ssh::TransferContext {
+            task_id: &request.task_id,
+            cancellation,
+            progress: request.progress.as_ref(),
+            deadline: std::time::Instant::now()
+                + Duration::from_secs(request.timeout_seconds.max(1)),
+        };
         let result = ssh::download(
             &session,
             std::path::Path::new(&request.remote_path),
             std::path::Path::new(&request.local_path),
             request.recursive,
+            &context,
         );
         if result.is_ok() {
             self.sessions.release(key, session);

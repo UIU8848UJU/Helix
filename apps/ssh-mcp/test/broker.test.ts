@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { assertPersistentTerminalEnabled, assertProtocolCompatible, buildBrokerCredentialExistsRequest, buildBrokerExecuteRequest, buildBrokerPtyRequest, buildBrokerSudoExecuteRequest, buildBrokerTerminalExecRequest, buildBrokerTerminalOpenRequest, buildBrokerTaskWaitRequest, buildBrokerTransferRequest, isBrokerDaemonPolicyCompatible, isCredentialError, resolveSpoolRefsWithReader, withCredentialAutoEnroll } from "../src/broker.js";
+import { assertPersistentTerminalEnabled, assertProtocolCompatible, buildBrokerCredentialExistsRequest, buildBrokerExecuteRequest, buildBrokerPtyRequest, buildBrokerSudoExecuteRequest, buildBrokerTerminalExecRequest, buildBrokerTerminalOpenRequest, buildBrokerTaskWaitRequest, buildBrokerTransferRequest, isBrokerDaemonPolicyCompatible, isCredentialError, BrokerDaemonError, resolveSpoolRefsWithReader, withCredentialAutoEnroll } from "../src/broker.js";
 import type { GlobalSettings, HostConfig, SpoolReadResult } from "../src/types.js";
 
 const settings: GlobalSettings = {
@@ -243,14 +243,14 @@ describe("broker pty request builder (TDD PTY-001)", () => {
   });
 });
 
-describe("broker daemon v5 capability contract", () => {
-  it("accepts the v5 capability set", () => {
+describe("broker daemon v7 capability contract", () => {
+  it("accepts the v7 capability set", () => {
     expect(() => assertProtocolCompatible({
       ok: true,
-      protocolVersion: 5,
+      protocolVersion: 7,
       capabilities: [
         "task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "terminal_v1",
-        "terminal_policy_v2", "terminal_cursor_v2", "terminal_task_v1", "spool_v1",
+        "terminal_policy_v2", "terminal_cursor_v2", "terminal_task_v1", "spool_v1", "identity_file_v1", "task_watch_v1", "task_watch_v1",
       ],
     })).not.toThrow();
   });
@@ -258,7 +258,7 @@ describe("broker daemon v5 capability contract", () => {
   it("rejects a same-version daemon without pty_v1", () => {
     expect(() => assertProtocolCompatible({
       ok: true,
-      protocolVersion: 5,
+      protocolVersion: 7,
       capabilities: ["task_pool_v2", "bounded_ipc", "owner_only_ipc"],
     })).toThrow(/missing required capabilities: pty_v1/);
   });
@@ -266,7 +266,7 @@ describe("broker daemon v5 capability contract", () => {
   it("rejects a same-version daemon without spool_v1", () => {
     expect(() => assertProtocolCompatible({
       ok: true,
-      protocolVersion: 5,
+      protocolVersion: 7,
       capabilities: [
         "task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "terminal_v1",
         "terminal_policy_v2", "terminal_cursor_v2", "terminal_task_v1",
@@ -318,10 +318,10 @@ describe("broker protocol request builders", () => {
 describe("persistent terminal authorization contract", () => {
   const compatible = {
     ok: true,
-    protocolVersion: 5,
+    protocolVersion: 7,
     capabilities: [
       "task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1",
-      "terminal_v1", "terminal_policy_v2", "terminal_cursor_v2", "terminal_task_v1", "spool_v1",
+      "terminal_v1", "terminal_policy_v2", "terminal_cursor_v2", "terminal_task_v1", "spool_v1", "identity_file_v1", "task_watch_v1", "task_watch_v1", "identity_file_v1",
     ],
   };
 
@@ -502,3 +502,17 @@ describe("broker spool resolution (large outputs)", () => {
   });
 });
 
+
+describe("credential error classification", () => {
+  it("classifies CREDENTIAL_MISSING from a coded failure", () => {
+    expect(isCredentialError(new BrokerDaemonError("task failed", "CREDENTIAL_MISSING"))).toBe(true);
+  });
+
+  it("does not treat an unrelated coded failure as a credential error", () => {
+    expect(isCredentialError(new BrokerDaemonError("boom", "TRANSFER_FAILED"))).toBe(false);
+  });
+
+  it("keeps the legacy message marker as a fallback", () => {
+    expect(isCredentialError(new Error("credential not found: Helix/ssh/x/login"))).toBe(true);
+  });
+});

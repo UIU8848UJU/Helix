@@ -577,6 +577,18 @@ fn handle_request(
             Ok(task) => pool.task_response(&task_id, task),
             Err(error) => DaemonResponse::failure(format!("{error:#}")),
         },
+        DaemonRequest::TaskWatch {
+            task_id,
+            since_version,
+            timeout_seconds,
+        } => match pool.watch(
+            &task_id,
+            since_version,
+            Duration::from_secs(timeout_seconds),
+        ) {
+            Ok(task) => pool.task_response(&task_id, task),
+            Err(error) => DaemonResponse::failure(format!("{error:#}")),
+        },
         DaemonRequest::TaskCancel { task_id } => match pool.cancel(&task_id) {
             Ok(task) => pool.task_response(&task_id, task),
             Err(error) => DaemonResponse::failure(format!("{error:#}")),
@@ -643,6 +655,7 @@ fn handle_request(
             rows,
             idle_seconds,
             max_history_bytes,
+            identity_file,
         } => {
             let request = TerminalOpenRequest {
                 target: ExecTarget {
@@ -651,6 +664,7 @@ fn handle_request(
                     port,
                     username,
                     strict_host_key_checking,
+                    identity_file,
                 },
                 command,
                 cols,

@@ -88,6 +88,12 @@ cd Helix
 | Linux/macOS → Linux | openssh（密钥 / Agent） | ✅ | ✅ SCP |
 | Windows → Windows | windows-credential（密码，经 helixd SFTP） | ✅（PowerShell） | ✅ SFTP |
 
+### SSH backend 兼容性
+
+主机可选配置 `sshBackend`：`auto`（默认）、`libssh2` 或 `openssh`。`auto` 保持旧的认证路由；当 `libssh2` 仅在握手算法阶段失败且主机配置了 `identityFile` 时，普通命令、PTY、job 和 SCP 会自动回退到本机 OpenSSH。认证失败、权限失败和网络失败不会触发回退。显式 `sshBackend="openssh"` 使用 OpenSSH key/agent；若同时保留 `windows-credential`，必须配置 `identityFile`（不要将密码写入命令行）。
+
+持久 `terminal_*` 当前仍要求 `libssh2` backend；OpenSSH backend 在实现独立的 PTY/session registry 前不能用于持久 terminal。
+
 **win→win 命令执行已支持（PowerShell）。** 对 `os: windows` 的主机，`ssh_exec` / `ssh_check` / `environment_probe` 会生成 PowerShell 脚本，并用 `-EncodedCommand`（UTF-16LE Base64）整体传参，避免命令行引号转义问题：脚本以 UTF-8 输出、`Set-Location -LiteralPath` 切换 cwd、`$env:` 注入环境变量、支持 `.` 点源 PowerShell 脚本，并按 `$LASTEXITCODE` / `$?` 返回退出码。`sudo_exec` 在 Windows 主机上暂不支持；`job_*` / `docker_*` / `compose_*` 仍生成 POSIX sh 脚本，仅适用于 unix 主机。win→win 的文件传输走 helixd 的 libssh2 SFTP，只要远端 Windows OpenSSH Server 启用 SFTP 子系统（默认开启）即可工作。
 
 ## 大文件传输

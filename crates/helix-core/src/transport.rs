@@ -18,6 +18,22 @@ pub struct ExecTarget {
     pub port: u16,
     pub username: Option<String>,
     pub strict_host_key_checking: bool,
+    /// Absolute path to a private key on the daemon host. `None` selects
+    /// password authentication through the credential broker.
+    pub identity_file: Option<String>,
+}
+
+/// Receives byte progress for a long-running task. Implementations must be
+/// cheap and lock-free on the hot path; the task pool installs its own sink.
+pub trait ProgressSink: Send + Sync + 'static {
+    fn report(&self, done: u64, total: Option<u64>);
+}
+
+/// Sink used when no task is watching progress (`serve_once`, policy tests).
+pub struct NoProgress;
+
+impl ProgressSink for NoProgress {
+    fn report(&self, _done: u64, _total: Option<u64>) {}
 }
 
 #[derive(Debug, Clone)]
@@ -107,13 +123,18 @@ pub struct SudoRequest {
     pub max_output_bytes: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TransferRequest {
     pub target: ExecTarget,
     pub local_path: String,
     pub remote_path: String,
     pub recursive: bool,
     pub timeout_seconds: u64,
+    pub task_id: String,
+    /// Request-level copy for cleanup paths; the trait argument is the
+    /// promise that this call may be interrupted.
+    pub cancellation: CancellationToken,
+    pub progress: Arc<dyn ProgressSink>,
 }
 
 /// A transport executes commands and transfers files against a remote host.
@@ -146,9 +167,9 @@ pub trait Transport: Send + Sync + 'static {
         cancellation: &CancellationToken,
     ) -> Result<BrokerResponse>;
 
-    fn upload(&self, request: TransferRequest) -> Result<()>;
+    fn upload(&self, request: TransferRequest, cancellation: &CancellationToken) -> Result<()>;
 
-    fn download(&self, request: TransferRequest) -> Result<()>;
+    fn download(&self, request: TransferRequest, cancellation: &CancellationToken) -> Result<()>;
 
     /// Number of idle pooled connections currently held by the transport.
     fn pooled_sessions(&self) -> usize {

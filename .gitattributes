@@ -15,3 +15,4 @@
 *.jpeg binary
 *.zip binary
 *.tar.gz binary
+vendor/ssh2/** text eol=lf

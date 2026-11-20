@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "helix-core"
 version.workspace = true
 edition.workspace = true
@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+encoding_rs.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

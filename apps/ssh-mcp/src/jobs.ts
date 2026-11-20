@@ -14,6 +14,7 @@ import {
 } from "@helix/jobs";
 import type { TaskExecutor, TaskSpec, TaskState, TaskType } from "@helix/jobs";
 import { newRequestId, writeAudit } from "./audit.js";
+import { runWithSshBackend } from "./backend.js";
 import { brokerExecute, brokerSudoExecute } from "./broker.js";
 import type { ConfigStore } from "./config.js";
 import { assertRemotePathAllowed } from "./policy.js";
@@ -381,41 +382,33 @@ export function registerJobTools(server: McpServer, store: ConfigStore): void {
     const started = Date.now();
     try {
       let result: ExecutionResult;
-      if (input.privileged) {
-        if (host.auth.type === "windows-credential") {
-          result = await brokerSudoExecute({
-            settings: config.settings,
-            hostAlias: input.hostAlias,
-            host,
-            command: input.command,
-            timeoutSeconds: input.timeoutSeconds,
-          });
-        } else {
-          result = await runSsh({
-            host,
-            settings: config.settings,
-            command: `sudo -n -- sh -lc ${shellQuote(input.command)}`,
-            timeoutSeconds: input.timeoutSeconds,
-            limiter: getLimiter(config.settings),
-          });
-        }
-      } else if (host.auth.type === "windows-credential") {
-        result = await brokerExecute({
-          settings: config.settings,
-          hostAlias: input.hostAlias,
-          host,
-          command: input.command,
-          timeoutSeconds: input.timeoutSeconds,
-        });
-      } else {
-        result = await runSsh({
+      result = await runWithSshBackend({
+        host,
+        runLibssh2: async () => input.privileged
+          ? await brokerSudoExecute({
+              settings: config.settings,
+              hostAlias: input.hostAlias,
+              host,
+              command: input.command,
+              timeoutSeconds: input.timeoutSeconds,
+            })
+          : await brokerExecute({
+              settings: config.settings,
+              hostAlias: input.hostAlias,
+              host,
+              command: input.command,
+              timeoutSeconds: input.timeoutSeconds,
+            }),
+        runOpenSsh: async () => runSsh({
           host,
           settings: config.settings,
-          command: input.command,
+          command: input.privileged
+            ? `sudo -n -- sh -lc ${shellQuote(input.command)}`
+            : input.command,
           timeoutSeconds: input.timeoutSeconds,
           limiter: getLimiter(config.settings),
-        });
-      }
+        }),
+      });
       await writeAudit(config.settings, {
         timestamp: new Date().toISOString(),
         requestId,

@@ -1,7 +1,7 @@
 use crate::{spool::SpoolMatch, terminal::TerminalState};
 use serde::{Deserialize, Serialize};
 
-pub const DAEMON_PROTOCOL_VERSION: u32 = 5;
+pub const DAEMON_PROTOCOL_VERSION: u32 = 7;
 pub const DAEMON_CAPABILITIES: &[&str] = &[
     "task_pool_v2",
     "bounded_ipc",
@@ -12,6 +12,8 @@ pub const DAEMON_CAPABILITIES: &[&str] = &[
     "terminal_cursor_v2",
     "terminal_task_v1",
     "spool_v1",
+    "identity_file_v1",
+    "task_watch_v1",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -30,6 +32,8 @@ pub enum BrokerRequest {
         timeout_seconds: u64,
         max_output_bytes: usize,
         strict_host_key_checking: bool,
+        #[serde(default)]
+        identity_file: Option<String>,
     },
     Pty {
         credential_ref: String,
@@ -43,6 +47,8 @@ pub enum BrokerRequest {
         cols: Option<u16>,
         rows: Option<u16>,
         input: Option<String>,
+        #[serde(default)]
+        identity_file: Option<String>,
     },
     SudoExecute {
         login_credential_ref: String,
@@ -54,6 +60,8 @@ pub enum BrokerRequest {
         timeout_seconds: u64,
         max_output_bytes: usize,
         strict_host_key_checking: bool,
+        #[serde(default)]
+        identity_file: Option<String>,
     },
     Upload {
         credential_ref: String,
@@ -65,6 +73,8 @@ pub enum BrokerRequest {
         recursive: bool,
         timeout_seconds: u64,
         strict_host_key_checking: bool,
+        #[serde(default)]
+        identity_file: Option<String>,
     },
     Download {
         credential_ref: String,
@@ -76,6 +86,8 @@ pub enum BrokerRequest {
         recursive: bool,
         timeout_seconds: u64,
         strict_host_key_checking: bool,
+        #[serde(default)]
+        identity_file: Option<String>,
     },
 }
 
@@ -107,6 +119,8 @@ pub struct BrokerResponse {
     pub duration_ms: Option<u128>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
 }
 
 impl BrokerResponse {
@@ -125,6 +139,7 @@ impl BrokerResponse {
             truncated: None,
             duration_ms: None,
             error: None,
+            error_code: None,
         }
     }
 
@@ -132,6 +147,15 @@ impl BrokerResponse {
         Self {
             ok: false,
             error: Some(error.into()),
+            ..Self::success()
+        }
+    }
+
+    pub fn failure_with_code(code: &'static str, error: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            error: Some(error.into()),
+            error_code: Some(code.to_owned()),
             ..Self::success()
         }
     }
@@ -149,6 +173,12 @@ pub enum DaemonRequest {
     },
     TaskWait {
         task_id: String,
+        timeout_seconds: u64,
+    },
+    TaskWatch {
+        task_id: String,
+        #[serde(default)]
+        since_version: u64,
         timeout_seconds: u64,
     },
     TaskCancel {
@@ -182,6 +212,8 @@ pub enum DaemonRequest {
         rows: Option<u16>,
         idle_seconds: u64,
         max_history_bytes: usize,
+        #[serde(default)]
+        identity_file: Option<String>,
     },
     TerminalWrite {
         terminal_id: String,
@@ -238,6 +270,15 @@ impl TaskState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskProgress {
+    pub version: u64,
+    pub done: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DaemonResponse {
@@ -266,6 +307,8 @@ pub struct DaemonResponse {
     pub result: Option<BrokerResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spool: Option<SpoolResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<TaskProgress>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cancel_requested: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -335,6 +378,7 @@ impl DaemonResponse {
             state: None,
             result: None,
             spool: None,
+            progress: None,
             cancel_requested: None,
             created_at_ms: None,
             started_at_ms: None,
@@ -388,11 +432,93 @@ mod tests {
     use super::*;
 
     #[test]
-    fn capabilities_include_terminal_policy_v2() {
-        assert_eq!(DAEMON_PROTOCOL_VERSION, 5);
+    fn capabilities_include_terminal_policy_v2_and_identity_file() {
+        assert_eq!(DAEMON_PROTOCOL_VERSION, 7);
         assert!(DAEMON_CAPABILITIES.contains(&"terminal_v1"));
         assert!(DAEMON_CAPABILITIES.contains(&"terminal_policy_v2"));
         assert!(DAEMON_CAPABILITIES.contains(&"terminal_task_v1"));
+        assert!(DAEMON_CAPABILITIES.contains(&"identity_file_v1"));
+        assert!(DAEMON_CAPABILITIES.contains(&"task_watch_v1"));
+    }
+
+    #[test]
+    fn identity_file_is_optional_for_legacy_requests() {
+        let request: BrokerRequest = serde_json::from_str(
+            r#"{"op":"execute","credential_ref":"c","host":"h","port":22,"username":"u","command":"true","timeout_seconds":5,"max_output_bytes":1024,"strict_host_key_checking":false}"#,
+        )
+        .unwrap();
+        match request {
+            BrokerRequest::Execute { identity_file, .. } => assert_eq!(identity_file, None),
+            _ => panic!("expected Execute"),
+        }
+    }
+
+    #[test]
+    fn identity_file_is_accepted_on_all_operations() {
+        let request: DaemonRequest = serde_json::from_str(
+            r#"{"op":"terminal_open","credential_ref":"c","host":"h","port":22,"command":"bash","strict_host_key_checking":false,"idle_seconds":600,"max_history_bytes":1048576,"identity_file":"/home/u/.ssh/id_ed25519"}"#,
+        )
+        .unwrap();
+        match request {
+            DaemonRequest::TerminalOpen { identity_file, .. } => {
+                assert_eq!(identity_file.as_deref(), Some("/home/u/.ssh/id_ed25519"));
+            }
+            _ => panic!("expected TerminalOpen"),
+        }
+
+        for json in [
+            r#"{"op":"execute","credential_ref":"c","host":"h","port":22,"command":"true","timeout_seconds":5,"max_output_bytes":1024,"strict_host_key_checking":false,"identity_file":"/k"}"#,
+            r#"{"op":"pty","credential_ref":"c","host":"h","port":22,"command":"bash","timeout_seconds":5,"max_output_bytes":1024,"strict_host_key_checking":false,"identity_file":"/k"}"#,
+            r#"{"op":"sudo_execute","login_credential_ref":"l","sudo_credential_ref":"s","host":"h","port":22,"command":"true","timeout_seconds":5,"max_output_bytes":1024,"strict_host_key_checking":false,"identity_file":"/k"}"#,
+            r#"{"op":"upload","credential_ref":"c","host":"h","port":22,"local_path":"/l","remote_path":"/r","recursive":false,"timeout_seconds":5,"strict_host_key_checking":false,"identity_file":"/k"}"#,
+            r#"{"op":"download","credential_ref":"c","host":"h","port":22,"local_path":"/l","remote_path":"/r","recursive":false,"timeout_seconds":5,"strict_host_key_checking":false,"identity_file":"/k"}"#,
+        ] {
+            let parsed: BrokerRequest = serde_json::from_str(json).unwrap();
+            let identity_file = match parsed {
+                BrokerRequest::Execute { identity_file, .. }
+                | BrokerRequest::Pty { identity_file, .. }
+                | BrokerRequest::SudoExecute { identity_file, .. }
+                | BrokerRequest::Upload { identity_file, .. }
+                | BrokerRequest::Download { identity_file, .. } => identity_file,
+                BrokerRequest::Ping | BrokerRequest::CredentialExists { .. } => {
+                    panic!("unexpected variant")
+                }
+            };
+            assert_eq!(identity_file.as_deref(), Some("/k"), "json: {json}");
+        }
+    }
+
+    #[test]
+    fn task_watch_parses_from_json() {
+        let request: DaemonRequest =
+            serde_json::from_str(r#"{"op":"task_watch","task_id":"task-1","timeout_seconds":5}"#)
+                .unwrap();
+        match request {
+            DaemonRequest::TaskWatch {
+                task_id,
+                since_version,
+                timeout_seconds,
+            } => {
+                assert_eq!(task_id, "task-1");
+                assert_eq!(since_version, 0);
+                assert_eq!(timeout_seconds, 5);
+            }
+            _ => panic!("expected TaskWatch"),
+        }
+    }
+
+    #[test]
+    fn task_progress_serializes_camel_case() {
+        let mut response = DaemonResponse::success();
+        response.progress = Some(TaskProgress {
+            version: 3,
+            done: 512,
+            total: Some(1024),
+        });
+        let value = serde_json::to_value(&response).unwrap();
+        assert_eq!(value["progress"]["version"], 3);
+        assert_eq!(value["progress"]["done"], 512);
+        assert_eq!(value["progress"]["total"], 1024);
     }
 
     #[test]
@@ -542,6 +668,9 @@ mod tests {
                 DaemonRequest::TaskCancel { .. } => {
                     daemon_variants.insert("task_cancel");
                 }
+                DaemonRequest::TaskWatch { .. } => {
+                    daemon_variants.insert("task_watch");
+                }
                 DaemonRequest::SpoolRead { .. } => {
                     daemon_variants.insert("spool_read");
                 }
@@ -592,6 +721,7 @@ mod tests {
                 "task_status",
                 "task_wait",
                 "task_cancel",
+                "task_watch",
                 "spool_read",
                 "spool_tail",
                 "spool_search",
@@ -622,7 +752,7 @@ mod tests {
             "TS fixture must cover every BrokerRequest variant",
         );
         assert_eq!(
-            accepted, 24,
+            accepted, 25,
             "fixture must contain one request per contract case"
         );
     }
@@ -634,5 +764,23 @@ mod tests {
         )
         .expect_err("unknown protocol fields must fail closed");
         assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn broker_response_serializes_error_code_in_camel_case() {
+        let response = BrokerResponse::failure_with_code(
+            crate::coded_error::CREDENTIAL_MISSING,
+            "credential not found: Helix/ssh/x/login",
+        );
+        let value = serde_json::to_value(&response).expect("serialize");
+        assert_eq!(value["errorCode"], "CREDENTIAL_MISSING");
+        assert_eq!(value["error"], "credential not found: Helix/ssh/x/login");
+    }
+
+    #[test]
+    fn broker_response_without_error_code_stays_compatible() {
+        let response: BrokerResponse =
+            serde_json::from_str(r#"{"ok":false,"error":"boom"}"#).expect("legacy response");
+        assert_eq!(response.error_code, None);
     }
 }

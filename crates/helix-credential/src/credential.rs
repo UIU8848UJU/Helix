@@ -1,10 +1,27 @@
 use anyhow::{Context, Result, anyhow};
+use std::fmt;
 use zeroize::Zeroizing;
 
 pub struct StoredCredential {
     pub username: String,
     pub secret: Zeroizing<String>,
 }
+
+/// Typed credential failures that callers can classify without parsing text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialError {
+    NotFound { target: String },
+}
+
+impl fmt::Display for CredentialError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotFound { target } => write!(formatter, "credential not found: {target}"),
+        }
+    }
+}
+
+impl std::error::Error for CredentialError {}
 
 #[cfg(windows)]
 mod platform {
@@ -84,8 +101,10 @@ mod platform {
         let mut raw: *mut CREDENTIALW = ptr::null_mut();
         let ok = unsafe { CredReadW(target_w.as_ptr(), CRED_TYPE_GENERIC, 0, &mut raw) };
         if ok == 0 {
-            return Err(std::io::Error::last_os_error())
-                .with_context(|| format!("credential not found: {target}"));
+            return Err(CredentialError::NotFound {
+                target: target.to_owned(),
+            }
+            .into());
         }
         let allocation = CredentialAllocation(
             NonNull::new(raw).ok_or_else(|| anyhow!("CredReadW returned a null credential"))?,
@@ -168,12 +187,17 @@ mod platform {
 
     pub fn read(target: &str) -> Result<StoredCredential> {
         if !matches_target(target) {
-            return Err(anyhow!("credential not found: {target}"));
+            return Err(CredentialError::NotFound {
+                target: target.to_owned(),
+            }
+            .into());
         }
-        let username = env::var(USERNAME_ENV)
-            .with_context(|| format!("missing CI test credential environment variable {USERNAME_ENV}"))?;
-        let secret = env::var(SECRET_ENV)
-            .with_context(|| format!("missing CI test credential environment variable {SECRET_ENV}"))?;
+        let username = env::var(USERNAME_ENV).with_context(|| {
+            format!("missing CI test credential environment variable {USERNAME_ENV}")
+        })?;
+        let secret = env::var(SECRET_ENV).with_context(|| {
+            format!("missing CI test credential environment variable {SECRET_ENV}")
+        })?;
         Ok(StoredCredential {
             username,
             secret: Zeroizing::new(secret),

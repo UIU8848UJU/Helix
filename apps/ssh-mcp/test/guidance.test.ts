@@ -72,4 +72,20 @@ describe("Helix MCP guidance", () => {
     expect(help.workflow.join(" ")).toContain("terminal_exec");
     expect(help.workflow.join(" ")).toContain("task_wait");
   });
+
+  it("chooses terminal tasks by lifecycle instead of elapsed time", () => {
+    expect(HELIX_SERVER_INSTRUCTIONS).toContain("terminal_exec followed by task_wait");
+    expect(HELIX_SERVER_INSTRUCTIONS).toContain("only when work must continue after");
+    expect(HELIX_SERVER_INSTRUCTIONS).not.toContain("30 seconds");
+    expect(TOOL_DESCRIPTIONS.ssh_exec).not.toContain("30 seconds");
+    expect(TOOL_DESCRIPTIONS.ssh_exec).toContain("terminal_open + terminal_exec + task_wait");
+
+    const execHelp = getHelixHelp("exec") as { workflow: string[] };
+    expect(execHelp.workflow.join(" ")).toContain("current terminal lifecycle");
+
+    const jobsHelp = getHelixHelp("jobs") as { chooseWhen: string[] };
+    const chooseWhen = jobsHelp.chooseWhen.join(" ");
+    expect(chooseWhen).not.toContain("30 seconds");
+    expect(chooseWhen).toContain("after the MCP call");
+  });
 });

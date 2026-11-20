@@ -3,7 +3,10 @@ use helix_core::{
     protocol::{BrokerRequest, BrokerResponse},
     sandbox::SandboxPolicy,
     task_pool::CancellationToken,
-    transport::{ExecRequest, ExecTarget, PtyRequest, SudoRequest, TransferRequest, Transport},
+    transport::{
+        ExecRequest, ExecTarget, NoProgress, ProgressSink, PtyRequest, SudoRequest,
+        TransferRequest, Transport,
+    },
 };
 use helix_credential::credential;
 use std::sync::Arc;
@@ -23,13 +26,20 @@ impl BrokerEngine {
     }
 
     pub fn handle(&self, request: BrokerRequest) -> Result<BrokerResponse> {
-        self.handle_with_cancellation(request, &CancellationToken::default())
+        self.handle_with_cancellation(
+            request,
+            &CancellationToken::default(),
+            "",
+            Arc::new(NoProgress),
+        )
     }
 
     pub fn handle_with_cancellation(
         &self,
         request: BrokerRequest,
         cancellation: &CancellationToken,
+        task_id: &str,
+        progress: Arc<dyn ProgressSink>,
     ) -> Result<BrokerResponse> {
         match request {
             BrokerRequest::Ping => Ok(BrokerResponse::success()),
@@ -46,6 +56,7 @@ impl BrokerEngine {
                 timeout_seconds,
                 max_output_bytes,
                 strict_host_key_checking,
+                identity_file,
             } => {
                 self.policy.check_command(&command)?;
                 let request = ExecRequest {
@@ -55,6 +66,7 @@ impl BrokerEngine {
                         port,
                         username,
                         strict_host_key_checking,
+                        identity_file,
                     },
                     command,
                     timeout_seconds,
@@ -75,6 +87,7 @@ impl BrokerEngine {
                 cols,
                 rows,
                 input,
+                identity_file,
             } => {
                 self.policy.check_command(&command)?;
                 let request = PtyRequest {
@@ -84,6 +97,7 @@ impl BrokerEngine {
                         port,
                         username,
                         strict_host_key_checking,
+                        identity_file,
                     },
                     command,
                     timeout_seconds,
@@ -104,6 +118,7 @@ impl BrokerEngine {
                 timeout_seconds,
                 max_output_bytes,
                 strict_host_key_checking,
+                identity_file,
             } => {
                 self.policy.check_command(&command)?;
                 self.policy.check_sudo()?;
@@ -114,6 +129,7 @@ impl BrokerEngine {
                         port,
                         username,
                         strict_host_key_checking,
+                        identity_file,
                     },
                     sudo_credential_ref,
                     command,
@@ -132,6 +148,7 @@ impl BrokerEngine {
                 recursive,
                 timeout_seconds,
                 strict_host_key_checking,
+                identity_file,
             } => {
                 self.policy.check_upload()?;
                 self.policy.check_local_path(&local_path)?;
@@ -143,13 +160,17 @@ impl BrokerEngine {
                         port,
                         username,
                         strict_host_key_checking,
+                        identity_file,
                     },
                     local_path,
                     remote_path,
                     recursive,
                     timeout_seconds,
+                    task_id: task_id.to_owned(),
+                    cancellation: cancellation.clone(),
+                    progress: progress.clone(),
                 };
-                self.transport.upload(request)?;
+                self.transport.upload(request, cancellation)?;
                 Ok(BrokerResponse::success())
             }
             BrokerRequest::Download {
@@ -162,6 +183,7 @@ impl BrokerEngine {
                 recursive,
                 timeout_seconds,
                 strict_host_key_checking,
+                identity_file,
             } => {
                 self.policy.check_download()?;
                 self.policy.check_local_path(&local_path)?;
@@ -173,13 +195,17 @@ impl BrokerEngine {
                         port,
                         username,
                         strict_host_key_checking,
+                        identity_file,
                     },
                     local_path,
                     remote_path,
                     recursive,
                     timeout_seconds,
+                    task_id: task_id.to_owned(),
+                    cancellation: cancellation.clone(),
+                    progress: progress.clone(),
                 };
-                self.transport.download(request)?;
+                self.transport.download(request, cancellation)?;
                 Ok(BrokerResponse::success())
             }
         }
@@ -189,10 +215,12 @@ impl BrokerEngine {
 impl helix_core::task_pool::TaskExecutor for BrokerEngine {
     fn execute(
         &self,
+        task_id: &str,
         request: BrokerRequest,
         cancellation: &CancellationToken,
+        progress: Arc<dyn ProgressSink>,
     ) -> Result<BrokerResponse> {
-        self.handle_with_cancellation(request, cancellation)
+        self.handle_with_cancellation(request, cancellation, task_id, progress)
     }
 
     fn pooled_sessions(&self) -> usize {

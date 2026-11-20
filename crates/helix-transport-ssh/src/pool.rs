@@ -16,6 +16,7 @@ pub struct SessionKey {
     port: u16,
     username: Option<String>,
     strict_host_key_checking: bool,
+    identity_file: Option<String>,
 }
 
 struct IdleSession {
@@ -38,6 +39,7 @@ impl SessionPool {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn acquire(
         &self,
         credential_ref: &str,
@@ -46,28 +48,42 @@ impl SessionPool {
         username: Option<&str>,
         timeout_seconds: u64,
         strict_host_key_checking: bool,
+        identity_file: Option<&str>,
     ) -> Result<(SessionKey, Session)> {
+        let mode = crate::auth::resolve_auth(credential_ref, identity_file)?;
         let key = SessionKey {
             credential_ref: credential_ref.to_owned(),
             host: host.to_owned(),
             port,
             username: username.map(str::to_owned),
             strict_host_key_checking,
+            identity_file: match &mode {
+                crate::auth::AuthMode::Key { identity_file } => Some(identity_file.clone()),
+                crate::auth::AuthMode::Password { .. } => None,
+            },
         };
 
         if let Some(session) = self.take_idle(&key, timeout_seconds) {
             return Ok((key, session));
         }
 
-        let login = credential::read(credential_ref)?;
+        let login = if mode.uses_credential() {
+            Some(credential::read(credential_ref).map_err(crate::error::attach_code)?)
+        } else {
+            None
+        };
         let options = ssh::ConnectOptions {
             host,
             port,
             username,
             timeout_seconds,
             strict_host_key_checking,
+            identity_file: match &mode {
+                crate::auth::AuthMode::Key { identity_file } => Some(identity_file.as_str()),
+                crate::auth::AuthMode::Password { .. } => None,
+            },
         };
-        let session = connect_with_retry(&options, &login)?;
+        let session = connect_with_retry(&options, login.as_ref())?;
         session.set_keepalive(true, 30);
         Ok((key, session))
     }
@@ -154,7 +170,7 @@ fn retryable_connect_error(error: &anyhow::Error) -> bool {
 
 pub(crate) fn connect_with_retry(
     options: &ssh::ConnectOptions<'_>,
-    credential: &credential::StoredCredential,
+    credential: Option<&credential::StoredCredential>,
 ) -> Result<Session> {
     const BACKOFF_MS: [u64; 3] = [200, 500, 1000];
     for backoff in BACKOFF_MS
@@ -187,5 +203,27 @@ mod tests {
     fn retry_classifier_accepts_kex_failures() {
         let error = anyhow::anyhow!("SSH handshake failed: Unable to exchange encryption keys");
         assert!(retryable_connect_error(&error));
+    }
+}
+
+#[cfg(test)]
+mod session_key_tests {
+    use super::*;
+
+    #[test]
+    fn session_key_includes_the_identity_path() {
+        let base = SessionKey {
+            credential_ref: "c".to_owned(),
+            host: "h".to_owned(),
+            port: 22,
+            username: None,
+            strict_host_key_checking: false,
+            identity_file: None,
+        };
+        let keyed = SessionKey {
+            identity_file: Some("/home/u/.ssh/id_ed25519".to_owned()),
+            ..base.clone()
+        };
+        assert_ne!(base, keyed);
     }
 }

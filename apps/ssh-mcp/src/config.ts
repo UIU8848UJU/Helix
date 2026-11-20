@@ -29,6 +29,8 @@ const hostSchema = z.object({
   username: z.string().min(1).optional(),
   identityFile: z.string().min(1).optional(),
   proxyJump: z.string().min(1).nullable().optional(),
+  sshBackend: z.enum(["auto", "libssh2", "openssh"]).default("auto"),
+  transferBackend: z.enum(["auto", "scp", "broker"]).default("auto"),
   tags: z.array(z.string().min(1)).default([]),
   defaultWorkingDir: z.string().min(1).optional(),
   allowedRemotePaths: z.array(z.string().min(1)).min(1).default(["/"]),
@@ -76,6 +78,28 @@ function validateSudoPatterns(hostAlias: string, host: HostConfig): void {
   }
 }
 
+function validateSshBackend(hostAlias: string, host: HostConfig): void {
+  if (host.sshBackend === "libssh2" && host.auth.type !== "windows-credential") {
+    throw new Error(`Host ${hostAlias}: sshBackend=libssh2 requires windows-credential auth`);
+  }
+  if (host.sshBackend === "openssh" && host.auth.type === "windows-credential" && !host.identityFile) {
+    throw new Error(`Host ${hostAlias}: sshBackend=openssh with windows-credential auth requires identityFile`);
+  }
+}
+
+function validateTransferBackend(hostAlias: string, host: HostConfig): void {
+  if (host.transferBackend === "broker" && host.auth.type === "openssh" && !host.identityFile) {
+    throw new Error(
+      `Host ${hostAlias}: transferBackend=broker requires identityFile for openssh auth`,
+    );
+  }
+  if (host.transferBackend === "scp" && host.auth.type === "windows-credential") {
+    throw new Error(
+      `Host ${hostAlias}: transferBackend=scp requires openssh auth (scp cannot supply a stored password)`,
+    );
+  }
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -94,6 +118,8 @@ export function validateConfig(input: unknown): HelixConfig {
   for (const [alias, host] of Object.entries(parsed.hosts)) {
     if (!aliasPattern.test(alias)) throw new Error(`Invalid host alias: ${alias}`);
     validateSudoPatterns(alias, host);
+    validateSshBackend(alias, host);
+    validateTransferBackend(alias, host);
     validateWorkingDir(alias, host);
   }
   return parsed;
@@ -109,6 +135,8 @@ export function validateHost(hostAlias: string, input: unknown): HostConfig {
   validateHostAlias(hostAlias);
   const parsed = hostSchema.parse(input) as HostConfig;
   validateSudoPatterns(hostAlias, parsed);
+  validateSshBackend(hostAlias, parsed);
+  validateTransferBackend(hostAlias, parsed);
   validateWorkingDir(hostAlias, parsed);
   return parsed;
 }
@@ -269,6 +297,8 @@ export function redactHost(host: HostConfig): Record<string, unknown> {
     username: host.username ?? null,
     identityFile: host.identityFile ? "configured" : null,
     proxyJump: host.proxyJump ?? null,
+    sshBackend: host.sshBackend ?? "auto",
+    transferBackend: host.transferBackend ?? "auto",
     tags: host.tags ?? [],
     allowedRemotePaths: host.allowedRemotePaths,
     defaultWorkingDir: host.defaultWorkingDir ?? null,

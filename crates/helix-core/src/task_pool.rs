@@ -1,7 +1,7 @@
 use crate::{
     protocol::{BrokerRequest, BrokerResponse, DaemonResponse, TaskState},
     spool::SpoolManager,
-    transport::TerminalSession,
+    transport::{ProgressSink, TerminalSession},
 };
 use anyhow::{Context, Result, anyhow};
 use std::{
@@ -38,8 +38,10 @@ impl CancellationToken {
 pub trait TaskExecutor: Send + Sync + 'static {
     fn execute(
         &self,
+        task_id: &str,
         request: BrokerRequest,
         cancellation: &CancellationToken,
+        progress: Arc<dyn ProgressSink>,
     ) -> Result<BrokerResponse>;
 
     fn pooled_sessions(&self) -> usize {
@@ -91,6 +93,9 @@ pub struct TaskRecord {
     pub(crate) finished_at_ms: Option<u128>,
     pub(crate) finished_mono_ms: Option<u128>,
     pub(crate) spooled: bool,
+    pub(crate) progress_done: Arc<AtomicU64>,
+    pub(crate) progress_total: Arc<AtomicU64>,
+    pub(crate) progress_version: Arc<AtomicU64>,
 }
 
 struct TaskStore {
@@ -245,6 +250,9 @@ impl TaskPool {
                     finished_at_ms: None,
                     finished_mono_ms: None,
                     spooled: false,
+                    progress_done: Arc::new(AtomicU64::new(0)),
+                    progress_total: Arc::new(AtomicU64::new(u64::MAX)),
+                    progress_version: Arc::new(AtomicU64::new(0)),
                 },
             );
         }
@@ -317,6 +325,43 @@ impl TaskPool {
                 return Ok(task);
             }
             let remaining = timeout.saturating_sub(elapsed);
+            let (next, _) = self
+                .store
+                .1
+                .wait_timeout(store, remaining)
+                .map_err(|_| anyhow!("credential broker task state lock was poisoned"))?;
+            store = next;
+        }
+    }
+
+    /// Wait until progress advances past `since_version`, the task reaches a
+    /// terminal state, or the timeout expires, then return a snapshot.
+    pub fn watch(
+        &self,
+        task_id: &str,
+        since_version: u64,
+        timeout: Duration,
+    ) -> Result<TaskRecord> {
+        let started = Instant::now();
+        let mut store = self.store.0.lock().map_err(lock_error)?;
+        loop {
+            let task = store
+                .records
+                .get(task_id)
+                .cloned()
+                .ok_or_else(|| anyhow!("unknown broker task: {task_id}"))?;
+            if task.progress_version.load(Ordering::Acquire) > since_version
+                || task.state.is_terminal()
+            {
+                return Ok(task);
+            }
+            let elapsed = started.elapsed();
+            if elapsed >= timeout {
+                return Ok(task);
+            }
+            let remaining = timeout
+                .saturating_sub(elapsed)
+                .min(Duration::from_millis(100));
             let (next, _) = self
                 .store
                 .1
@@ -479,6 +524,15 @@ impl TaskPool {
         response.created_at_ms = Some(task.created_at_ms);
         response.started_at_ms = task.started_at_ms;
         response.finished_at_ms = task.finished_at_ms;
+        let version = task.progress_version.load(Ordering::Acquire);
+        if version > 0 {
+            let total = task.progress_total.load(Ordering::Acquire);
+            response.progress = Some(crate::protocol::TaskProgress {
+                version,
+                done: task.progress_done.load(Ordering::Acquire),
+                total: (total != u64::MAX).then_some(total),
+            });
+        }
         response
     }
 
@@ -492,6 +546,43 @@ impl TaskPool {
         };
         for task_id in task_ids {
             spool.cleanup_task(&task_id);
+        }
+    }
+}
+
+struct TaskProgressSink {
+    done: Arc<AtomicU64>,
+    total: Arc<AtomicU64>,
+    version: Arc<AtomicU64>,
+    store: Arc<(Mutex<TaskStore>, Condvar)>,
+    clock: Arc<dyn Clock>,
+    last_notify_ms: Mutex<Option<u128>>,
+}
+
+impl ProgressSink for TaskProgressSink {
+    fn report(&self, done: u64, total: Option<u64>) {
+        self.done.store(done, Ordering::Release);
+        self.total
+            .store(total.unwrap_or(u64::MAX), Ordering::Release);
+        self.version.fetch_add(1, Ordering::AcqRel);
+        let now = self.clock.monotonic_ms();
+        let should_notify = match self.last_notify_ms.lock() {
+            Ok(mut last) => {
+                // The first report must always wake a watcher, so compare
+                // against `None` rather than a zero timestamp.
+                let notify = match *last {
+                    None => true,
+                    Some(previous) => now.saturating_sub(previous) >= 100,
+                };
+                if notify {
+                    *last = Some(now);
+                }
+                notify
+            }
+            Err(_) => false,
+        };
+        if should_notify {
+            self.store.1.notify_all();
         }
     }
 }
@@ -534,7 +625,7 @@ fn spawn_worker(
                     }
                     Work::Stop => return,
                 };
-                let cancellation = {
+                let (cancellation, progress_sink) = {
                     let Ok(mut task_store) = store.0.lock() else {
                         return;
                     };
@@ -546,11 +637,22 @@ fn spawn_worker(
                     }
                     task.state = TaskState::Running;
                     task.started_at_ms = Some(clock.wall_ms());
-                    task.cancellation.clone()
+                    let cancellation = task.cancellation.clone();
+                    let sink: Arc<dyn ProgressSink> = Arc::new(TaskProgressSink {
+                        done: task.progress_done.clone(),
+                        total: task.progress_total.clone(),
+                        version: task.progress_version.clone(),
+                        store: store.clone(),
+                        clock: clock.clone(),
+                        last_notify_ms: Mutex::new(None),
+                    });
+                    (cancellation, sink)
                 };
 
                 let result = match work {
-                    Work::Execute { request, .. } => executor.execute(request, &cancellation),
+                    Work::Execute { request, .. } => {
+                        executor.execute(&task_id, request, &cancellation, progress_sink)
+                    }
                     Work::TerminalExec {
                         terminal, command, ..
                     } => terminal.execute(&command, &cancellation),
@@ -577,7 +679,12 @@ fn spawn_worker(
                         }
                         Err(error) => {
                             task.state = TaskState::Failed;
-                            BrokerResponse::failure(format!("{error:#}"))
+                            match crate::coded_error::error_code(&error) {
+                                Some(code) => {
+                                    BrokerResponse::failure_with_code(code, format!("{error:#}"))
+                                }
+                                None => BrokerResponse::failure(format!("{error:#}")),
+                            }
                         }
                     };
                     spill_to_spool(
@@ -796,8 +903,10 @@ mod tests {
     impl TaskExecutor for BlockingExecutor {
         fn execute(
             &self,
+            _task_id: &str,
             _request: BrokerRequest,
             cancellation: &CancellationToken,
+            _progress: Arc<dyn ProgressSink>,
         ) -> Result<BrokerResponse> {
             self.invocations.fetch_add(1, Ordering::AcqRel);
             let mut started = self.started.0.lock().unwrap();
@@ -1047,8 +1156,10 @@ mod tests {
     impl TaskExecutor for FailingExecutor {
         fn execute(
             &self,
+            _task_id: &str,
             _request: BrokerRequest,
             _cancellation: &CancellationToken,
+            _progress: Arc<dyn ProgressSink>,
         ) -> Result<BrokerResponse> {
             Err(anyhow!("synthetic executor failure"))
         }
@@ -1122,8 +1233,10 @@ mod tests {
     impl TaskExecutor for SpillExecutor {
         fn execute(
             &self,
+            _task_id: &str,
             _request: BrokerRequest,
             _cancellation: &CancellationToken,
+            _progress: Arc<dyn ProgressSink>,
         ) -> Result<BrokerResponse> {
             Ok(BrokerResponse {
                 ok: true,
@@ -1172,5 +1285,170 @@ mod tests {
         );
         assert!(pool.shutdown(Duration::from_secs(1)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    struct ReportingExecutor {
+        done: u64,
+        total: Option<u64>,
+    }
+
+    impl TaskExecutor for ReportingExecutor {
+        fn execute(
+            &self,
+            _task_id: &str,
+            _request: BrokerRequest,
+            _cancellation: &CancellationToken,
+            progress: Arc<dyn ProgressSink>,
+        ) -> Result<BrokerResponse> {
+            progress.report(self.done, self.total);
+            Ok(BrokerResponse::success())
+        }
+    }
+
+    struct ReportThenBlockExecutor {
+        done: u64,
+        total: Option<u64>,
+        started: (Mutex<usize>, Condvar),
+        released: AtomicBool,
+    }
+
+    impl ReportThenBlockExecutor {
+        fn new(done: u64, total: Option<u64>) -> Self {
+            Self {
+                done,
+                total,
+                started: (Mutex::new(0), Condvar::new()),
+                released: AtomicBool::new(false),
+            }
+        }
+
+        fn wait_started(&self, count: usize) {
+            let mut started = self.started.0.lock().unwrap();
+            while *started < count {
+                started = self.started.1.wait(started).unwrap();
+            }
+        }
+
+        fn release(&self) {
+            self.released.store(true, Ordering::Release);
+            self.started.1.notify_all();
+        }
+    }
+
+    impl TaskExecutor for ReportThenBlockExecutor {
+        fn execute(
+            &self,
+            _task_id: &str,
+            _request: BrokerRequest,
+            cancellation: &CancellationToken,
+            progress: Arc<dyn ProgressSink>,
+        ) -> Result<BrokerResponse> {
+            progress.report(self.done, self.total);
+            let mut started = self.started.0.lock().unwrap();
+            *started += 1;
+            self.started.1.notify_all();
+            while !self.released.load(Ordering::Acquire) && !cancellation.is_cancelled() {
+                started = self
+                    .started
+                    .1
+                    .wait_timeout(started, Duration::from_millis(10))
+                    .unwrap()
+                    .0;
+            }
+            Ok(BrokerResponse::success())
+        }
+    }
+
+    #[test]
+    fn task_response_includes_progress_snapshot() {
+        let executor = Arc::new(ReportingExecutor {
+            done: 100,
+            total: Some(200),
+        });
+        let clock = Arc::new(FakeClock::new(0));
+        let pool = test_pool(1, 8, 1024, executor, clock);
+        let task_id = pool.submit(BrokerRequest::Ping).unwrap();
+        let task = wait_terminal(&pool, &task_id);
+        let response = pool.task_response(&task_id, task);
+        let progress = response.progress.expect("progress snapshot");
+        assert_eq!(progress.done, 100);
+        assert_eq!(progress.total, Some(200));
+        assert!(progress.version >= 1);
+    }
+
+    #[test]
+    fn first_progress_report_wakes_a_watcher() {
+        let executor = Arc::new(ReportThenBlockExecutor::new(64, Some(256)));
+        let clock = Arc::new(FakeClock::new(0));
+        let pool = Arc::new(test_pool(1, 8, 1024, executor.clone(), clock));
+        let task_id = pool.submit(BrokerRequest::Ping).unwrap();
+        executor.wait_started(1);
+        let watched_pool = pool.clone();
+        let watched_id = task_id.clone();
+        let watcher = thread::spawn(move || {
+            watched_pool
+                .watch(&watched_id, 0, Duration::from_secs(2))
+                .unwrap()
+        });
+        let task = watcher.join().unwrap();
+        assert!(task.progress_version.load(Ordering::Acquire) >= 1);
+        assert_eq!(task.progress_done.load(Ordering::Acquire), 64);
+        assert_eq!(task.progress_total.load(Ordering::Acquire), 256);
+        executor.release();
+    }
+
+    #[test]
+    fn watch_returns_a_snapshot_on_timeout() {
+        let executor = Arc::new(BlockingExecutor::new());
+        let clock = Arc::new(FakeClock::new(0));
+        let pool = test_pool(1, 8, 1024, executor.clone(), clock);
+        let task_id = pool.submit(BrokerRequest::Ping).unwrap();
+        executor.wait_started(1);
+        let started = Instant::now();
+        let task = pool.watch(&task_id, 0, Duration::from_millis(50)).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(task.progress_version.load(Ordering::Acquire), 0);
+        executor.release();
+    }
+
+    #[test]
+    fn watch_returns_immediately_for_a_terminal_task() {
+        let executor = Arc::new(ReportingExecutor {
+            done: 5,
+            total: None,
+        });
+        let clock = Arc::new(FakeClock::new(0));
+        let pool = test_pool(1, 8, 1024, executor, clock);
+        let task_id = pool.submit(BrokerRequest::Ping).unwrap();
+        let finished = wait_terminal(&pool, &task_id);
+        assert!(finished.state.is_terminal());
+        let task = pool
+            .watch(&task_id, u64::MAX, Duration::from_millis(10))
+            .unwrap();
+        assert!(task.state.is_terminal());
+    }
+
+    #[test]
+    fn retention_window_starts_at_completion_not_submission() {
+        // Characterization: a task that runs longer than the retention window
+        // must stay readable for `retention` after it finishes, not after it
+        // was submitted.
+        let executor = Arc::new(BlockingExecutor::new());
+        let clock = Arc::new(FakeClock::new(0));
+        let pool = test_pool(2, 8, 1024, executor.clone(), clock.clone());
+        let task_id = pool.submit(BrokerRequest::Ping).unwrap();
+        executor.wait_started(1);
+        clock.advance(60_000);
+        executor.release();
+        assert!(wait_terminal(&pool, &task_id).state.is_terminal());
+        clock.advance(400);
+        let _trigger = pool.submit(BrokerRequest::Ping).unwrap();
+        assert!(
+            pool.task(&task_id).is_ok(),
+            "still inside the retention window"
+        );
+        clock.advance(300);
+        let _trigger2 = pool.submit(BrokerRequest::Ping).unwrap();
+        assert!(pool.task(&task_id).is_err(), "evicted after the window");
     }
 }

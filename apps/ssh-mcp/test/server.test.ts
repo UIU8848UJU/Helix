@@ -52,8 +52,10 @@ describe("ssh_pty tool registration and routing (TDD PTY-001)", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    vi.mocked(broker.brokerPty).mockResolvedValue(executionResult);
+  vi.mocked(broker.brokerPty).mockResolvedValue(executionResult);
+    vi.mocked(broker.brokerExecute).mockResolvedValue(executionResult);
     vi.mocked(ssh.runSshPty).mockResolvedValue(executionResult);
+    vi.mocked(ssh.runSsh).mockResolvedValue(executionResult);
 
     dir = mkdtempSync(path.join(os.tmpdir(), "ssh-mcp-pty-"));
     const store = new ConfigStore(path.join(dir, "config.json"));
@@ -102,5 +104,35 @@ describe("ssh_pty tool registration and routing (TDD PTY-001)", () => {
     await client.callTool({ name: "ssh_pty", arguments: { host: "key", command: "top" } });
     expect(ssh.runSshPty).toHaveBeenCalledTimes(1);
     expect(broker.brokerPty).not.toHaveBeenCalled();
+  });
+
+  it("falls back from libssh2 to OpenSSH only for a handshake compatibility error", async () => {
+    const fallbackHost = {
+      ...winCredHost,
+      identityFile: "~/.ssh/id_ed25519",
+      sshBackend: "auto" as const,
+    };
+    const store = new ConfigStore(path.join(dir, "fallback-config.json"));
+    await store.write({ version: 1, settings: { auditEnabled: false }, hosts: { fallback: fallbackHost } });
+    const fallbackServer = createServer(store);
+    const [fallbackClientTransport, fallbackServerTransport] = InMemoryTransport.createLinkedPair();
+    const fallbackClient = new Client({ name: "fallback-test", version: "0.0.1" });
+    await fallbackServer.connect(fallbackServerTransport);
+    await fallbackClient.connect(fallbackClientTransport);
+    vi.mocked(broker.brokerExecute).mockRejectedValueOnce(new Error("SSH handshake failed: Unable to exchange encryption keys"));
+
+    const result = await fallbackClient.callTool({ name: "ssh_exec", arguments: { host: "fallback", command: "uname -a" } });
+    expect(result.isError, JSON.stringify(result)).toBeFalsy();
+    expect(ssh.runSsh).toHaveBeenCalled();
+
+    await fallbackClient.close();
+    await fallbackServer.close();
+  });
+
+  it("does not fallback on authentication errors", async () => {
+    vi.mocked(broker.brokerExecute).mockRejectedValueOnce(new Error("SSH password authentication failed"));
+    const result = await client.callTool({ name: "ssh_exec", arguments: { host: "win", command: "id" } });
+    expect(result.isError).toBe(true);
+    expect(ssh.runSsh).not.toHaveBeenCalled();
   });
 });

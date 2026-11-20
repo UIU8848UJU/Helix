@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { decodeOutput } from "./output.js";
 import type { ExecutionResult, ProcessOptions } from "./types.js";
 
 // Semaphore lives in the shared @helix/jobs Task Runtime package. ssh-mcp
@@ -87,12 +88,12 @@ export async function runProcess(
       }
       settled = true;
       clearTimeout(timeout);
-      const stderr = Buffer.concat(stderrChunks).toString("utf8");
+      const stderr = decodeOutput(Buffer.concat(stderrChunks));
       resolve({
         ok: exitCode === 0 && !timedOut && !truncated && !processError,
         exitCode,
         signal,
-        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+        stdout: decodeOutput(Buffer.concat(stdoutChunks)),
         stderr: processError ? `${stderr}${stderr ? "\n" : ""}${processError.message}` : stderr,
         timedOut,
         truncated,

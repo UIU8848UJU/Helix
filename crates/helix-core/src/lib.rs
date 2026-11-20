@@ -2,6 +2,8 @@
 //! and execution policies. This crate never depends on a concrete transport
 //! (SSH, Aliyun, SASS) or on OS credential storage.
 
+pub mod coded_error;
+pub mod output;
 pub mod protocol;
 pub mod sandbox;
 pub mod spool;

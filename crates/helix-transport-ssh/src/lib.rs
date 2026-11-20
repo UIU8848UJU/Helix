@@ -2,6 +2,8 @@
 //! and sudo over libssh2.
 
 pub mod adapter;
+pub mod auth;
+pub mod error;
 pub mod pool;
 pub mod ssh;
 pub mod terminal;
