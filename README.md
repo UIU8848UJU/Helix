@@ -1,5 +1,14 @@
 # Helix
 
+[![CI](https://github.com/UIU8848UJU/Helix/actions/workflows/ci.yml/badge.svg)](https://github.com/UIU8848UJU/Helix/actions/workflows/ci.yml)
+![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)
+![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
+![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows-blue)
+![Daemon protocol](https://img.shields.io/badge/daemon%20protocol-v7-purple)
+![Tests](https://img.shields.io/badge/tests-141%20Rust%20%7C%20144%20ssh--mcp-success)
+![E2E](https://img.shields.io/badge/E2E-70%20Linux%20%7C%2031%20Windows-success)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 **Remote Execution Runtime for AI Agents / 面向 AI Agent 的远程执行 Runtime**
 
 Helix 是面向 AI Agent 的远程执行与会话 Runtime。当前由 SSH MCP + helixd（Rust 常驻 daemon）提供凭据、SSH/PTY/SFTP、任务队列、主机管理、Docker/Compose 与远端持久作业，并由独立的 HTTP MCP 提供受策略控制的 HTTP 请求能力。
@@ -441,9 +450,27 @@ cargo test --release --workspace
 cargo build --release --workspace
 ```
 
+### 验证范围与标准（2026-11-20）
+
+测试流程遵循 **testing-workflow 1.0**（STANDARD profile）：Intake → Scenario Discovery → G01 覆盖审查 → G02 用户选定 → G03 执行就绪 → 执行 → G04 证据审查 → G05 结论。oracle 以确定性断言为主；并发场景采用有界采样，未观察到重叠时标记 INCONCLUSIVE 而不是伪造 PASS。
+
+| 层 | 覆盖 | 结果 |
+| --- | --- | --- |
+| Rust 单元/集成 | helix-core、helix-transport-ssh、helixd | 141 passed / 8 ignored，0 failed |
+| TypeScript | ssh-mcp 单元 + 协议契约（25 请求） | 144 passed / 8 skipped，tsc 0 |
+| Linux 实机（Ubuntu 22.04 / OpenSSH） | 原子覆盖、并发读者、进度、取消、递归边界 | E2E 70/70 PASS |
+| Windows 实机（Windows 10 / Win32-OpenSSH） | 覆盖（`size_t` ABI）、进度、取消、Unicode | 31/31 PASS |
+
+CI 强制执行：`cargo test --release --workspace`（ubuntu + windows）、`protocol-contract`、`ssh-runtime-e2e`、`sftp-recursive-e2e`（Docker OpenSSH）；E2E job 设置 `HELIX_SFTP_E2E_REQUIRE=1`，环境变量丢失会失败而不是静默跳过。
+
+未覆盖/受限：ed25519 依赖 libssh2 构建能力（RSA 已验证）；无 `posix-rename` 服务器的回退路径未在现有环境触发；Windows 的真机 E2E 目前为本地验证，CI 仅覆盖 Windows 单元测试。
+
+详见 [测试与验证标准](docs/guides/testing-verification.md)。
+
 重点文档：
 
 - [Credential Broker Daemon](docs/architecture/credential-broker-daemon.md)
+- [Testing & Verification](docs/guides/testing-verification.md)
 - [AI Guide](docs/guides/HELIX_AI_GUIDE.md)
 - [Installation Guide](docs/guides/installation.md)
 - [Branch Policy](docs/guides/branch-policy.md)
@@ -826,9 +853,27 @@ cargo test --release --workspace
 cargo build --release --workspace
 ```
 
+### Verification scope and standard (2026-11-20)
+
+Testing follows **testing-workflow 1.0** (STANDARD profile): Intake → Scenario Discovery → G01 coverage review → G02 user selection → G03 execution readiness → Execute → G04 evidence review → G05 decision. Oracles are deterministic where possible; concurrency relies on bounded sampling and reports INCONCLUSIVE instead of a fabricated PASS.
+
+| Layer | Scope | Result |
+| --- | --- | --- |
+| Rust unit/integration | helix-core, helix-transport-ssh, helixd | 141 passed / 8 ignored, 0 failed |
+| TypeScript | ssh-mcp units + protocol contract (25 requests) | 144 passed / 8 skipped, tsc 0 |
+| Linux host (Ubuntu 22.04 / OpenSSH) | atomic overwrite, concurrent readers, progress, cancellation, recursive edge cases | E2E 70/70 PASS |
+| Windows host (Windows 10 / Win32-OpenSSH) | overwrite (`size_t` ABI), progress, cancellation, Unicode | 31/31 PASS |
+
+CI enforces `cargo test --release --workspace` on ubuntu and windows, `protocol-contract`, `ssh-runtime-e2e`, and `sftp-recursive-e2e` (Docker OpenSSH). The E2E job sets `HELIX_SFTP_E2E_REQUIRE=1`, so a lost environment variable fails the build instead of skipping silently.
+
+Known limits: ed25519 support depends on the libssh2 build (RSA verified); the no-`posix-rename` fallback is not reachable on the current test servers; Windows real-host E2E is local verification while CI covers Windows units only.
+
+See [Testing & Verification](docs/guides/testing-verification.md).
+
 Key documents:
 
 - [Credential Broker Daemon](docs/architecture/credential-broker-daemon.md)
+- [Testing & Verification](docs/guides/testing-verification.md)
 - [AI Guide](docs/guides/HELIX_AI_GUIDE.md)
 - [Installation Guide](docs/guides/installation.md)
 - [Branch Policy](docs/guides/branch-policy.md)

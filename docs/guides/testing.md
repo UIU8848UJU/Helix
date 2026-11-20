@@ -2,6 +2,9 @@
 
 > 适用范围：ssh-mcp / browser-mcp / http-mcp / helixd（Rust daemon）。发布前门禁必须全绿。
 > 本次目标回归基线：Rust release workspace 88 passed / 8 ignored；npm workspace 184 passed / 4 skipped；http-mcp 9 passed。
+>
+> 原子传输、进度/watch、取消与真机环境的详细范围、测试标准和最近结果见
+> [testing-verification.md](testing-verification.md)。
 
 ## 1. 自动化门禁（发布前本地必跑）
 
@@ -25,11 +28,13 @@
 
 ## 2. CI 自动执行
 
-`.github/workflows/ci.yml`，push 到 `main` / `agent/**` 与 PR 时触发，共 5 个 job：
+`.github/workflows/ci.yml`，push 到 `main` / `agent/**` 与 PR 时触发，共 7 个 job：
 
 - `protocol-contract`：TypeScript → Rust serde 协议契约门禁。
 - `ssh-mcp`：Node 20/22 上 `npm run check` + `npm test` + `npm run build`。
 - `helixd`：ubuntu/windows 上 `cargo test --release --workspace` + `cargo build --release` + `node scripts/test-broker-daemon.mjs`；Windows 额外跑 PS 脚本解析、`test-mcp-registration.ps1`、`test-helix-admin.ps1`。
+- `ssh-runtime-e2e`：Docker OpenSSH 上的真实 SSH 运行时 E2E。
+- `sftp-recursive-e2e`：Docker OpenSSH + test-credentials daemon + `scripts/e2e-sftp-recursive.py`；设置 `HELIX_SFTP_E2E_REQUIRE=1`，环境变量丢失即失败。
 - `browser-mcp`：Node 20/22 上 Playwright Chromium + check/test/build。
 - `http-mcp`：Node 20/22 上 `npm run check` + `npm test` + `npm run build`；测试会启动本地 HTTP 服务，覆盖 GET、JSON/text、重定向复核和响应大小上限，不依赖 SSH 或 helixd。
 
