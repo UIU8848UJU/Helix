@@ -211,6 +211,91 @@ jobs:
         if: always()
         run: docker rm -f helix-sshd-e2e >/dev/null 2>&1 || true
 
+  sftp-recursive-e2e:
+    name: Recursive SFTP E2E (Docker OpenSSH)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Build helixd with CI-only credential backend
+        run: cargo build --release -p helixd --features test-credentials
+
+      - name: Build disposable OpenSSH server
+        run: docker build -t helix-e2e-sshd ./tests/e2e/ssh-server
+
+      - name: Start disposable OpenSSH server
+        run: docker run -d --rm --name helix-sshd-sftp -p 2222:22 helix-e2e-sshd
+
+      - name: Wait for sshd
+        shell: bash
+        run: |
+          for i in {1..60}; do
+            if (echo > /dev/tcp/127.0.0.1/2222) >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 0.5
+          done
+          docker logs helix-sshd-sftp
+          exit 1
+
+      - name: Start helixd broker
+        env:
+          HELIX_TEST_CREDENTIAL_TARGET: Helix/ssh/ci/login
+          HELIX_TEST_CREDENTIAL_USERNAME: helix
+          HELIX_TEST_CREDENTIAL_SECRET: helixpass
+        shell: bash
+        run: |
+          nohup ./target/release/helixd serve-daemon \
+            --endpoint /tmp/helix-credential-broker-v1.sock \
+            --workers 2 --queue-capacity 16 > /tmp/helixd-sftp.log 2>&1 &
+          for i in {1..40}; do
+            if [ -S /tmp/helix-credential-broker-v1.sock ]; then
+              exit 0
+            fi
+            sleep 0.25
+          done
+          cat /tmp/helixd-sftp.log
+          exit 1
+
+      - name: Run recursive SFTP E2E
+        env:
+          HELIX_SFTP_E2E: "1"
+          HELIX_SFTP_HOST: 127.0.0.1
+          HELIX_SFTP_PORT: "2222"
+          HELIX_SFTP_USER: helix
+          HELIX_BROKER_ENDPOINT: /tmp/helix-credential-broker-v1.sock
+          HELIX_TEST_CREDENTIAL_TARGET: Helix/ssh/ci/login
+          HELIX_TEST_CREDENTIAL_USERNAME: helix
+          HELIX_TEST_CREDENTIAL_SECRET: helixpass
+        run: python3 scripts/e2e-sftp-recursive.py
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          cat /tmp/helixd-sftp.log || true
+          docker logs helix-sshd-sftp || true
+
+      - name: Stop disposable services
+        if: always()
+        run: |
+          pkill -f "helixd serve-daemon" || true
+          docker rm -f helix-sshd-sftp >/dev/null 2>&1 || true
+
   browser-mcp:
     runs-on: ubuntu-latest
     strategy:
