@@ -1,13 +1,15 @@
 # Helix
 
-[![CI](https://github.com/UIU8848UJU/Helix/actions/workflows/ci.yml/badge.svg)](https://github.com/UIU8848UJU/Helix/actions/workflows/ci.yml)
-![Rust](https://img.shields.io/badge/rust-1.85%2B-orange)
-![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
-![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20Windows-blue)
-![Daemon protocol](https://img.shields.io/badge/daemon%20protocol-v7-purple)
-![Tests](https://img.shields.io/badge/tests-141%20Rust%20%7C%20144%20ssh--mcp-success)
-![E2E](https://img.shields.io/badge/E2E-70%20Linux%20%7C%2031%20Windows-success)
-![License](https://img.shields.io/badge/license-MIT-green)
+<p align="center">
+  <a href="https://github.com/UIU8848UJU/Helix/actions/workflows/ci.yml"><img src="https://github.com/UIU8848UJU/Helix/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/rust-1.85%2B-orange" alt="Rust 1.85+">
+  <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="Node >= 20">
+  <img src="https://img.shields.io/badge/platforms-Linux%20%7C%20Windows-blue" alt="Platforms: Linux | Windows">
+  <img src="https://img.shields.io/badge/daemon%20protocol-v7-purple" alt="Daemon protocol v7">
+  <img src="https://img.shields.io/badge/tests-141%20Rust%20%7C%20144%20ssh--mcp-success" alt="Tests">
+  <img src="https://img.shields.io/badge/E2E-70%20Linux%20%7C%2031%20Windows-success" alt="E2E">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT">
+</p>
 
 **Remote Execution Runtime for AI Agents / 面向 AI Agent 的远程执行 Runtime**
 
@@ -105,6 +107,7 @@ terminal_open
 
 推荐语义：
 
+```text
 apps/ssh-mcp/                 TypeScript MCP 控制层
 apps/http-mcp/                有界、可审计、策略控制的 HTTP MCP
 apps/helixd/                  Rust 常驻 daemon（凭据、任务、会话与终端运行时）
