@@ -485,7 +485,14 @@ fn copy_with_progress<R: Read, W: Write>(
     loop {
         context.check_interrupt()?;
         match reader.read(&mut buffer) {
-            Ok(0) => return Ok(done),
+            Ok(0) => {
+                // Report once at end-of-stream so zero-byte transfers still
+                // expose a final (done, total) snapshot instead of none.
+                context
+                    .progress
+                    .report(progress_offset + done, progress_total);
+                return Ok(done);
+            }
             Ok(read) => {
                 write_all_retrying(writer, &buffer[..read], context)?;
                 done += read as u64;
@@ -569,18 +576,35 @@ fn replace_remote_file(sftp: &Sftp, part: &Path, target: &Path) -> Result<()> {
 }
 
 fn replace_local_file(part: &Path, target: &Path) -> Result<()> {
-    if target.exists() {
-        // Windows cannot rename over an existing file; this makes the local
-        // replacement non-atomic there, which is documented behavior.
-        let _ = fs::remove_file(target);
+    // Unix renames over an existing file atomically. Windows rejects it, so
+    // only that failure path removes the target and retries.
+    match fs::rename(part, target) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if target.exists()
+                && matches!(
+                    error.kind(),
+                    io::ErrorKind::AlreadyExists | io::ErrorKind::PermissionDenied
+                ) =>
+        {
+            fs::remove_file(target)
+                .with_context(|| format!("failed to replace {}", target.display()))?;
+            fs::rename(part, target).with_context(|| {
+                format!(
+                    "failed to rename {} to {}",
+                    part.display(),
+                    target.display()
+                )
+            })
+        }
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "failed to rename {} to {}",
+                part.display(),
+                target.display()
+            )
+        }),
     }
-    fs::rename(part, target).with_context(|| {
-        format!(
-            "failed to rename {} to {}",
-            part.display(),
-            target.display()
-        )
-    })
 }
 
 fn upload_file(
@@ -614,6 +638,22 @@ fn upload_file(
     }
 }
 
+/// Read local metadata without following symlinks; transfers reject links so
+/// the progress total and the bytes actually sent stay consistent.
+fn local_metadata(path: &Path) -> io::Result<fs::Metadata> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "symbolic links are not supported in transfers: {}",
+                path.display()
+            ),
+        ));
+    }
+    Ok(metadata)
+}
+
 fn upload_path(
     sftp: &Sftp,
     local: &Path,
@@ -624,7 +664,7 @@ fn upload_path(
     progress_total: Option<u64>,
 ) -> Result<()> {
     context.check_interrupt()?;
-    let metadata = fs::metadata(local)
+    let metadata = local_metadata(local)
         .with_context(|| format!("cannot read local path {}", local.display()))?;
     if metadata.is_dir() {
         if !recursive {
@@ -713,8 +753,14 @@ fn download_path(
 ) -> Result<()> {
     context.check_interrupt()?;
     let stat = sftp
-        .stat(remote)
+        .lstat(remote)
         .with_context(|| format!("cannot stat remote path {}", remote.display()))?;
+    if stat.perm.is_some_and(|perm| perm & 0o170000 == 0o120000) {
+        return Err(anyhow!(
+            "symbolic links are not supported in transfers: {}",
+            remote.display()
+        ));
+    }
     if is_remote_dir(&stat) {
         if !recursive {
             return Err(anyhow!(
@@ -940,6 +986,55 @@ mod transfer_tests {
             crate::error::error_code(&error),
             Some(helix_core::coded_error::TRANSFER_TIMEOUT)
         );
+    }
+
+    #[test]
+    fn empty_copy_reports_zero_bytes_once() {
+        let sink = RecordingSink::default();
+        let cancellation = CancellationToken::default();
+        let context = context(&sink, &cancellation);
+        let mut reader = &[][..];
+        let mut output = Vec::new();
+        let done = copy_with_progress(&mut reader, &mut output, &context, 0, Some(0)).unwrap();
+        assert_eq!(done, 0);
+        let reports = sink.reports.lock().unwrap();
+        assert_eq!(*reports, vec![(0, Some(0))]);
+    }
+
+    #[test]
+    fn replace_local_file_overwrites_and_removes_part() {
+        let dir = std::env::temp_dir().join(format!(
+            "helix-local-replace-{}-{}",
+            std::process::id(),
+            Instant::now().elapsed().as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("target.bin");
+        let part = dir.join("target.bin.helix.part.t1");
+        fs::write(&target, b"OLD").unwrap();
+        fs::write(&part, b"NEW-CONTENT").unwrap();
+        replace_local_file(&part, &target).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"NEW-CONTENT");
+        assert!(!part.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_symlink_is_rejected() {
+        let dir = std::env::temp_dir().join(format!(
+            "helix-symlink-{}-{}",
+            std::process::id(),
+            Instant::now().elapsed().as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("real.txt");
+        let link = dir.join("link.txt");
+        fs::write(&real, b"data").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let error = local_metadata(&link).expect_err("symlink must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

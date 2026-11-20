@@ -275,6 +275,7 @@ jobs:
       - name: Run recursive SFTP E2E
         env:
           HELIX_SFTP_E2E: "1"
+          HELIX_SFTP_E2E_REQUIRE: "1"
           HELIX_SFTP_HOST: 127.0.0.1
           HELIX_SFTP_PORT: "2222"
           HELIX_SFTP_USER: helix

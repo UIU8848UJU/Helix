@@ -1451,4 +1451,161 @@ mod tests {
         let _trigger2 = pool.submit(BrokerRequest::Ping).unwrap();
         assert!(pool.task(&task_id).is_err(), "evicted after the window");
     }
+
+    struct NoReportExecutor;
+
+    impl TaskExecutor for NoReportExecutor {
+        fn execute(
+            &self,
+            _task_id: &str,
+            _request: BrokerRequest,
+            _cancellation: &CancellationToken,
+            _progress: Arc<dyn ProgressSink>,
+        ) -> Result<BrokerResponse> {
+            Ok(BrokerResponse::success())
+        }
+    }
+
+    struct EndlessTotalExecutor;
+
+    impl TaskExecutor for EndlessTotalExecutor {
+        fn execute(
+            &self,
+            _task_id: &str,
+            _request: BrokerRequest,
+            _cancellation: &CancellationToken,
+            progress: Arc<dyn ProgressSink>,
+        ) -> Result<BrokerResponse> {
+            progress.report(5, None);
+            Ok(BrokerResponse::success())
+        }
+    }
+
+    struct SequenceExecutor {
+        reports: Vec<(u64, Option<u64>)>,
+    }
+
+    impl TaskExecutor for SequenceExecutor {
+        fn execute(
+            &self,
+            _task_id: &str,
+            _request: BrokerRequest,
+            _cancellation: &CancellationToken,
+            progress: Arc<dyn ProgressSink>,
+        ) -> Result<BrokerResponse> {
+            for (done, total) in &self.reports {
+                progress.report(*done, *total);
+            }
+            Ok(BrokerResponse::success())
+        }
+    }
+
+    fn progress_sink(clock: Arc<FakeClock>) -> (TaskProgressSink, Arc<AtomicU64>, Arc<AtomicU64>) {
+        let store = Arc::new((
+            Mutex::new(TaskStore {
+                records: HashMap::new(),
+                accepting: true,
+                retained_bytes: 0,
+            }),
+            Condvar::new(),
+        ));
+        let done = Arc::new(AtomicU64::new(0));
+        let total = Arc::new(AtomicU64::new(u64::MAX));
+        let version = Arc::new(AtomicU64::new(0));
+        (
+            TaskProgressSink {
+                done: done.clone(),
+                total: total.clone(),
+                version: version.clone(),
+                store,
+                clock,
+                last_notify_ms: Mutex::new(None),
+            },
+            total,
+            version,
+        )
+    }
+
+    #[test]
+    fn progress_notify_throttled_to_100ms() {
+        let clock = Arc::new(FakeClock::new(0));
+        let (sink, _total, version) = progress_sink(clock.clone());
+        assert_eq!(*sink.last_notify_ms.lock().unwrap(), None);
+
+        sink.report(1, Some(10));
+        assert_eq!(*sink.last_notify_ms.lock().unwrap(), Some(0));
+
+        clock.advance(99);
+        sink.report(2, Some(10));
+        assert_eq!(
+            *sink.last_notify_ms.lock().unwrap(),
+            Some(0),
+            "reports inside the 100ms window must not notify"
+        );
+
+        clock.advance(1);
+        sink.report(3, Some(10));
+        assert_eq!(*sink.last_notify_ms.lock().unwrap(), Some(100));
+        assert_eq!(version.load(Ordering::Acquire), 3);
+    }
+
+    #[test]
+    fn task_response_progress_presence_and_endless_total() {
+        let clock = Arc::new(FakeClock::new(0));
+        let quiet = test_pool(1, 8, 1024, Arc::new(NoReportExecutor), clock.clone());
+        let quiet_id = quiet.submit(BrokerRequest::Ping).unwrap();
+        let quiet_task = wait_terminal(&quiet, &quiet_id);
+        assert!(
+            quiet
+                .task_response(&quiet_id, quiet_task)
+                .progress
+                .is_none()
+        );
+
+        let endless = test_pool(1, 8, 1024, Arc::new(EndlessTotalExecutor), clock);
+        let endless_id = endless.submit(BrokerRequest::Ping).unwrap();
+        let endless_task = wait_terminal(&endless, &endless_id);
+        let progress = endless
+            .task_response(&endless_id, endless_task)
+            .progress
+            .expect("progress snapshot");
+        assert_eq!(progress.done, 5);
+        assert_eq!(progress.total, None);
+    }
+
+    #[test]
+    fn task_response_progress_sequence_is_monotonic() {
+        let executor = Arc::new(SequenceExecutor {
+            reports: vec![(0, Some(100)), (40, Some(100)), (100, Some(100))],
+        });
+        let pool = test_pool(1, 8, 1024, executor, Arc::new(FakeClock::new(0)));
+        let task_id = pool.submit(BrokerRequest::Ping).unwrap();
+        let task = wait_terminal(&pool, &task_id);
+        let progress = pool
+            .task_response(&task_id, task)
+            .progress
+            .expect("progress snapshot");
+        assert_eq!(progress.version, 3);
+        assert_eq!(progress.done, 100);
+        assert_eq!(progress.total, Some(100));
+    }
+
+    #[test]
+    fn watch_since_version_contract() {
+        let executor = Arc::new(ReportThenBlockExecutor::new(64, Some(256)));
+        let pool = test_pool(1, 8, 1024, executor.clone(), Arc::new(FakeClock::new(0)));
+        let task_id = pool.submit(BrokerRequest::Ping).unwrap();
+        executor.wait_started(1);
+
+        // since_version=2 is ahead of the current version (1): the watcher must
+        // wait for the timeout rather than return the existing snapshot.
+        let snapshot = pool.watch(&task_id, 2, Duration::from_millis(100)).unwrap();
+        assert_eq!(snapshot.progress_version.load(Ordering::Acquire), 1);
+
+        executor.release();
+        let terminal = pool
+            .watch(&task_id, u64::MAX, Duration::from_secs(2))
+            .unwrap();
+        assert!(terminal.state.is_terminal());
+    }
 }
