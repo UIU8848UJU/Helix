@@ -41,7 +41,13 @@ await build({
   outfile: path.join(bundleDir, "helix-ssh-mcp.mjs"),
 });
 
-// 2. stage the daemon binaries that are present locally
+// 2. stage the operations guide so `helix-ssh-mcp install` works offline
+copy(
+  path.join(root, "docs", "guides", "HELIX_AI_GUIDE.md"),
+  path.join(root, "npm", "helix-ssh-mcp", "docs", "HELIX_AI_GUIDE.md"),
+);
+
+// 3. stage the daemon binaries that are present locally
 const windowsBinary = path.join(root, "target", "release", "helixd.exe");
 if (fs.existsSync(windowsBinary)) {
   copy(windowsBinary, path.join(root, "npm", "helixd-win32-x64", "bin", "helixd.exe"));
@@ -56,7 +62,7 @@ if (fs.existsSync(linuxBinary)) {
   console.warn("skip Linux daemon: build it on Linux before publishing that package");
 }
 
-// 3. keep every staged package on the workspace version
+// 4. keep every staged package on the workspace version
 for (const directory of ["helix-ssh-mcp", "helixd-win32-x64", "helixd-linux-x64-gnu"]) {
   const file = path.join(root, "npm", directory, "package.json");
   const data = JSON.parse(fs.readFileSync(file, "utf8"));

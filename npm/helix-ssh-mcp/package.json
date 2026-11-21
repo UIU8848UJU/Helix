@@ -9,6 +9,7 @@
   },
   "files": [
     "bin/helix-ssh-mcp.mjs",
+    "docs/HELIX_AI_GUIDE.md",
     "README.md"
   ],
   "engines": {

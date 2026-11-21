@@ -65,6 +65,11 @@ describe("Helix MCP guidance", () => {
     expect(internals._registeredTools?.helix_help).toBeDefined();
   });
 
+  it("points the model at helix_help and the installed guide", () => {
+    expect(HELIX_SERVER_INSTRUCTIONS).toContain("helix_help");
+    expect(HELIX_SERVER_INSTRUCTIONS).toContain("localGuide");
+  });
+
   it("documents terminal task execution and waiting", () => {
     expect(TOOL_DESCRIPTIONS.terminal_exec).toContain("taskId");
     expect(TOOL_DESCRIPTIONS.task_wait).toContain("timeout");

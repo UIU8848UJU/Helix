@@ -21,8 +21,16 @@
 
 ```bash
 npm install -g helix-ssh-mcp
-claude mcp add helix-ssh -- helix-ssh-mcp
+helix-ssh-mcp install
 ```
+
+`install` 会：
+
+1. 在配置目录创建默认 `ssh-mcp.json`（已存在则保留）；
+2. 把包内的 `HELIX_AI_GUIDE.md` 写到配置目录，供 AI 通过 `helix_help` 的 `localGuide` 读取；
+3. 用 `claude mcp add helix-ssh --scope user` 注册 MCP（未检测到 `claude` 时只打印手动命令）。
+
+完成后重启 Claude Code，让 AI 先调用 `helix_help` 再操作主机。
 
 安装后：
 
@@ -33,7 +41,7 @@ claude mcp add helix-ssh -- helix-ssh-mcp
 卸载必须先停止 daemon，再删除包（Windows 上运行中的 exe 无法被替换/删除）：
 
 ```bash
-helix-ssh-mcp uninstall                 # 停止 daemon；加 --purge 同时删除本地配置
+helix-ssh-mcp uninstall --purge         # 停 daemon；--purge 同时删除配置与 HELIX_AI_GUIDE.md
 claude mcp remove helix-ssh
 npm uninstall -g helix-ssh-mcp helixd-win32-x64   # Linux 换成 helixd-linux-x64-gnu
 ```

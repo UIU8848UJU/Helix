@@ -123,6 +123,9 @@ try {
   check("main package installed", fs.existsSync(installedMain));
   check("platform package installed", Boolean(installedPlatform), installedPlatform ?? platformCandidates.join(" | "));
 
+  const packagedGuide = path.join(installedMain, "docs", "HELIX_AI_GUIDE.md");
+  check("operations guide packaged", fs.existsSync(packagedGuide) && fs.statSync(packagedGuide).size > 1000);
+
   const binShim = process.platform === "win32"
     ? path.join(prefix, "helix-ssh-mcp.cmd")
     : path.join(prefix, "bin", "helix-ssh-mcp");
@@ -145,6 +148,43 @@ try {
     resolution.status === 0 && (resolution.stdout ?? "").includes(daemonName),
     (resolution.stdout ?? "").trim(),
   );
+
+  // `install` creates config/guide and registers Claude without touching the
+  // real client: a fake `claude` on PATH records the arguments instead.
+  const fakeBin = path.join(temp, "fakebin");
+  fs.mkdirSync(fakeBin, { recursive: true });
+  if (process.platform === "win32") {
+    fs.writeFileSync(path.join(fakeBin, "claude.cmd"), '@echo %*>>"%CLAUDE_LOG%"\r\n@exit /b 0\r\n');
+  } else {
+    const fakeClaude = path.join(fakeBin, "claude");
+    fs.writeFileSync(fakeClaude, '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CLAUDE_LOG"\nexit 0\n');
+    fs.chmodSync(fakeClaude, 0o755);
+  }
+  const installRoot = path.join(temp, "install");
+  const installConfig = path.join(installRoot, "ssh-mcp.json");
+  const installGuide = path.join(installRoot, "HELIX_AI_GUIDE.md");
+  const claudeLog = path.join(temp, "claude.log");
+  const installResult = run(
+    "install CLI",
+    process.execPath,
+    [path.join(installedMain, "bin", "helix-ssh-mcp.mjs"), "install"],
+    {
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ""}`,
+        HELIX_SSH_CONFIG: installConfig,
+        HELIX_AI_GUIDE: installGuide,
+        CLAUDE_LOG: claudeLog,
+      },
+    },
+  );
+  const installOutput = `${installResult.stdout ?? ""}${installResult.stderr ?? ""}`;
+  const claudeCalls = fs.existsSync(claudeLog) ? fs.readFileSync(claudeLog, "utf8") : "";
+  check("install CLI exits 0", installResult.status === 0, installOutput);
+  check("install CLI creates config", fs.existsSync(installConfig), installOutput);
+  check("install CLI writes the guide", fs.existsSync(installGuide) && fs.statSync(installGuide).size > 1000, installOutput);
+  check("install CLI registers user-scope MCP", claudeCalls.includes("mcp add helix-ssh --scope user"), claudeCalls);
+  check("install CLI passes the guide path", claudeCalls.includes(`HELIX_AI_GUIDE=${installGuide}`), claudeCalls);
 
   const smokeScript = path.join(root, "scripts", "package", "smoke-mcp.mjs");
   const smokeResult = run("MCP smoke", process.execPath, [smokeScript, path.join(installedMain, "bin", "helix-ssh-mcp.mjs")]);
@@ -184,6 +224,14 @@ try {
   );
   check("uninstall --purge exits 0", purge.status === 0, `${purge.stdout ?? ""}${purge.stderr ?? ""}`);
   check("uninstall --purge removes config", !fs.existsSync(cliConfig));
+
+  const purgeGuide = run(
+    "uninstall --purge (guide)",
+    process.execPath,
+    [path.join(installedMain, "bin", "helix-ssh-mcp.mjs"), "uninstall", "--purge"],
+    { env: { ...cliEnv, HELIX_SSH_CONFIG: installConfig, HELIX_AI_GUIDE: installGuide } },
+  );
+  check("uninstall --purge removes guide", !fs.existsSync(installGuide), `${purgeGuide.stdout ?? ""}${purgeGuide.stderr ?? ""}`);
 
   try { fs.rmSync(endpoint, { force: true }); } catch { /* pipe or socket already gone */ }
 

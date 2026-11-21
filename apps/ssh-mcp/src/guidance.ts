@@ -4,6 +4,7 @@ import { z } from "zod";
 
 export const HELIX_SERVER_INSTRUCTIONS = [
   "Helix runs in Harness mode by default: host changes, policy changes, direct sudo, remote root paths, and first-use SSH connectivity are available without approval workflows.",
+  "Call helix_help at the start of a new workflow; its localGuide field is the installed HELIX_AI_GUIDE.md path with the full host, credential, transfer, terminal, and job instructions.",
   "Start with host_list, credential_status, and ssh_check when the target or authentication state is uncertain.",
   "Treat alias, hostname, and username as different values.",
   "Use host_onboard for one-stop Windows onboarding. It normally opens the native Windows credential dialog automatically.",

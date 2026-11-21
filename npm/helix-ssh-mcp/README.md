@@ -6,8 +6,13 @@ Helix MCP server: persistent SSH/PTY/SFTP, task runtime, credentials and remote 
 
 ```bash
 npm install -g helix-ssh-mcp
-claude mcp add helix-ssh -- helix-ssh-mcp
+helix-ssh-mcp install
 ```
+
+`install` creates the config, writes `HELIX_AI_GUIDE.md` next to it, and registers
+`helix-ssh` with Claude Code in user scope. If `claude` is not on PATH it prints the
+manual `claude mcp add` command. Restart Claude Code afterwards and ask it to call
+`helix_help`; `localGuide` points at the installed guide.
 
 The daemon binary is installed as a platform-specific optional dependency:
 
@@ -30,9 +35,9 @@ claude mcp remove helix-ssh
 npm uninstall -g helix-ssh-mcp helixd-win32-x64
 ```
 
-`uninstall --purge` also deletes the local `ssh-mcp.json`. The daemon must be
-stopped before `npm uninstall`, otherwise Windows keeps running the deleted
-binary until it is terminated.
+`uninstall --purge` also deletes the local `ssh-mcp.json` and `HELIX_AI_GUIDE.md`.
+The daemon must be stopped before `npm uninstall`, otherwise Windows keeps
+running the deleted binary until it is terminated.
 
 ## Notes
 

@@ -285,8 +285,12 @@ Claude / Codex / Agent / Skill-Matrix
 
 ```bash
 npm install -g helix-ssh-mcp
-claude mcp add helix-ssh -- helix-ssh-mcp
+helix-ssh-mcp install
 ```
+
+`install` 会创建 `ssh-mcp.json`、把 `HELIX_AI_GUIDE.md` 写到配置目录，并用
+`claude mcp add --scope user` 注册 `helix-ssh`。没有检测到 `claude` 时会打印手动注册命令。
+完成后重启 Claude Code，并让 AI 先调用 `helix_help`（其 `localGuide` 指向已安装的使用指南）。
 
 `helix-ssh-mcp` 通过 optional dependency 自动安装对应平台的 `helixd`
 （`helixd-win32-x64` / `helixd-linux-x64-gnu`）。Rust 工具链、OpenSSL 与本地编译都不需要。
@@ -294,7 +298,7 @@ claude mcp add helix-ssh -- helix-ssh-mcp
 卸载（先停 daemon，再删包）：
 
 ```bash
-helix-ssh-mcp uninstall                 # 停止 daemon；加 --purge 同时删除本地配置
+helix-ssh-mcp uninstall --purge         # 停 daemon，并删除本地配置与使用指南
 claude mcp remove helix-ssh
 npm uninstall -g helix-ssh-mcp helixd-win32-x64   # Linux 换成 helixd-linux-x64-gnu
 ```
@@ -709,8 +713,14 @@ Requires Node.js 20+; supports Windows 10/11 x64 and Linux x64 (glibc ≥ 2.35).
 
 ```bash
 npm install -g helix-ssh-mcp
-claude mcp add helix-ssh -- helix-ssh-mcp
+helix-ssh-mcp install
 ```
+
+`install` creates `ssh-mcp.json`, writes `HELIX_AI_GUIDE.md` next to it, and registers
+`helix-ssh` with Claude Code in user scope (`claude mcp add --scope user`). If the
+`claude` CLI is missing it prints the manual registration command instead. Restart
+Claude Code afterwards and ask the agent to call `helix_help`; its `localGuide` field
+points at the installed guide.
 
 `helix-ssh-mcp` installs the matching `helixd` platform package
 (`helixd-win32-x64` / `helixd-linux-x64-gnu`) through an optional dependency.
@@ -719,7 +729,7 @@ No Rust toolchain, OpenSSL headers, or local build is required.
 Uninstall (stop the daemon before removing files):
 
 ```bash
-helix-ssh-mcp uninstall                 # stops the daemon; --purge also deletes the local config
+helix-ssh-mcp uninstall --purge         # stops the daemon, deletes config and guide
 claude mcp remove helix-ssh
 npm uninstall -g helix-ssh-mcp helixd-win32-x64   # use helixd-linux-x64-gnu on Linux
 ```
