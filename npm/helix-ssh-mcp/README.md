@@ -22,6 +22,18 @@ If your platform is not covered, install from a GitHub Release and set
 The server reads `%APPDATA%\Helix\ssh-mcp.json` on Windows and
 `~/.config/helix/ssh-mcp.json` on Linux. Override with `HELIX_SSH_CONFIG`.
 
+## Uninstall
+
+```bash
+helix-ssh-mcp uninstall            # stop the daemon and print the remaining steps
+claude mcp remove helix-ssh
+npm uninstall -g helix-ssh-mcp helixd-win32-x64
+```
+
+`uninstall --purge` also deletes the local `ssh-mcp.json`. The daemon must be
+stopped before `npm uninstall`, otherwise Windows keeps running the deleted
+binary until it is terminated.
+
 ## Notes
 
 This package is prepared but not yet published. Before publishing, check that

@@ -26,9 +26,10 @@ const REQUIRED_BROKER_CAPABILITIES = [
   "terminal_policy_v2", "terminal_cursor_v2", "spool_v1",
   "terminal_task_v1", "identity_file_v1", "task_watch_v1",
 ] as const;
-const BROKER_ENDPOINT = process.platform === "win32"
-  ? "\\\\.\\pipe\\helix-credential-broker-v1"
-  : "/tmp/helix-credential-broker-v1.sock";
+export const BROKER_ENDPOINT = process.env.HELIX_BROKER_ENDPOINT
+  ?? (process.platform === "win32"
+    ? "\\\\.\\pipe\\helix-credential-broker-v1"
+    : "/tmp/helix-credential-broker-v1.sock");
 
 type BrokerTaskState = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
