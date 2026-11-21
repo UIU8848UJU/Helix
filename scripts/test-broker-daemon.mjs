@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createConnection } from "node:net";
 import path from "node:path";
 
-const PROTOCOL_VERSION = 6;
+const PROTOCOL_VERSION = 7;
 const root = process.cwd();
 const executable = process.env.HELIX_HELIXD ?? path.join(
   root,
@@ -60,7 +60,7 @@ function assertProtocol(response) {
   }
   for (const capability of [
     "task_pool_v2", "bounded_ipc", "owner_only_ipc", "pty_v1", "terminal_v1",
-    "terminal_policy_v2", "terminal_cursor_v2", "terminal_task_v1", "spool_v1", "identity_file_v1",
+    "terminal_policy_v2", "terminal_cursor_v2", "terminal_task_v1", "spool_v1", "identity_file_v1", "task_watch_v1",
   ]) {
     if (!response.capabilities?.includes(capability)) {
       throw new Error(`missing daemon capability: ${capability}`);
@@ -215,6 +215,17 @@ try {
   assertProtocol(submitted);
   if (!submitted.ok || !submitted.taskId) {
     throw new Error(`submit failed: ${JSON.stringify(submitted)}`);
+  }
+
+  const watched = await rpc({
+    op: "task_watch",
+    task_id: submitted.taskId,
+    since_version: 0,
+    timeout_seconds: 1,
+  });
+  assertProtocol(watched);
+  if (!watched.ok || watched.taskId !== submitted.taskId || !watched.state) {
+    throw new Error(`task_watch returned a bad snapshot: ${JSON.stringify(watched)}`);
   }
 
   const waited = await rpc({ op: "task_wait", task_id: submitted.taskId, timeout_seconds: 5 });

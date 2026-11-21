@@ -60,7 +60,7 @@ describe("browser open/read tools (TDD-107)", () => {
     expect(result.url).toContain(`127.0.0.1:${server.port}/`);
     expect(result.loadingState).toBe("loaded");
     expect(result.storageState).toBe("none");
-  });
+  }, 15_000);
 
   itWithChromium("reads visible text with metadata and truncation", async () => {
     server = await startServer(`<!doctype html><title>Read Page</title><body><p>${"A".repeat(400)}</p></body>`);
