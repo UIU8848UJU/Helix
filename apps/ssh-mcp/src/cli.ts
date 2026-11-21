@@ -93,8 +93,13 @@ export async function runCli(argv: string[]): Promise<number | undefined> {
   } else {
     process.stdout.write(`config: kept at ${configPath}\n`);
   }
+  const platformPackage = process.platform === "win32"
+    ? "helixd-win32-x64"
+    : process.arch === "arm64"
+      ? "helixd-linux-arm64-gnu"
+      : "helixd-linux-x64-gnu";
   process.stdout.write(
-    "next: claude mcp remove helix-ssh; npm uninstall -g helix-ssh-mcp helixd-win32-x64\n",
+    `next: claude mcp remove helix-ssh; npm uninstall -g helix-ssh-mcp ${platformPackage}\n`,
   );
   return result === "timeout" ? 1 : 0;
 }

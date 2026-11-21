@@ -172,6 +172,7 @@ try {
   const cliOutput = `${uninstallCli.stdout ?? ""}${uninstallCli.stderr ?? ""}`;
   check("uninstall CLI exits 0", uninstallCli.status === 0, cliOutput);
   check("uninstall CLI stops the daemon", cliOutput.includes("daemon: stopped"), cliOutput);
+  check("uninstall CLI names the platform package", cliOutput.includes(platformPackage), cliOutput);
   check("daemon process exited after CLI uninstall", await waitExit(daemonProcess), String(daemonProcess.exitCode));
 
   fs.writeFileSync(cliConfig, JSON.stringify({ version: 1, settings: {}, hosts: {} }));
