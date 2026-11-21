@@ -7,14 +7,13 @@
  *   npm publish npm/helixd-linux-x64-gnu
  *   npm publish npm/helix-ssh-mcp
  */
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { build } from "esbuild";
 
 const root = path.resolve(import.meta.dirname, "..", "..");
 const rootPackage = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const version = rootPackage.version;
-const esbuild = path.join(root, "node_modules", "esbuild", "bin", "esbuild");
 
 function copy(source, target, mode) {
   if (!fs.existsSync(source)) {
@@ -29,20 +28,18 @@ function copy(source, target, mode) {
 // 1. bundle the MCP server with a node shebang
 const bundleDir = path.join(root, "npm", "helix-ssh-mcp", "bin");
 fs.mkdirSync(bundleDir, { recursive: true });
-execFileSync(
-  process.execPath,
-  [
-    esbuild,
-    "apps/ssh-mcp/src/index.ts",
-    "--bundle",
-    "--platform=node",
-    "--format=esm",
-    "--target=node20",
-    "--log-level=warning",
-    `--outfile=${path.join(bundleDir, "helix-ssh-mcp.mjs")}`,
-  ],
-  { cwd: root, stdio: "inherit" },
-);
+// Use the esbuild API instead of node_modules/esbuild/bin/esbuild: on Linux
+// that path is the native ELF binary, so spawning it with `node` fails.
+await build({
+  absWorkingDir: root,
+  entryPoints: [path.join(root, "apps", "ssh-mcp", "src", "index.ts")],
+  bundle: true,
+  platform: "node",
+  format: "esm",
+  target: "node20",
+  logLevel: "warning",
+  outfile: path.join(bundleDir, "helix-ssh-mcp.mjs"),
+});
 
 // 2. stage the daemon binaries that are present locally
 const windowsBinary = path.join(root, "target", "release", "helixd.exe");
