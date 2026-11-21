@@ -32,10 +32,15 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # The default cache key only distinguishes "Linux" from "Windows", not the
+      # runner image. Cached objects built on ubuntu-latest (24.04, glibc 2.39)
+      # fail to link on ubuntu-22.04 with undefined __isoc23_strtol/strtoul, so
+      # keep release caches scoped to the exact runner image.
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: .
+          prefix-key: v1-${{ matrix.os }}
 
       - name: Install dependencies
         run: npm ci
