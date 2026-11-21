@@ -288,9 +288,10 @@ npm install -g helix-ssh-mcp
 helix-ssh-mcp install
 ```
 
-`install` 会创建 `ssh-mcp.json`、把 `HELIX_AI_GUIDE.md` 写到配置目录，并用
-`claude mcp add --scope user` 注册 `helix-ssh`。没有检测到 `claude` 时会打印手动注册命令。
-完成后重启 Claude Code，并让 AI 先调用 `helix_help`（其 `localGuide` 指向已安装的使用指南）。
+`install` 会创建 `ssh-mcp.json`、把 `HELIX_AI_GUIDE.md` 写到配置目录，并注册 `helix-ssh`：
+Claude Code 使用 `--scope user`，检测到 Codex CLI 时同时写入 Codex 用户配置。缺少某个客户端时
+会打印对应的手动注册命令。完成后重启客户端，并让 AI 先调用 `helix_help`（其 `localGuide`
+指向已安装的使用指南）。
 
 `helix-ssh-mcp` 通过 optional dependency 自动安装对应平台的 `helixd`
 （`helixd-win32-x64` / `helixd-linux-x64-gnu`）。Rust 工具链、OpenSSL 与本地编译都不需要。
@@ -717,10 +718,10 @@ helix-ssh-mcp install
 ```
 
 `install` creates `ssh-mcp.json`, writes `HELIX_AI_GUIDE.md` next to it, and registers
-`helix-ssh` with Claude Code in user scope (`claude mcp add --scope user`). If the
-`claude` CLI is missing it prints the manual registration command instead. Restart
-Claude Code afterwards and ask the agent to call `helix_help`; its `localGuide` field
-points at the installed guide.
+`helix-ssh` with Claude Code in user scope (`claude mcp add --scope user`) and with
+Codex when its CLI is present. If a client is missing it prints the corresponding
+manual registration command. Restart the client afterwards and ask the agent to call
+`helix_help`; its `localGuide` field points at the installed guide.
 
 `helix-ssh-mcp` installs the matching `helixd` platform package
 (`helixd-win32-x64` / `helixd-linux-x64-gnu`) through an optional dependency.

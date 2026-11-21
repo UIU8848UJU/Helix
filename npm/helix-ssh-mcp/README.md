@@ -10,9 +10,9 @@ helix-ssh-mcp install
 ```
 
 `install` creates the config, writes `HELIX_AI_GUIDE.md` next to it, and registers
-`helix-ssh` with Claude Code in user scope. If `claude` is not on PATH it prints the
-manual `claude mcp add` command. Restart Claude Code afterwards and ask it to call
-`helix_help`; `localGuide` points at the installed guide.
+`helix-ssh` with Claude Code (user scope) and Codex when each CLI is on PATH. Missing
+clients are reported with their manual `mcp add` command. Restart the client afterwards
+and ask it to call `helix_help`; `localGuide` points at the installed guide.
 
 The daemon binary is installed as a platform-specific optional dependency:
 

@@ -39,6 +39,7 @@ describe("installRuntime", () => {
     const guideSource = path.join(temp, "source-guide.md");
     fs.writeFileSync(guideSource, "# Helix guide\n");
     const calls: string[][] = [];
+    const codexCalls: string[][] = [];
 
     const result = installRuntime({
       configPath,
@@ -48,14 +49,30 @@ describe("installRuntime", () => {
         calls.push(args);
         return { status: 0 };
       },
+      runCodex: (args) => {
+        codexCalls.push(args);
+        return { status: 0 };
+      },
     });
 
     expect(JSON.parse(fs.readFileSync(configPath, "utf8"))).toEqual({ version: 1, settings: {}, hosts: {} });
     expect(fs.readFileSync(guideDestination, "utf8")).toBe("# Helix guide\n");
-    expect(result).toMatchObject({ configCreated: true, registered: true, guidePath: guideDestination });
+    expect(result).toMatchObject({
+      configCreated: true,
+      registered: true,
+      codexRegistered: true,
+      guidePath: guideDestination,
+    });
     expect(calls[0]).toEqual(["mcp", "remove", "--scope", "user", "helix-ssh"]);
     expect(calls[1]).toEqual([
       "mcp", "add", "helix-ssh", "--scope", "user",
+      "--env", `HELIX_SSH_CONFIG=${configPath}`,
+      "--env", `HELIX_AI_GUIDE=${guideDestination}`,
+      "--", "helix-ssh-mcp",
+    ]);
+    expect(codexCalls[0]).toEqual(["mcp", "remove", "helix-ssh"]);
+    expect(codexCalls[1]).toEqual([
+      "mcp", "add", "helix-ssh",
       "--env", `HELIX_SSH_CONFIG=${configPath}`,
       "--env", `HELIX_AI_GUIDE=${guideDestination}`,
       "--", "helix-ssh-mcp",
@@ -74,6 +91,7 @@ describe("installRuntime", () => {
       guideDestination: path.join(temp, "HELIX_AI_GUIDE.md"),
       guideSource,
       runClaude: () => ({ status: 0 }),
+      runCodex: () => ({ status: 0 }),
     });
 
     expect(result.configCreated).toBe(false);
@@ -90,10 +108,30 @@ describe("installRuntime", () => {
       guideDestination: path.join(temp, "HELIX_AI_GUIDE.md"),
       guideSource,
       runClaude: () => ({ status: null, error: new Error("spawn claude ENOENT") }),
+      runCodex: () => ({ status: 0 }),
     });
 
     expect(result.registered).toBe(false);
     expect(result.claudeError).toContain("ENOENT");
+    expect(result.codexRegistered).toBe(true);
+  });
+
+  it("reports when neither Claude nor Codex is available", () => {
+    const temp = makeTemp();
+    const guideSource = path.join(temp, "guide.md");
+    fs.writeFileSync(guideSource, "# g\n");
+
+    const result = installRuntime({
+      configPath: path.join(temp, "ssh-mcp.json"),
+      guideDestination: path.join(temp, "HELIX_AI_GUIDE.md"),
+      guideSource,
+      runClaude: () => ({ status: null, error: new Error("spawn claude ENOENT") }),
+      runCodex: () => ({ status: null, error: new Error("spawn codex ENOENT") }),
+    });
+
+    expect(result.registered).toBe(false);
+    expect(result.codexRegistered).toBe(false);
+    expect(result.codexError).toContain("ENOENT");
   });
 });
 

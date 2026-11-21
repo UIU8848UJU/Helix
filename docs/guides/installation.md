@@ -28,9 +28,10 @@ helix-ssh-mcp install
 
 1. 在配置目录创建默认 `ssh-mcp.json`（已存在则保留）；
 2. 把包内的 `HELIX_AI_GUIDE.md` 写到配置目录，供 AI 通过 `helix_help` 的 `localGuide` 读取；
-3. 用 `claude mcp add helix-ssh --scope user` 注册 MCP（未检测到 `claude` 时只打印手动命令）。
+3. 用 `claude mcp add helix-ssh --scope user` 注册 Claude Code；
+4. 检测到 `codex` 时执行 `codex mcp add helix-ssh` 写入 Codex 用户配置；缺少某个客户端时打印对应手动命令。
 
-完成后重启 Claude Code，让 AI 先调用 `helix_help` 再操作主机。
+完成后重启 Claude Code / Codex，让 AI 先调用 `helix_help` 再操作主机。
 
 安装后：
 

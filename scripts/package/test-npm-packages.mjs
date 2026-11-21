@@ -155,15 +155,19 @@ try {
   fs.mkdirSync(fakeBin, { recursive: true });
   if (process.platform === "win32") {
     fs.writeFileSync(path.join(fakeBin, "claude.cmd"), '@echo %*>>"%CLAUDE_LOG%"\r\n@exit /b 0\r\n');
+    fs.writeFileSync(path.join(fakeBin, "codex.cmd"), '@echo %*>>"%CODEX_LOG%"\r\n@exit /b 0\r\n');
   } else {
-    const fakeClaude = path.join(fakeBin, "claude");
-    fs.writeFileSync(fakeClaude, '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CLAUDE_LOG"\nexit 0\n');
-    fs.chmodSync(fakeClaude, 0o755);
+    for (const [name, logVar] of [["claude", "CLAUDE_LOG"], ["codex", "CODEX_LOG"]]) {
+      const fakeClient = path.join(fakeBin, name);
+      fs.writeFileSync(fakeClient, `#!/bin/sh\nprintf "%s\\n" "$*" >> "$${logVar}"\nexit 0\n`);
+      fs.chmodSync(fakeClient, 0o755);
+    }
   }
   const installRoot = path.join(temp, "install");
   const installConfig = path.join(installRoot, "ssh-mcp.json");
   const installGuide = path.join(installRoot, "HELIX_AI_GUIDE.md");
   const claudeLog = path.join(temp, "claude.log");
+  const codexLog = path.join(temp, "codex.log");
   const installResult = run(
     "install CLI",
     process.execPath,
@@ -175,16 +179,20 @@ try {
         HELIX_SSH_CONFIG: installConfig,
         HELIX_AI_GUIDE: installGuide,
         CLAUDE_LOG: claudeLog,
+        CODEX_LOG: codexLog,
       },
     },
   );
   const installOutput = `${installResult.stdout ?? ""}${installResult.stderr ?? ""}`;
   const claudeCalls = fs.existsSync(claudeLog) ? fs.readFileSync(claudeLog, "utf8") : "";
+  const codexCalls = fs.existsSync(codexLog) ? fs.readFileSync(codexLog, "utf8") : "";
   check("install CLI exits 0", installResult.status === 0, installOutput);
   check("install CLI creates config", fs.existsSync(installConfig), installOutput);
   check("install CLI writes the guide", fs.existsSync(installGuide) && fs.statSync(installGuide).size > 1000, installOutput);
   check("install CLI registers user-scope MCP", claudeCalls.includes("mcp add helix-ssh --scope user"), claudeCalls);
   check("install CLI passes the guide path", claudeCalls.includes(`HELIX_AI_GUIDE=${installGuide}`), claudeCalls);
+  check("install CLI registers Codex", codexCalls.includes("mcp add helix-ssh"), codexCalls);
+  check("install CLI passes the guide path to Codex", codexCalls.includes(`HELIX_AI_GUIDE=${installGuide}`), codexCalls);
 
   const smokeScript = path.join(root, "scripts", "package", "smoke-mcp.mjs");
   const smokeResult = run("MCP smoke", process.execPath, [smokeScript, path.join(installedMain, "bin", "helix-ssh-mcp.mjs")]);

@@ -74,6 +74,7 @@ export type InstallOptions = {
   guideDestination?: string;
   guideSource?: string;
   runClaude?: ClaudeRunner;
+  runCodex?: ClaudeRunner;
 };
 
 export type InstallOutcome = {
@@ -82,6 +83,8 @@ export type InstallOutcome = {
   guidePath: string;
   registered: boolean;
   claudeError?: string;
+  codexRegistered: boolean;
+  codexError?: string;
 };
 
 function bundledGuideSource(): string | null {
@@ -99,12 +102,29 @@ function shellQuote(argument: string): string {
   return /[\s"&|<>^]/.test(argument) ? `"${argument.replaceAll('"', '\\"')}"` : argument;
 }
 
-function defaultClaudeRunner(args: string[]): { status: number | null; error?: Error } {
-  const result = spawnSync(["claude", ...args].map(shellQuote).join(" "), {
-    shell: true,
-    stdio: "inherit",
-  });
-  return { status: result.status, error: result.error ?? undefined };
+function defaultRunner(command: string): ClaudeRunner {
+  return (args) => {
+    const result = spawnSync([command, ...args].map(shellQuote).join(" "), {
+      shell: true,
+      stdio: "inherit",
+    });
+    return { status: result.status, error: result.error ?? undefined };
+  };
+}
+
+function registerClient(
+  run: ClaudeRunner,
+  removeArgs: string[],
+  addArgs: string[],
+): { registered: boolean; error?: string } {
+  try {
+    run(removeArgs);
+    const add = run(addArgs);
+    if (add.status === 0) return { registered: true };
+    return { registered: false, error: add.error?.message ?? `client exited with ${String(add.status)}` };
+  } catch (error) {
+    return { registered: false, error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 /**
@@ -133,24 +153,30 @@ export function installRuntime(options: InstallOptions = {}): InstallOutcome {
   fs.mkdirSync(path.dirname(guidePath), { recursive: true });
   fs.copyFileSync(guideSource, guidePath);
 
-  const runClaude = options.runClaude ?? defaultClaudeRunner;
-  let registered = false;
-  let claudeError: string | undefined;
-  try {
-    runClaude(["mcp", "remove", "--scope", "user", "helix-ssh"]);
-    const add = runClaude([
-      "mcp", "add", "helix-ssh", "--scope", "user",
-      "--env", `HELIX_SSH_CONFIG=${configPath}`,
-      "--env", `HELIX_AI_GUIDE=${guidePath}`,
-      "--", "helix-ssh-mcp",
-    ]);
-    registered = add.status === 0;
-    if (!registered) claudeError = add.error?.message ?? `claude exited with ${String(add.status)}`;
-  } catch (error) {
-    claudeError = error instanceof Error ? error.message : String(error);
-  }
+  const envArgs = [
+    "--env", `HELIX_SSH_CONFIG=${configPath}`,
+    "--env", `HELIX_AI_GUIDE=${guidePath}`,
+  ];
+  const claude = registerClient(
+    options.runClaude ?? defaultRunner("claude"),
+    ["mcp", "remove", "--scope", "user", "helix-ssh"],
+    ["mcp", "add", "helix-ssh", "--scope", "user", ...envArgs, "--", "helix-ssh-mcp"],
+  );
+  const codex = registerClient(
+    options.runCodex ?? defaultRunner("codex"),
+    ["mcp", "remove", "helix-ssh"],
+    ["mcp", "add", "helix-ssh", ...envArgs, "--", "helix-ssh-mcp"],
+  );
 
-  return { configPath, configCreated, guidePath, registered, claudeError };
+  return {
+    configPath,
+    configCreated,
+    guidePath,
+    registered: claude.registered,
+    claudeError: claude.error,
+    codexRegistered: codex.registered,
+    codexError: codex.error,
+  };
 }
 
 /**
@@ -170,15 +196,24 @@ export async function runCli(argv: string[]): Promise<number | undefined> {
       process.stdout.write(`config: ${outcome.configCreated ? "created" : "kept"} at ${outcome.configPath}\n`);
       process.stdout.write(`guide: installed at ${outcome.guidePath}\n`);
       if (outcome.registered) {
-        process.stdout.write("mcp: registered helix-ssh (user scope)\n");
-        process.stdout.write("next: restart Claude Code, then ask it to call helix_help\n");
+        process.stdout.write("mcp[claude]: registered helix-ssh (user scope)\n");
       } else {
-        process.stdout.write(`mcp: skipped (${outcome.claudeError ?? "claude not found"})\n`);
+        process.stdout.write(`mcp[claude]: skipped (${outcome.claudeError ?? "claude not found"})\n`);
         process.stdout.write(
-          `next: claude mcp add helix-ssh --scope user --env HELIX_SSH_CONFIG=${outcome.configPath} `
+          `  manual: claude mcp add helix-ssh --scope user --env HELIX_SSH_CONFIG=${outcome.configPath} `
           + `--env HELIX_AI_GUIDE=${outcome.guidePath} -- helix-ssh-mcp\n`,
         );
       }
+      if (outcome.codexRegistered) {
+        process.stdout.write("mcp[codex]: registered helix-ssh\n");
+      } else {
+        process.stdout.write(`mcp[codex]: skipped (${outcome.codexError ?? "codex not found"})\n`);
+        process.stdout.write(
+          `  manual: codex mcp add helix-ssh --env HELIX_SSH_CONFIG=${outcome.configPath} `
+          + `--env HELIX_AI_GUIDE=${outcome.guidePath} -- helix-ssh-mcp\n`,
+        );
+      }
+      process.stdout.write("next: restart Claude Code / Codex, then ask it to call helix_help\n");
       return 0;
     } catch (error) {
       process.stderr.write(`install failed: ${error instanceof Error ? error.message : String(error)}\n`);
