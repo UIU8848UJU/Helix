@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://github.com/UIU8848UJU/Helix/actions/workflows/ci.yml"><img src="https://github.com/UIU8848UJU/Helix/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/rust-1.85%2B-orange" alt="Rust 1.85+">
+  <img src="https://img.shields.io/badge/rust-1.88%2B-orange" alt="Rust 1.85+">
   <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="Node >= 20">
   <img src="https://img.shields.io/badge/platforms-Linux%20%7C%20Windows-blue" alt="Platforms: Linux | Windows">
   <img src="https://img.shields.io/badge/daemon%20protocol-v7-purple" alt="Daemon protocol v7">

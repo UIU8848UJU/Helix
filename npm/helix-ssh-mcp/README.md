@@ -12,7 +12,7 @@ claude mcp add helix-ssh -- helix-ssh-mcp
 The daemon binary is installed as a platform-specific optional dependency:
 
 - `helixd-win32-x64` (Windows x64)
-- `helixd-linux-x64-gnu` (Linux x64, glibc)
+- `helixd-linux-x64-gnu` (Linux x64, glibc >= 2.35; built on Ubuntu 22.04)
 
 If your platform is not covered, install from a GitHub Release and set
 `HELIX_CREDENTIAL_BROKER` to the `helixd` path.
