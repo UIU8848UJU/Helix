@@ -108,17 +108,27 @@ try {
   );
   check("npm install -g", install.status === 0);
 
-  const installedMain = path.join(prefix, "node_modules", "helix-ssh-mcp");
-  const installedPlatform = path.join(prefix, "node_modules", platformPackage);
+  // Global prefixes differ: Windows uses <prefix>/node_modules, Unix uses
+  // <prefix>/lib/node_modules. npm may also nest the platform package under the
+  // main package when it is resolved as an optional dependency.
+  const installedModules = process.platform === "win32"
+    ? path.join(prefix, "node_modules")
+    : path.join(prefix, "lib", "node_modules");
+  const installedMain = path.join(installedModules, "helix-ssh-mcp");
+  const platformCandidates = [
+    path.join(installedModules, platformPackage),
+    path.join(installedMain, "node_modules", platformPackage),
+  ];
+  const installedPlatform = platformCandidates.find((candidate) => fs.existsSync(candidate));
   check("main package installed", fs.existsSync(installedMain));
-  check("platform package installed", fs.existsSync(installedPlatform));
+  check("platform package installed", Boolean(installedPlatform), installedPlatform ?? platformCandidates.join(" | "));
 
   const binShim = process.platform === "win32"
     ? path.join(prefix, "helix-ssh-mcp.cmd")
     : path.join(prefix, "bin", "helix-ssh-mcp");
   check("bin shim installed", fs.existsSync(binShim), binShim);
 
-  const daemon = path.join(installedPlatform, "bin", daemonName);
+  const daemon = path.join(installedPlatform ?? installedModules, "bin", daemonName);
   const help = run("daemon --help", daemon, ["--help"]);
   check("packaged daemon runs", fs.existsSync(daemon) && help.status === 0);
 
@@ -127,7 +137,7 @@ try {
     process.execPath,
     [
       "-e",
-      `const p=require('node:path').join(${JSON.stringify(prefix)},'node_modules');console.log(require(require.resolve(${JSON.stringify(platformPackage)},{paths:[p]})))`,
+      `const p=${JSON.stringify(installedModules)};console.log(require(require.resolve(${JSON.stringify(platformPackage)},{paths:[p]})))`,
     ],
   );
   check(
@@ -183,7 +193,7 @@ try {
   );
   check("npm uninstall -g", uninstall.status === 0);
   check("main package removed", !fs.existsSync(installedMain));
-  check("platform package removed", !fs.existsSync(installedPlatform));
+  check("platform package removed", !installedPlatform || !fs.existsSync(installedPlatform));
   check("bin shim removed", !fs.existsSync(binShim));
 } catch (error) {
   check("unexpected error", false, error.message);
