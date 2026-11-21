@@ -24,5 +24,19 @@ jobs:
     steps:
       - name: Delete release and tag
         run: |
-          gh release delete "$TAG" --yes --cleanup-tag || true
-          git push origin ":refs/tags/$TAG" || true
+          set -uo pipefail
+          echo "Withdrawing $TAG from $GITHUB_REPOSITORY"
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" > /tmp/release.json 2>/tmp/release.err; then
+            RELEASE_ID=$(python3 -c "import json;print(json.load(open('/tmp/release.json'))['id'])")
+            echo "deleting release id=$RELEASE_ID"
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}"
+          else
+            echo "no release for $TAG"
+            cat /tmp/release.err
+          fi
+          gh api -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" \
+            || echo "tag ref already absent"
+          echo "--- verification ---"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" >/dev/null 2>&1 && { echo "release still present"; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1 && { echo "tag still present"; exit 1; }
+          echo "withdraw verified: release and tag are gone"
