@@ -47,8 +47,13 @@ jobs:
         run: >
           npx --yes esbuild apps/ssh-mcp/src/index.ts
           --bundle --platform=node --format=esm --target=node20
-          "--banner:js=#!/usr/bin/env node"
           --outfile=dist/helix-ssh-mcp.mjs --log-level=warning
+
+      - name: Stage npm packages
+        run: node scripts/package/build-npm-packages.mjs
+
+      - name: Test npm install and uninstall
+        run: node scripts/package/test-npm-packages.mjs
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
@@ -76,6 +81,27 @@ jobs:
           Copy-Item examples/*.json "$Dir/examples/"
           Copy-Item README.md, LICENSE "$Dir/"
           Compress-Archive -Path $Dir -DestinationPath "dist/helix-$Version-win-x64.zip" -Force
+
+      - name: Smoke-test packaged artifact (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist/smoke
+          tar -xzf "dist/helix-$VERSION-linux-x64.tar.gz" -C dist/smoke
+          "dist/smoke/helix-$VERSION-linux-x64/bin/helixd" --help
+          node scripts/package/smoke-mcp.mjs "dist/smoke/helix-$VERSION-linux-x64/bin/helix-ssh-mcp.mjs"
+
+      - name: Smoke-test packaged artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $Version = "$env:GITHUB_REF_NAME".TrimStart("v")
+          Expand-Archive -Force "dist/helix-$Version-win-x64.zip" -DestinationPath dist/smoke
+          & "dist/smoke/helix-$Version-win-x64/bin/helixd.exe" --help
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          node scripts/package/smoke-mcp.mjs "dist/smoke/helix-$Version-win-x64/bin/helix-ssh-mcp.mjs"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

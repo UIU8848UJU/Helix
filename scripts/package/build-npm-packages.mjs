@@ -38,7 +38,6 @@ execFileSync(
     "--platform=node",
     "--format=esm",
     "--target=node20",
-    "--banner:js=#!/usr/bin/env node",
     "--log-level=warning",
     `--outfile=${path.join(bundleDir, "helix-ssh-mcp.mjs")}`,
   ],

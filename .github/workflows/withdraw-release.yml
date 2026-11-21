@@ -1,0 +1,28 @@
+name: Withdraw Release
+
+# Deletes a GitHub Release and its tag. Trigger from the UI, or push a commit
+# whose message contains [withdraw-release] to remove the default tag.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to delete
+        required: true
+        default: v0.5.0
+  push:
+
+permissions:
+  contents: write
+
+jobs:
+  withdraw:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[withdraw-release]')
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.inputs.tag || 'v0.5.0' }}
+    steps:
+      - name: Delete release and tag
+        run: |
+          gh release delete "$TAG" --yes --cleanup-tag || true
+          git push origin ":refs/tags/$TAG" || true

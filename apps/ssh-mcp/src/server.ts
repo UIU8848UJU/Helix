@@ -70,7 +70,7 @@ function mergeOptional<T extends Record<string, unknown>>(target: T, patch: Reco
 }
 
 export function createServer(store = new ConfigStore()): McpServer {
-  const server = new McpServer({ name: "helix-ssh", version: "0.3.0" });
+  const server = new McpServer({ name: "helix-ssh", version: "0.5.0" });
   let limiter: Semaphore | null = null;
   let limiterSize = 0;
 
