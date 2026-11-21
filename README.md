@@ -279,9 +279,29 @@ Claude / Codex / Agent / Skill-Matrix
 
 ## 快速安装
 
-### Windows Release 包（推荐）
+### npm 一键安装（推荐）
 
-普通用户应使用预编译 Release 包，不需要 Rust 工具链，也不需要本地编译。
+需要 Node.js 20+，支持 Windows 10/11 x64 与 Linux x64（glibc ≥ 2.35）。
+
+```bash
+npm install -g helix-ssh-mcp
+claude mcp add helix-ssh -- helix-ssh-mcp
+```
+
+`helix-ssh-mcp` 通过 optional dependency 自动安装对应平台的 `helixd`
+（`helixd-win32-x64` / `helixd-linux-x64-gnu`）。Rust 工具链、OpenSSL 与本地编译都不需要。
+
+卸载（先停 daemon，再删包）：
+
+```bash
+helix-ssh-mcp uninstall                 # 停止 daemon；加 --purge 同时删除本地配置
+claude mcp remove helix-ssh
+npm uninstall -g helix-ssh-mcp helixd-win32-x64   # Linux 换成 helixd-linux-x64-gnu
+```
+
+### Windows Release 包（离线）
+
+不联网或需要固定版本时使用预编译 Release 包，不需要 Rust 工具链，也不需要本地编译。
 
 1. 从 [GitHub Releases](https://github.com/UIU8848UJU/Helix/releases) 下载 `helix-*-win-x64.zip`；
 2. 解压；
@@ -683,9 +703,30 @@ Claude / Codex / Agent / Skill-Matrix
 
 ## Quick start
 
-### Windows release package (recommended)
+### npm one-liner (recommended)
 
-End users should install the prebuilt release package. No Rust toolchain or local build is required.
+Requires Node.js 20+; supports Windows 10/11 x64 and Linux x64 (glibc ≥ 2.35).
+
+```bash
+npm install -g helix-ssh-mcp
+claude mcp add helix-ssh -- helix-ssh-mcp
+```
+
+`helix-ssh-mcp` installs the matching `helixd` platform package
+(`helixd-win32-x64` / `helixd-linux-x64-gnu`) through an optional dependency.
+No Rust toolchain, OpenSSL headers, or local build is required.
+
+Uninstall (stop the daemon before removing files):
+
+```bash
+helix-ssh-mcp uninstall                 # stops the daemon; --purge also deletes the local config
+claude mcp remove helix-ssh
+npm uninstall -g helix-ssh-mcp helixd-win32-x64   # use helixd-linux-x64-gnu on Linux
+```
+
+### Windows release package (offline)
+
+Use the prebuilt release package when the target machine is offline or a pinned version is required. No Rust toolchain or local build is required.
 
 1. Download `helix-*-win-x64.zip` from [GitHub Releases](https://github.com/UIU8848UJU/Helix/releases);
 2. Extract it;

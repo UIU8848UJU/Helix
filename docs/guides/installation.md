@@ -1,21 +1,48 @@
 # Helix MCP 安装指南
 
-本文说明如何安装 Helix MCP（含 helixd / Rust Credential Broker Daemon、ssh-mcp、browser-mcp 与独立的 http-mcp）。支持两种方式：
+本文说明如何安装 Helix MCP（含 helixd / Rust Credential Broker Daemon、ssh-mcp、browser-mcp 与独立的 http-mcp）。支持三种方式：
 
-- **方式 A：源码全量安装** —— 需要 Node.js 20+、npm、ssh、scp，以及 Rust 工具链（cargo）。
-- **方式 B：release 二进制安装（推荐）** —— 先把 helixd（Rust daemon）编译一次并保存为 release exe，之后安装无需 Rust 工具链，直接复用预编译二进制。
+- **方式 A：npm 一键安装（推荐）** —— `npm install -g helix-ssh-mcp`，平台二进制自动安装，无需 Rust 工具链或本地编译。
+- **方式 B：源码全量安装** —— 需要 Node.js 20+、npm、ssh、scp，以及 Rust 工具链（cargo）。
+- **方式 C：release 二进制安装（离线）** —— 先把 helixd（Rust daemon）编译一次并保存为 release exe，之后安装无需 Rust 工具链，直接复用预编译二进制。
 
 ## 前置条件
 
-- Node.js 20+：运行 MCP 服务端（两种方式都需要）
-- npm：安装依赖（两种方式都需要）
-- ssh / scp（OpenSSH 客户端）：SSH / SCP 传输（两种方式都需要）
-- cargo（Rust 工具链）：编译 helixd（仅方式 A 需要）
-- PowerShell 5.1+（Windows）：安装脚本 / 凭据录入（两种方式都需要）
+- Node.js 20+：运行 MCP 服务端（三种方式都需要）
+- npm：安装依赖（三种方式都需要）
+- ssh / scp（OpenSSH 客户端）：SSH / SCP 传输（三种方式都需要）
+- cargo（Rust 工具链）：编译 helixd（仅方式 B 需要）
+- PowerShell 5.1+（Windows）：安装脚本 / 凭据录入（方式 B、C 需要）
+
+## 方式 A：npm 一键安装（推荐）
+
+适用于 Windows 10/11 x64 与 Linux x64（glibc ≥ 2.35）。首次安装会从 npm registry 下载
+`helix-ssh-mcp` 及对应平台二进制包（`helixd-win32-x64` / `helixd-linux-x64-gnu`）。
+
+```bash
+npm install -g helix-ssh-mcp
+claude mcp add helix-ssh -- helix-ssh-mcp
+```
+
+安装后：
+
+- `helix-ssh-mcp` 命令在 PATH 中；MCP 客户端无需再指定 Node 路径。
+- Daemon 二进制位于全局 `node_modules` 下，由 `helix-ssh-mcp` 自动解析。
+- 配置路径不变：Windows `%APPDATA%\Helix\ssh-mcp.json`，Linux `~/.config/helix/ssh-mcp.json`。
+
+卸载必须先停止 daemon，再删除包（Windows 上运行中的 exe 无法被替换/删除）：
+
+```bash
+helix-ssh-mcp uninstall                 # 停止 daemon；加 --purge 同时删除本地配置
+claude mcp remove helix-ssh
+npm uninstall -g helix-ssh-mcp helixd-win32-x64   # Linux 换成 helixd-linux-x64-gnu
+```
+
+更新：`npm install -g helix-ssh-mcp@latest`，然后重启 MCP 客户端。
 
 Linux/macOS 目标主机还需要：SSH 服务端（openssh-server），需要 sudo 时给本机用户相应权限。
 
-## 方式 A：源码全量安装
+## 方式 B：源码全量安装
 
 Windows：
 
@@ -37,7 +64,7 @@ cd Helix
 
 > 注：`install.sh`（Linux/macOS）使用系统 ssh/scp 的 openssh 认证路径，不编译 helixd；helixd（密码凭据 / SFTP）仅在认证类型为 `windows-credential` 的主机上使用，目前面向 Windows 本机。
 
-## 方式 B：使用预编译 release 二进制（推荐）
+## 方式 C：使用预编译 release 二进制（离线）
 
 ### 1) 首次构建并保存 release exe
 
@@ -69,6 +96,9 @@ cd Helix
 | 凭据管理脚本 | `%APPDATA%\Helix\helix-admin.ps1` |
 | 浏览器 MCP 配置 | `%APPDATA%\Helix\browser-mcp.json` |
 | HTTP MCP 配置 | `%APPDATA%\Helix\http-mcp.json`（可用 `HELIX_HTTP_CONFIG` 覆盖） |
+
+方式 A（npm）的入口是全局 `helix-ssh-mcp` 可执行文件，daemon 随平台包安装在全局
+`node_modules` 内，不写入上表的 `helixd-<sha16>.exe` 路径。
 
 ## MCP 客户端注册
 
@@ -104,6 +134,6 @@ cd Helix
 
 ## 升级与常见问题
 
-- 升级：重新运行安装脚本即可；脚本保留已有 `ssh-mcp.json`，并以内容寻址文件名原子替换 helixd 二进制，运行中的旧 exe 不会被破坏。
+- 升级：npm 方式是 `npm install -g helix-ssh-mcp@latest` 后重启客户端；脚本方式重新运行安装脚本即可。脚本保留已有 `ssh-mcp.json`，并以内容寻址文件名原子替换 helixd 二进制，运行中的旧 exe 不会被破坏。
 - Windows 远端执行走 PowerShell（`-EncodedCommand`），`printf` 等 POSIX 命令不可用 → 见平台支持矩阵。
-- 卸载后清理：`unregister-mcp.ps1` 移除注册，`helix-admin.ps1` 可删除本机存储的凭据。
+- 卸载后清理：npm 方式先执行 `helix-ssh-mcp uninstall`（可加 `--purge`），再 `npm uninstall -g`；脚本方式用 `unregister-mcp.ps1` 移除注册，`helix-admin.ps1` 可删除本机存储的凭据。
