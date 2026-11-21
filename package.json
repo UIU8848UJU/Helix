@@ -1,6 +1,6 @@
 {
   "name": "helix-ai-infra",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "private": true,
   "description": "AI infrastructure monorepo for secure agent tools and MCP servers.",
   "type": "module",

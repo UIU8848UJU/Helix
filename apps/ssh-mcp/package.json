@@ -1,19 +1,25 @@
 {
   "name": "@helix/ssh-mcp",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "private": true,
   "description": "High-throughput SSH harness with secure local credentials, direct sudo, file transfer, Docker and environment tools for MCP clients.",
   "type": "module",
-  "bin": { "helix-ssh-mcp": "build/index.js" },
-  "files": ["build"],
-  "engines": { "node": ">=20" },
+  "bin": {
+    "helix-ssh-mcp": "build/index.js"
+  },
+  "files": [
+    "build"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
-    "@helix/jobs": "^0.1.0",
+    "@helix/jobs": "^0.5.0",
     "@modelcontextprotocol/sdk": "^1.17.5",
     "zod": "^3.23.8"
   },

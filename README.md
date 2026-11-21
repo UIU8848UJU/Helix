@@ -6,6 +6,7 @@
   <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen" alt="Node >= 20">
   <img src="https://img.shields.io/badge/platforms-Linux%20%7C%20Windows-blue" alt="Platforms: Linux | Windows">
   <img src="https://img.shields.io/badge/daemon%20protocol-v7-purple" alt="Daemon protocol v7">
+  <img src="https://img.shields.io/badge/version-0.5.0-blue" alt="Version 0.5.0">
   <img src="https://img.shields.io/badge/tests-141%20Rust%20%7C%20144%20ssh--mcp-success" alt="Tests">
   <img src="https://img.shields.io/badge/E2E-70%20Linux%20%7C%2031%20Windows-success" alt="E2E">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT">
@@ -474,6 +475,7 @@ CI 强制执行：`cargo test --release --workspace`（ubuntu + windows）、`pr
 
 - [Credential Broker Daemon](docs/architecture/credential-broker-daemon.md)
 - [Testing & Verification](docs/guides/testing-verification.md)
+- [Release Notes v0.5.0](docs/releases/v0.5.0.md)
 - [AI Guide](docs/guides/HELIX_AI_GUIDE.md)
 - [Installation Guide](docs/guides/installation.md)
 - [Branch Policy](docs/guides/branch-policy.md)
@@ -877,6 +879,7 @@ Key documents:
 
 - [Credential Broker Daemon](docs/architecture/credential-broker-daemon.md)
 - [Testing & Verification](docs/guides/testing-verification.md)
+- [Release Notes v0.5.0](docs/releases/v0.5.0.md)
 - [AI Guide](docs/guides/HELIX_AI_GUIDE.md)
 - [Installation Guide](docs/guides/installation.md)
 - [Branch Policy](docs/guides/branch-policy.md)

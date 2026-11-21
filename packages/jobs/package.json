@@ -1,12 +1,14 @@
 {
   "name": "@helix/jobs",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Generic Task Runtime model shared by ssh-mcp and browser-mcp: task state machine, TaskPool (bounded queue, worker limit, priority, timeout, retention, metrics), wire-protocol helpers, Semaphore and shell quoting.",
   "type": "module",
   "main": "build/index.js",
   "types": "build/index.d.ts",
-  "files": ["build"],
+  "files": [
+    "build"
+  ],
   "engines": {
     "node": ">=20"
   },

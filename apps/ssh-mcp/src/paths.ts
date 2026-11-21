@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import type { GlobalSettings } from "./types.js";
 
@@ -35,9 +36,32 @@ export function getAuditPath(): string {
   return path.join(base, "helix", "ssh-mcp", "audit.jsonl");
 }
 
+// Optional per-platform npm packages ship the daemon binary; resolve one when
+// the package is installed from the registry.
+const requireFromBundle = createRequire(import.meta.url);
+
+function bundledBrokerPath(): string | null {
+  const packages = process.platform === "win32"
+    ? ["helixd-win32-x64"]
+    : process.arch === "arm64"
+      ? ["helixd-linux-arm64-gnu"]
+      : ["helixd-linux-x64-gnu"];
+  for (const name of packages) {
+    try {
+      const resolved = requireFromBundle(name) as string;
+      if (resolved) return resolved;
+    } catch {
+      // optional dependency not installed for this platform
+    }
+  }
+  return null;
+}
+
 export function getCredentialBrokerPath(settings?: GlobalSettings): string {
   const configured = process.env.HELIX_CREDENTIAL_BROKER ?? settings?.credentialBrokerPath ?? undefined;
   if (configured) return path.resolve(expandHome(configured));
+  const bundled = bundledBrokerPath();
+  if (bundled) return bundled;
   const here = path.dirname(fileURLToPath(import.meta.url));
   const executable = process.platform === "win32"
     ? "helixd.exe"

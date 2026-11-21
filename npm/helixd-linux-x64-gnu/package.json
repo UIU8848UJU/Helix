@@ -1,0 +1,24 @@
+{
+  "name": "helixd-linux-x64-gnu",
+  "version": "0.5.0",
+  "description": "helixd daemon binary for Linux x64 (glibc)",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "bin/helixd"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/UIU8848UJU/Helix.git"
+  }
+}
